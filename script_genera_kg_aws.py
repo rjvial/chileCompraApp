@@ -27,192 +27,192 @@ conn_neo4j = fn.Neo4jConnection(
     encrypted=False)
 
 
-# ######################################################################################
-# # 1) CREATE UNIQUE CONSTRAINTS ON ALL KEY NODE LABELS
-# ######################################################################################
-# print("==> Generating unique constraints")
+######################################################################################
+# 1) CREATE UNIQUE CONSTRAINTS ON ALL KEY NODE LABELS
+######################################################################################
+print("==> Generating unique constraints")
 
-# constraints = [
-#     ("propIdConstraint_cm"                      , "Convenio_Marco"      , "convenio_marco_id"),
-#     ("propIdConstraint_oc"                     , "Orden_Compra"          , "id_oc"),
-#     ("propIdConstraint_linea_transaccion"       , "Linea_Transaccion"   , "id_linea_transaccion"),
-#     ("propIdConstraint_proveedor"               , "Proveedor"           , "rut_proveedor"),
-#     ("propIdConstraint_comprador"               , "Comprador"           , "rut_unidad_compra"),
-#     ("propIdConstraint_producto_detallado"      , "Producto_Detallado"  , "producto_detallado_id"),
-#     ("propIdConstraint_segmento"                , "Segmento_Ungm"       , "cod_segmento"),
-#     ("propIdConstraint_familia"                 , "Familia_Ungm"        , "cod_familia"),
-#     ("propIdConstraint_clase"                   , "Clase_Ungm"          , "cod_clase"),
-#     ("propIdConstraint_producto"                , "Producto_Ungm"       , "cod_producto")
-# ]
-
-
-# for name, label, prop in constraints:
-#     q = (
-#         f"CREATE CONSTRAINT {name} IF NOT EXISTS "
-#         f"FOR (n:{label}) REQUIRE n.{prop} IS UNIQUE;"
-#     )
-#     fn.neo4jQuery(q, conn_neo4j)
-#     print(f"  • Constraint on {label}.{prop}")
+constraints = [
+    ("propIdConstraint_cm"                      , "Convenio_Marco"      , "convenio_marco_id"),
+    ("propIdConstraint_oc"                     , "Orden_Compra"          , "id_oc"),
+    ("propIdConstraint_linea_transaccion"       , "Linea_Transaccion"   , "id_linea_transaccion"),
+    ("propIdConstraint_proveedor"               , "Proveedor"           , "rut_proveedor"),
+    ("propIdConstraint_comprador"               , "Comprador"           , "rut_unidad_compra"),
+    ("propIdConstraint_producto_detallado"      , "Producto_Detallado"  , "producto_detallado_id"),
+    ("propIdConstraint_segmento"                , "Segmento_Ungm"       , "cod_segmento"),
+    ("propIdConstraint_familia"                 , "Familia_Ungm"        , "cod_familia"),
+    ("propIdConstraint_clase"                   , "Clase_Ungm"          , "cod_clase"),
+    ("propIdConstraint_producto"                , "Producto_Ungm"       , "cod_producto")
+]
 
 
-
-# #######################################################################################
-# # Carga Nodos a Neo4j
-# #######################################################################################
-
-# print('Carga Nodos Convenio_Marco')
-# df_convenio_marco = pd.read_csv(f'{LOCAL_CSV_DIR}convenios_marco.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_convenio_marco,
-#     node_label='Convenio_Marco',
-#     id_column='convenio_marco_id',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///convenios_marco.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
-
-
-# print('Carga Nodos Orden_Compra')
-# df_oc = pd.read_csv(f'{LOCAL_CSV_DIR}ordenes_compra.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_oc,
-#     node_label='Orden_Compra',
-#     id_column='id_oc',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///ordenes_compra.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
-
-
-# print('Carga Nodos Linea_Transaccion')
-# df_linea_transaccion = pd.read_csv(f'{LOCAL_CSV_DIR}lineas_transaccion.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_linea_transaccion,
-#     node_label='Linea_Transaccion',
-#     id_column='id_linea_transaccion',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///lineas_transaccion.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
-
-
-# print('Carga Nodos Producto_Detallado')
-# df_producto = pd.read_csv(f'{LOCAL_CSV_DIR}productos.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_producto,
-#     node_label='Producto_Detallado',
-#     id_column='producto_detallado_id',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///productos.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
+for name, label, prop in constraints:
+    q = (
+        f"CREATE CONSTRAINT {name} IF NOT EXISTS "
+        f"FOR (n:{label}) REQUIRE n.{prop} IS UNIQUE;"
+    )
+    fn.neo4jQuery(q, conn_neo4j)
+    print(f"  • Constraint on {label}.{prop}")
 
 
 
-# print('Carga Nodos Proveedor')
-# df_proveedor = pd.read_csv(f'{LOCAL_CSV_DIR}proveedores.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_proveedor,
-#     node_label='Proveedor',
-#     id_column='rut_proveedor',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///proveedores.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
+#######################################################################################
+# Carga Nodos a Neo4j
+#######################################################################################
+
+print('Carga Nodos Convenio_Marco')
+df_convenio_marco = pd.read_csv(f'{LOCAL_CSV_DIR}convenios_marco.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_convenio_marco,
+    node_label='Convenio_Marco',
+    id_column='convenio_marco_id',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///convenios_marco.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
 
 
-# print('Carga Nodos Comprador')
-# df_comprador = pd.read_csv(f'{LOCAL_CSV_DIR}compradores.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_comprador,
-#     node_label='Comprador',
-#     id_column='rut_unidad_compra',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///compradores.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
+print('Carga Nodos Orden_Compra')
+df_oc = pd.read_csv(f'{LOCAL_CSV_DIR}ordenes_compra.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_oc,
+    node_label='Orden_Compra',
+    id_column='id_oc',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///ordenes_compra.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
+
+
+print('Carga Nodos Linea_Transaccion')
+df_linea_transaccion = pd.read_csv(f'{LOCAL_CSV_DIR}lineas_transaccion.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_linea_transaccion,
+    node_label='Linea_Transaccion',
+    id_column='id_linea_transaccion',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///lineas_transaccion.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
+
+
+print('Carga Nodos Producto_Detallado')
+df_producto = pd.read_csv(f'{LOCAL_CSV_DIR}productos.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_producto,
+    node_label='Producto_Detallado',
+    id_column='producto_detallado_id',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///productos.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
 
 
 
-# print('Query Relacion Producto_Detallado -> Convenio_Marco')
-# query_relacion = """
-# CALL apoc.periodic.iterate(
-#   "
-#   MATCH (source:Producto_Detallado)
-#   MATCH (target:Convenio_Marco)
-#   WHERE source.convenio_marco_id = target.convenio_marco_id
-#   RETURN source, target
-#   ",
-#   "
-#   MERGE (source)-[:ES_PRODUCTO_DE]->(target)
-#   ",
-#   {batchSize: 100, parallel: false}
-# );
-# """
-# fn.neo4jQuery(query_relacion, conn_neo4j)
-# a=1
+print('Carga Nodos Proveedor')
+df_proveedor = pd.read_csv(f'{LOCAL_CSV_DIR}proveedores.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_proveedor,
+    node_label='Proveedor',
+    id_column='rut_proveedor',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///proveedores.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
 
 
-# print('Query Relacion Orden_Compra -> Proveedor')
-# query_relacion = """
-# CALL apoc.periodic.iterate(
-#   "
-#   MATCH (source:Orden_Compra)
-#   MATCH (target:Proveedor)
-#   WHERE source.rut_proveedor = target.rut_proveedor
-#   RETURN source, target
-#   ",
-#   "
-#   MERGE (source)-[:GENERADA_PARA]->(target)
-#   ",
-#   {batchSize: 100, parallel: false}
-# );
-# """
-# fn.neo4jQuery(query_relacion, conn_neo4j)
-# a=1
+print('Carga Nodos Comprador')
+df_comprador = pd.read_csv(f'{LOCAL_CSV_DIR}compradores.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_comprador,
+    node_label='Comprador',
+    id_column='rut_unidad_compra',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///compradores.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
 
 
-# print('Query Relacion Orden_Compra -> Comprador')
-# query_relacion = """
-# CALL apoc.periodic.iterate(
-#   "
-#   MATCH (source:Orden_Compra)
-#   MATCH (target:Comprador)
-#   WHERE source.rut_unidad_compra = target.rut_unidad_compra
-#   RETURN source, target
-#   ",
-#   "
-#   MERGE (source)-[:GENERADA_POR]->(target)
-#   ",
-#   {batchSize: 100, parallel: false}
-# );
-# """
-# fn.neo4jQuery(query_relacion, conn_neo4j)
-# a=1
+
+print('Query Relacion Producto_Detallado -> Convenio_Marco')
+query_relacion = """
+CALL apoc.periodic.iterate(
+  "
+  MATCH (source:Producto_Detallado)
+  MATCH (target:Convenio_Marco)
+  WHERE source.convenio_marco_id = target.convenio_marco_id
+  RETURN source, target
+  ",
+  "
+  MERGE (source)-[:ES_PRODUCTO_DE]->(target)
+  ",
+  {batchSize: 100, parallel: false}
+);
+"""
+fn.neo4jQuery(query_relacion, conn_neo4j)
+a=1
+
+
+print('Query Relacion Orden_Compra -> Proveedor')
+query_relacion = """
+CALL apoc.periodic.iterate(
+  "
+  MATCH (source:Orden_Compra)
+  MATCH (target:Proveedor)
+  WHERE source.rut_proveedor = target.rut_proveedor
+  RETURN source, target
+  ",
+  "
+  MERGE (source)-[:GENERADA_PARA]->(target)
+  ",
+  {batchSize: 100, parallel: false}
+);
+"""
+fn.neo4jQuery(query_relacion, conn_neo4j)
+a=1
+
+
+print('Query Relacion Orden_Compra -> Comprador')
+query_relacion = """
+CALL apoc.periodic.iterate(
+  "
+  MATCH (source:Orden_Compra)
+  MATCH (target:Comprador)
+  WHERE source.rut_unidad_compra = target.rut_unidad_compra
+  RETURN source, target
+  ",
+  "
+  MERGE (source)-[:GENERADA_POR]->(target)
+  ",
+  {batchSize: 100, parallel: false}
+);
+"""
+fn.neo4jQuery(query_relacion, conn_neo4j)
+a=1
 
 
 print('Query Relacion Linea_Transaccion -> Orden_Compra')
@@ -253,101 +253,101 @@ fn.neo4jQuery(query_relacion, conn_neo4j)
 a=1
 
 
-# print('Query Relacion Producto_Detallado -> Proveedor')
-# query_relacion = """
-# CALL apoc.periodic.iterate(
-#   "LOAD CSV WITH HEADERS FROM ':file' AS row FIELDTERMINATOR '|' RETURN row",
-#   "
-#   MATCH (source: Producto_Detallado {producto_detallado_id: toInteger(row.producto_detallado_id)})
-#   MATCH (target: Proveedor {rut_proveedor: row.rut_proveedor})
-#   MERGE (source)-[r:ES_OFRECIDO_POR]->(target)
-#   ",
-#   {batchSize: 500, parallel: false}
-# );
-# """
-# query_relacion = query_relacion.replace(':file', f'file:///rel_producto_proveedor.csv')
-# fn.neo4jQuery(query_relacion, conn_neo4j)
-# a=1
+print('Query Relacion Producto_Detallado -> Proveedor')
+query_relacion = """
+CALL apoc.periodic.iterate(
+  "LOAD CSV WITH HEADERS FROM ':file' AS row FIELDTERMINATOR '|' RETURN row",
+  "
+  MATCH (source: Producto_Detallado {producto_detallado_id: toInteger(row.producto_detallado_id)})
+  MATCH (target: Proveedor {rut_proveedor: row.rut_proveedor})
+  MERGE (source)-[r:ES_OFRECIDO_POR]->(target)
+  ",
+  {batchSize: 500, parallel: false}
+);
+"""
+query_relacion = query_relacion.replace(':file', f'file:///rel_producto_proveedor.csv')
+fn.neo4jQuery(query_relacion, conn_neo4j)
+a=1
 
 
 
-# print('Carga Nodos Segmento_Ungm')
-# df_segmento = pd.read_csv(f'{LOCAL_CSV_DIR}segmentos_ungm.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_segmento,
-#     node_label='Segmento_Ungm',
-#     id_column='cod_segmento',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///segmentos_ungm.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
+print('Carga Nodos Segmento_Ungm')
+df_segmento = pd.read_csv(f'{LOCAL_CSV_DIR}segmentos_ungm.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_segmento,
+    node_label='Segmento_Ungm',
+    id_column='cod_segmento',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///segmentos_ungm.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
 
 
-# print('Carga Nodos Familia_Ungm')
-# df_familia = pd.read_csv(f'{LOCAL_CSV_DIR}familias_ungm.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_familia,
-#     node_label='Familia_Ungm',
-#     id_column='cod_familia',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///familias_ungm.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
+print('Carga Nodos Familia_Ungm')
+df_familia = pd.read_csv(f'{LOCAL_CSV_DIR}familias_ungm.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_familia,
+    node_label='Familia_Ungm',
+    id_column='cod_familia',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///familias_ungm.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
 
-# print('Carga Nodos Clase_Ungm')
-# df_clase = pd.read_csv(f'{LOCAL_CSV_DIR}clases_ungm.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_clase,
-#     node_label='Clase_Ungm',
-#     id_column='cod_clase',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///clases_ungm.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
+print('Carga Nodos Clase_Ungm')
+df_clase = pd.read_csv(f'{LOCAL_CSV_DIR}clases_ungm.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_clase,
+    node_label='Clase_Ungm',
+    id_column='cod_clase',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///clases_ungm.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
 
-# print('Carga Nodos Producto_Ungm')
-# df_producto = pd.read_csv(f'{LOCAL_CSV_DIR}productos_ungm.csv', sep='|', nrows=100)
-# query_nodo = fn.generate_cypher_query(
-#     df=df_producto,
-#     node_label='Producto_Ungm',
-#     id_column='cod_producto',
-#     file_placeholder=':file',
-#     batch_size=500,
-#     parallel=False,
-#     separator='|'
-# )
-# query_nodo = query_nodo.replace(':file', f'file:///productos_ungm.csv')
-# fn.neo4jQuery(query_nodo, conn_neo4j)
-# a=1
+print('Carga Nodos Producto_Ungm')
+df_producto = pd.read_csv(f'{LOCAL_CSV_DIR}productos_ungm.csv', sep='|', nrows=100)
+query_nodo = fn.generate_cypher_query(
+    df=df_producto,
+    node_label='Producto_Ungm',
+    id_column='cod_producto',
+    file_placeholder=':file',
+    batch_size=500,
+    parallel=False,
+    separator='|'
+)
+query_nodo = query_nodo.replace(':file', f'file:///productos_ungm.csv')
+fn.neo4jQuery(query_nodo, conn_neo4j)
+a=1
 
 
-# print('Query Relacion Producto_Detallado -> Producto_Ungm')
-# query_relacion = """
-# CALL apoc.periodic.iterate(
-#   "LOAD CSV WITH HEADERS FROM ':file' AS row FIELDTERMINATOR '|' RETURN row",
-#   "
-#   MATCH (source: Producto_Detallado {producto_detallado_id: toInteger(row.producto_detallado_id)})
-#   MATCH (target: Producto_Ungm {cod_producto: toInteger(row.codigo_onu)})
-#   MERGE (source)-[r:ES_UN_PRODUCTO_UNGM]->(target)
-#   ",
-#   {batchSize: 500, parallel: false}
-# );
-# """
-# query_relacion = query_relacion.replace(':file', f'file:///rel_producto_codigo_onu.csv')
-# fn.neo4jQuery(query_relacion, conn_neo4j)
-# a=1
+print('Query Relacion Producto_Detallado -> Producto_Ungm')
+query_relacion = """
+CALL apoc.periodic.iterate(
+  "LOAD CSV WITH HEADERS FROM ':file' AS row FIELDTERMINATOR '|' RETURN row",
+  "
+  MATCH (source: Producto_Detallado {producto_detallado_id: toInteger(row.producto_detallado_id)})
+  MATCH (target: Producto_Ungm {cod_producto: toInteger(row.codigo_onu)})
+  MERGE (source)-[r:ES_UN_PRODUCTO_UNGM]->(target)
+  ",
+  {batchSize: 500, parallel: false}
+);
+"""
+query_relacion = query_relacion.replace(':file', f'file:///rel_producto_codigo_onu.csv')
+fn.neo4jQuery(query_relacion, conn_neo4j)
+a=1
 
 
 print('Query Relacion Producto_Ungm -> Clase_Ungm')
@@ -439,3 +439,27 @@ a=1
 # lt.precio_unitario, pd.producto_detallado_id AS producto_detallado_id, 
 # pd.nombre_producto AS nombre_producto
 # ORDER BY fecha
+
+# MATCH (pd:Producto_Detallado)-[:ES_UN_PRODUCTO_UNGM]->(pu:Producto_Ungm)-[:PERTENECE_A_CLASE]->(cl:Clase_Ungm)-[:PERTENECE_A_FAMILIA]->(fam:Familia_Ungm)-[:PERTENECE_A_SEGMENTO]->(seg:Segmento_Ungm)
+# OPTIONAL MATCH (pd)-[:ES_OFRECIDO_POR]->(prov:Proveedor)
+# RETURN DISTINCT
+#   pd.producto_detallado_id AS producto_detallado_id,
+#   pd.nombre_producto AS nombre_producto_detallado,
+#   pu.cod_producto AS cod_producto_ungm,
+#   pu.nombre_producto AS nombre_producto_ungm,
+#   cl.cod_clase AS cod_clase_ungm,
+#   cl.nombre_clase AS nombre_clase_ungm,
+#   fam.cod_familia AS cod_familia_ungm,
+#   fam.nombre_familia AS nombre_familia_ungm,
+#   seg.cod_segmento AS cod_segmento_ungm,
+#   seg.nombre_segmento AS nombre_segmento_ungm,
+#   COUNT(DISTINCT prov) AS num_proveedores
+# ORDER BY num_proveedores DESC;
+
+# MATCH o= (prov:Proveedor)-[]-(pd:Producto_Detallado)-[]-(prod:Producto_Ungm)-[]-(clase:Clase_Ungm)-[]-(fam:Familia_Ungm)-[:PERTENECE_A_SEGMENTO]->(seg:Segmento_Ungm)
+# WHERE seg.nombre_segmento = 'Componentes y Suministros de Manufactura' 
+#     AND fam.nombre_familia = 'Pinturas y bases y acabados'
+#     AND clase.nombre_clase = 'Pinturas y tapa poros'
+#     AND prod.nombre_producto = 'Pinturas de agua'
+#     AND pd.nombre_producto = 'ESMALTE AL AGUA SHERWIN WILLIAMS SATINADO 4 GL BLANCO UNIDAD REGIÓN RM'
+# RETURN o

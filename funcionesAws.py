@@ -1,5 +1,5 @@
 import pandas as pd
-import boto3, io, time, os, re
+import boto3, io, time, os, re, json
 
 
 def pd_read_s3_csv(bucket, file_name, s3_client, header_flag=True):
@@ -191,6 +191,23 @@ def genera_tabla_iceberg_desde_tabla_athena(athena_client, nombre_tabla, iceberg
     print(f'Creando tabla {iceberg_db}.{nombre_tabla} en Iceberg')
 
     return queryExecutionId
+
+
+def invoke_titan_embedding(bedrock_client, text, dimensions=256,
+                           model_id="amazon.titan-embed-text-v2:0"):
+    body = json.dumps({"inputText": text, "dimensions": dimensions})
+    response = bedrock_client.invoke_model(modelId=model_id, body=body)
+    return json.loads(response["body"].read())["embedding"]
+
+
+def invoke_bedrock(bedrock_client, prompt, model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    max_tokens=4096, temperature=0):
+    response = bedrock_client.converse(
+        modelId=model_id,
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
+    )
+    return response["output"]["message"]["content"][0]["text"]
 
 
 def extract_unique_folders(s3_client, s3_bucket, s3_dir, pattern=''):
