@@ -19,7 +19,8 @@
       "Bash(timeout 15 aws s3 ls:*)",
       "Bash(cmd:*)",
       "Bash(powershell:*)",
-      "Bash(xxd \"I:/Mi unidad/Python/chileCompraApp/script_genera_csv_neo4j.py\")"
+      "Bash(xxd \"I:/Mi unidad/Python/chileCompraApp/script_genera_csv_neo4j.py\")",
+      "Bash(python _inspect_schema.py)"
     ]
   }
 }

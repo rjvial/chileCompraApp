@@ -463,3 +463,29 @@ a=1
 #     AND prod.nombre_producto = 'Pinturas de agua'
 #     AND pd.nombre_producto = 'ESMALTE AL AGUA SHERWIN WILLIAMS SATINADO 4 GL BLANCO UNIDAD REGIÓN RM'
 # RETURN o
+
+# MATCH (prov:Proveedor {rut_proveedor: '78.566.250-4'})<-[:GENERADA_PARA]-(oc:Orden_Compra)<-[:ES_PARTE_DE]-(lt:Linea_Transaccion)-[:CONTIENE_PRODUCTO]->(pd:Producto_Detallado)
+# OPTIONAL MATCH (pd)-[:ES_PRODUCTO_DE]->(cm:Convenio_Marco)
+# OPTIONAL MATCH (pd)-[:ES_UN_PRODUCTO_UNGM]->(pu:Producto_Ungm)-[:PERTENECE_A_CLASE]->(cl:Clase_Ungm)-[:PERTENECE_A_FAMILIA]->(fam:Familia_Ungm)-[:PERTENECE_A_SEGMENTO]->(seg:Segmento_Ungm)
+# WITH pd, cm, pu, cl, fam, seg, oc.id_oc AS id_oc, ROUND(toFloat(coalesce(lt.cantidad, 0)) * toFloat(coalesce(lt.precio_unitario, 0)), 2) AS monto_linea
+# WITH pd, cm, pu, cl, fam, seg,
+#      SUM(monto_linea) AS monto_total_compra,
+#      COUNT(DISTINCT id_oc) AS cantidad_ordenes
+# RETURN
+#   pd.producto_detallado_id,
+#   pd.marca,
+#   pd.modelo,
+#   pd.nombre_producto,
+#   pd.tipo_producto,
+#   cm.nombre_convenio_marco,
+#   pu.cod_producto,
+#   pu.nombre_producto AS nombre_producto_ungm,
+#   cl.cod_clase,
+#   cl.nombre_clase,
+#   fam.cod_familia,
+#   fam.nombre_familia,
+#   seg.cod_segmento,
+#   seg.nombre_segmento,
+#   monto_total_compra,
+#   cantidad_ordenes
+# ORDER BY monto_total_compra DESC

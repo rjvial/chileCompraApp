@@ -20,7 +20,7 @@ def force_int_columns(df):
 
 fileDir = "I:\\Mi unidad\\Python\\chileCompraApp\\data\\"
 
-load_dotenv(".env")
+load_dotenv("secrets.env")
 
 INSTANCIA_EC2 = 'Neo4j-EC2'
 
