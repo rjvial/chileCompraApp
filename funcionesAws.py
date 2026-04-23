@@ -201,13 +201,22 @@ def invoke_titan_embedding(bedrock_client, text, dimensions=256,
 
 
 def invoke_bedrock(bedrock_client, prompt, model_id="us.anthropic.claude-haiku-4-5-20251001-v1:0",
-                    max_tokens=4096, temperature=0):
-    response = bedrock_client.converse(
-        modelId=model_id,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
-    )
-    return response["output"]["message"]["content"][0]["text"]
+                    max_tokens=4096, temperature=0, system_cached=None, return_usage=False):
+    kwargs = {
+        "modelId": model_id,
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature},
+    }
+    if system_cached:
+        kwargs["system"] = [
+            {"text": system_cached},
+            {"cachePoint": {"type": "default"}},
+        ]
+    response = bedrock_client.converse(**kwargs)
+    text = response["output"]["message"]["content"][0]["text"]
+    if return_usage:
+        return text, response.get("usage", {})
+    return text
 
 
 def extract_unique_folders(s3_client, s3_bucket, s3_dir, pattern=''):
