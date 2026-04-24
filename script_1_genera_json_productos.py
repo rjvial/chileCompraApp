@@ -31,8 +31,8 @@ conn_neo4j = fn.Neo4jConnection(
 fileDir = "I:\\Mi unidad\\Python\\chileCompraApp\\data\\"
 INPUT_FILE = "num_proveedores_por_producto.csv"
 OUTPUT_FILE = "detalle_productos_proveedor.jsonl"
-CANONICAL_CKPT = f"{fileDir}checkpoint_canonical.jsonl"
-PROVEEDOR_CKPT = f"{fileDir}checkpoint_proveedor.jsonl"
+CANONICAL_CKPT = f"{fileDir}productos_genericos.jsonl"
+
 
 BATCH_SIZE = 5
 MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -256,114 +256,87 @@ except KeyboardInterrupt:
     raise SystemExit(0)
 
 
-# ─── ONE LLM CALL PER (item, proveedor) ROW ──────────────────────
-proveedor_results = []
-processed_keys = set()
-if os.path.exists(PROVEEDOR_CKPT):
-    with open(PROVEEDOR_CKPT, "r", encoding="utf-8") as ckpt:
-        for line in ckpt:
-            line = line.strip()
-            if not line:
-                continue
-            entry = json.loads(line)
-            proveedor_results.append(entry)
-            processed_keys.add((entry["id_item"], entry["rut_proveedor"]))
-    print(f"Reanudando proveedor: {len(proveedor_results)} ya procesados")
 
-try:
-    for row_idx, row in df_subset.iterrows():
-        id_item = row["id_item"]
-        rut_proveedor = row["rut_proveedor"]
-        if (id_item, rut_proveedor) in processed_keys:
-            continue
-        sc = row["specs_comprador"]
-        sp = row["specs_proveedor"]
-        si = row["specs_item"]
-
-        print(f"Fila {row_idx+1}/{len(df_subset)} (id_item={id_item}, rut={rut_proveedor})...", end=" ")
-
-        prompt = build_prompt([si])
-
-        item = None
-        try:
-            response_text = fa.invoke_bedrock(
-                bedrock, prompt, model_id=MODEL_ID, system_cached=SYSTEM_PROMPT)
-            parsed = parse_response(response_text, 1)
-            llm_item = parsed[0]
-            generico = canonical_generico.get(id_item) or llm_item.get("product_generico")
-            item = {
-                "id_item": id_item,
-                "product_generico": generico,
-                "specs_comprador": sc,
-                "marca": llm_item.get("marca"),
-                "tipo_paquete": llm_item.get("tipo_paquete"),
-                "dimensiones": llm_item.get("dimensiones"),
-                "cantidad": llm_item.get("cantidad"),
-                "unidad": llm_item.get("unidad"),
-                "condiciones_despacho": llm_item.get("condiciones_despacho"),
-                "atributos_adicionales": llm_item.get("atributos_adicionales", []),
-                "rut_proveedor": rut_proveedor,
-                "specs_proveedor": sp,
-                "specs_item": si,
-            }
-            item["summary"] = build_summary(item)
-            print("OK")
-
-        except json.JSONDecodeError as e:
-            print(f"JSON parse error: {e}")
-            item = {
-                "id_item": id_item,
-                "product_generico": None,
-                "specs_comprador": sc,
-                "marca": None,
-                "tipo_paquete": None,
-                "dimensiones": None,
-                "cantidad": None,
-                "unidad": None,
-                "condiciones_despacho": None,
-                "atributos_adicionales": [],
-                "rut_proveedor": rut_proveedor,
-                "specs_proveedor": sp,
-                "specs_item": si,
-                "error": str(e),
-            }
-
-        except Exception as e:
-            print(f"Error: {e}")
-            time.sleep(5)
-
-        if item is not None:
-            proveedor_results.append(item)
-            processed_keys.add((id_item, rut_proveedor))
-            with open(PROVEEDOR_CKPT, "a", encoding="utf-8") as ckpt:
-                ckpt.write(json.dumps(item, ensure_ascii=False) + "\n")
-
-        time.sleep(1)
-except KeyboardInterrupt:
-    print("\nInterrumpido. Progreso proveedor guardado en checkpoint.")
-    raise SystemExit(0)
+# MATCH (prov:Proveedor {rut:'78.566.250-4'})-[]-(lic:Licitacion)-[]-(it:ItemLicitacion)-[]-(prod:ProductoCanonico)
+# MATCH (competencia:Proveedor)-[]-(of:Oferta)-[]-(it)
+# RETURN competencia.nombre_legal       AS nombre_prov,
+#     prod.nombre_generico            AS producto,
+#     lic.fecha_cierre                AS fecha_cierre,
+#     lic.id_licitacion               AS id_licitacion,
+#     it.id_item_licitacion           AS item_licitacion,
+#     toInteger(of.precio_unitario)   AS precio_unitario,
+#     toInteger(of.cantidad)          AS cantidad,
+#     toInteger(of.precio_total)      AS precio_total,
+#     of.adjudicada                   AS flag_adjudicacion,
+#     it.especificacion_comprador     AS specs_comprador
+# ORDER BY producto, fecha_cierre
 
 
-# ─── FINALIZE OUTPUT ─────────────────────────────────────────────
-final_path = f"{fileDir}{OUTPUT_FILE}"
-if os.path.exists(final_path):
-    os.remove(final_path)
-os.rename(PROVEEDOR_CKPT, final_path)
-if os.path.exists(CANONICAL_CKPT):
-    os.remove(CANONICAL_CKPT)
+# MATCH (prov:Proveedor {rut:'78.566.250-4'})-[]-(lic:Licitacion)-[]-(it:ItemLicitacion)-[]-(prod:ProductoCanonico)  MATCH (:Proveedor)-[]-(of:Oferta)-[]-(it)
+# WITH DISTINCT prod.nombre_generico AS producto, lic, of 
+# RETURN producto, 
+#         toInteger(max(of.precio_unitario))                 AS precio_max,
+#         toInteger(min(of.precio_unitario))                 AS precio_min,
+#         toInteger(percentileCont(of.precio_unitario, 0.5)) AS precio_mediana,
+#         toInteger(max(CASE WHEN of.adjudicada THEN of.precio_unitario END)) AS precio_adjudicado_max,
+#         toInteger(min(CASE WHEN of.adjudicada THEN of.precio_unitario END)) AS precio_adjudicado_min,
+#        count(DISTINCT of)                                 AS n_ofertas,
+#        count(DISTINCT lic)                                AS n_licitaciones
+# ORDER BY producto
 
-print(f"\nSaved {len(proveedor_results)} proveedor rows to {final_path}")
+
+# MATCH (prov:Proveedor)-[]-(of:Oferta)
+#   WITH prov,
+#        count(of)                                            AS n_ofertas, 
+#        sum(CASE WHEN of.adjudicada THEN 1 ELSE 0 END)       AS n_adjudicadas 
+#   WHERE n_adjudicadas >= 1000
+#   RETURN prov.rut                                           AS rut,
+#          prov.nombre_legal                                  AS nombre,
+#          n_ofertas,
+#          n_adjudicadas,
+#          toFloat(n_adjudicadas) * 100.0 / n_ofertas         AS pct_adjudicadas
+#   ORDER BY pct_adjudicadas DESC
 
 
-# # ─── GENERATE EMBEDDINGS ─────────────────────────────────────────
-# print(f"\nGenerating embeddings for {len(results)} products...")
-# for i, item in enumerate(results):
-#     summary = item.get("summary", "")
-#     if summary:
-#         item["embedding"] = fa.invoke_titan_embedding(bedrock, summary)
-#     else:
-#         item["embedding"] = None
-#     if (i + 1) % 50 == 0:
-#         print(f"  {i+1}/{len(results)} embeddings done")
+# MATCH (org:Organismo)-[:TIENE_UNIDAD]-(:UnidadDeCompra)-[:PUBLICA]-(lic:Licitacion) OPTIONAL MATCH (lic)-[:REQUIERE_ITEM]-(:ItemLicitacion)-[:PARA_ITEM]-(of:Oferta)-[:OFRECE]-(prov:Proveedor)
+#   WITH org,
+#        count(DISTINCT lic)  AS n_licitaciones,
+#        count(DISTINCT of)   AS n_ofertas,
+#        count(DISTINCT prov) AS n_proveedores
+#   RETURN org.rut            AS rut,
+#          org.nombre         AS nombre,
+#          n_licitaciones,
+#          n_ofertas,
+#          n_proveedores
+#   ORDER BY n_licitaciones DESC
 
-# print(f"  {len(results)}/{len(results)} embeddings done")
+
+# MATCH (promedon:Proveedor {rut:'78.566.250-4'})-[:OFRECE]-(of:Oferta)-[:PARA_ITEM]-(:ItemLicitacion)-[:REQUIERE_ITEM]-(:Licitacion)-[:PUBLICA]-(:UnidadDeCompra)-[:TIENE_UNIDAD]-(org:Organismo)
+# WITH org,
+# count(DISTINCT of) AS n_ofertas,
+# sum(CASE WHEN of.adjudicada THEN 1 ELSE 0 END)               AS n_adjudicadas
+# WHERE n_ofertas >= 10
+# RETURN org.rut                                               AS rut,
+#      org.nombre                                              AS nombre,
+#      n_ofertas,
+#      n_adjudicadas,
+#      toFloat(n_adjudicadas) * 100.0 / n_ofertas              AS pct_adjudicacion
+# ORDER BY pct_adjudicacion DESC
+
+######################################################################
+
+# Win rate y evolución en el tiempo. Sin esto todo lo demás es ruido.
+
+# MATCH (p:Proveedor {rut:'78.566.250-4'})-[:OFRECE]-(of:Oferta)-[:PARA_ITEM]-(it:ItemLicitacion)-[:REQUIERE_ITEM]-(lic:Licitacion)
+# WITH lic.year AS anio, lic.month AS mes,
+#        count(of) AS n_ofertas,
+#        sum(CASE WHEN of.adjudicada THEN 1 ELSE 0 END) AS n_ganadas,
+#        sum(CASE WHEN of.adjudicada THEN of.precio_equiv_clp ELSE 0 END) AS revenue_clp
+# RETURN anio, mes, n_ofertas, n_ganadas,
+#        toFloat(n_ganadas)*100.0/n_ofertas AS win_rate,
+#        revenue_clp
+# ORDER BY anio, mes
+
+
+
+
