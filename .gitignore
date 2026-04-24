@@ -9,4 +9,5 @@ dist/
 build/
 .idea/
 .vscode/
-data/*.csv
+data/*
+.mcp.json
