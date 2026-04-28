@@ -473,51 +473,36 @@ def _md_table(df: pd.DataFrame, cols: dict, max_rows: int = 10,
     return "\n".join(lines) + "\n"
 
 
-def build_reporte_md(df_base: pd.DataFrame,
-                     t_prod: pd.DataFrame,
-                     t_prec: pd.DataFrame,
-                     t_comp: pd.DataFrame,
-                     t_compr: pd.DataFrame,
-                     rut_promedon: str) -> str:
-    promedon = df_base[df_base["rut_proveedor"] == rut_promedon]
-    n_ofertas_totales = len(df_base)
-    n_ofertas_promedon = len(promedon)
-    n_adjudicadas = int(promedon["flag_adjudicado"].sum())
-    wr_global = n_adjudicadas / n_ofertas_promedon if n_ofertas_promedon else 0
-    revenue_total = float((promedon["flag_adjudicado"].fillna(0)
-                           * promedon["num_unidades"].fillna(0)
-                           * promedon["precio_unitario"].fillna(0)).sum())
-    n_competidores = df_base.loc[df_base["rut_proveedor"] != rut_promedon, "rut_proveedor"].nunique()
-    n_compradores = df_base["rut_comprador"].nunique()
-    fecha = datetime.now().strftime("%Y-%m-%d")
+def _wavg(s_val: pd.Series, s_w: pd.Series):
+    s_val = s_val.fillna(0)
+    w = s_w.fillna(0)
+    total_w = float(w.sum())
+    return float((s_val * w).sum() / total_w) if total_w else None
 
+
+def _segmentar_productos(t_prod: pd.DataFrame) -> tuple[dict, float]:
+    """
+    Clasifica cada producto_canonico en:
+      - "A" (alta competencia / commodity)   si n_competidores_promedio ≥ mediana
+      - "B" (baja competencia / especializado) si n_competidores_promedio < mediana
+    NaN → "B". Retorna (mapping, threshold).
+    """
+    valid = t_prod.dropna(subset=["n_competidores_promedio"])
+    threshold = float(valid["n_competidores_promedio"].median()) if not valid.empty else 0.0
+    mapping = {}
+    for _, row in t_prod.iterrows():
+        ncomp = row["n_competidores_promedio"]
+        prod = row["producto_canonico"]
+        if pd.isna(ncomp) or ncomp < threshold:
+            mapping[prod] = "B"
+        else:
+            mapping[prod] = "A"
+    return mapping, threshold
+
+
+def _seccion_producto(t_prod: pd.DataFrame, prefix: str = "1") -> list[str]:
     md = []
-    md.append(f"# Diagnóstico Promedon — ChileCompra\n")
-    md.append(f"**RUT:** {rut_promedon}  ")
-    md.append(f"**Fecha:** {fecha}  ")
-    md.append(f"**Modelo:** item × proveedor (4 dimensiones independientes)\n")
-
-    # ── Resumen ejecutivo ────────────────────────────────────────────────
-    md.append("## Resumen ejecutivo\n")
-    md.append(
-        "Foto agregada del universo competitivo donde Promedon participa. "
-        "El universo es el conjunto de items (licitación–producto) en los que "
-        "Promedon presentó al menos una oferta; cada item se observa con todas "
-        "las ofertas competidoras. Las métricas a continuación dimensionan la "
-        "actividad y sirven de referencia (denominador) para los cortes posteriores.\n"
-    )
-    md.append("| Métrica | Valor |")
-    md.append("| --- | --- |")
-    md.append(f"| Ofertas Totales (Promedon + competencia) | {n_ofertas_totales:,} |")
-    md.append(f"| Ofertas Promedon | {n_ofertas_promedon:,} |")
-    md.append(f"| Adjudicaciones | {n_adjudicadas:,} |")
-    md.append(f"| Win rate global | {_fmt_pct(wr_global)} |")
-    md.append(f"| Revenue total | {_fmt_money(revenue_total)} |")
-    md.append(f"| Competidores distintos | {n_competidores:,} |")
-    md.append(f"| Compradores distintos | {n_compradores:,} |\n")
-
-    # ── 1. Producto ──────────────────────────────────────────────────────
-    md.append("## 1. Portafolio (Producto)\n")
+    md.append(f"## {prefix} Portafolio (Producto)\n")
     md.append(
         "Mide el **desempeño estructural** de Promedon por categoría de producto. "
         "La unidad de análisis es `producto_canonico` y la métrica clave es el "
@@ -586,18 +571,17 @@ def build_reporte_md(df_base: pd.DataFrame,
             "rediseñar la propuesta de valor. Top 10 por revenue (cuando lo hay):",
         ),
     }
-    def _wavg(s_val: pd.Series, s_w: pd.Series):
-        s_val = s_val.fillna(0)
-        w = s_w.fillna(0)
-        total_w = float(w.sum())
-        return float((s_val * w).sum() / total_w) if total_w else None
 
     for seg in ["Core", "Débil", "Crítico"]:
         titulo, descripcion = p_explicaciones[seg]
         full = t_prod[t_prod["segmento"] == seg].sort_values("revenue", ascending=False)
+        md.append(f"### {titulo}\n")
+        md.append(descripcion + "\n")
+        if full.empty:
+            md.append("_(sin productos en este segmento)_\n")
+            continue
         top = full.head(10)
         rest = full.iloc[10:]
-
         rows = top.copy()
         if not rest.empty:
             otros_ofertas = int(rest["ofertas"].sum())
@@ -623,9 +607,6 @@ def build_reporte_md(df_base: pd.DataFrame,
             "ticket_promedio": _wavg(full["ticket_promedio"], full["ofertas"]),
             "n_competidores_promedio": _wavg(full["n_competidores_promedio"], full["ofertas"]),
         }
-
-        md.append(f"### {titulo}\n")
-        md.append(descripcion + "\n")
         md.append(_md_table(rows, {
             "producto_canonico": ("Producto", None),
             "ofertas": ("Ofertas", lambda v: f"{int(v):,}"),
@@ -634,9 +615,12 @@ def build_reporte_md(df_base: pd.DataFrame,
             "ticket_promedio": ("Ticket prom.", _fmt_money),
             "n_competidores_promedio": ("Competidores promedio por item", lambda v: f"{v:.1f}" if pd.notna(v) else "-"),
         }, max_rows=len(rows), totals=totals))
+    return md
 
-    # ── 2. Precio ────────────────────────────────────────────────────────
-    md.append("## 2. Precio (Pricing power)\n")
+
+def _seccion_precio(t_prec: pd.DataFrame, prefix: str = "2") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Precio (Pricing power)\n")
     md.append(
         "Analiza el **posicionamiento relativo** del precio Promedon dentro de "
         "cada item respecto a sus competidores. La unidad es el item; cada fila "
@@ -679,8 +663,6 @@ def build_reporte_md(df_base: pd.DataFrame,
         "p50": ("P50 comp.", _fmt_money),
         "gap": ("Gap", _fmt_pct),
     }
-    # PR1, PR3: outlier = precio < p25/5 (extremo bajo).
-    # PR2:      outlier = precio > 5·p25 (extremo alto).
     pr_config = {
         "PR1": {"ascending": True,  "ext_label": "precio < p25/5",
                 "ext_mask": lambda s: s["precio_promedon"] < s["p25"] / 5},
@@ -694,6 +676,10 @@ def build_reporte_md(df_base: pd.DataFrame,
                          ("PR3: barato y pierde (señal no-precio)", "PR3 — barato y pierde (señal no-precio)")]:
         cfg = pr_config[diag[:3]]
         sub = t_prec[t_prec["diagnostico"] == diag].copy()
+        md.append(f"### {titulo} (top 10)\n")
+        if sub.empty:
+            md.append("_(sin items en este diagnóstico)_\n")
+            continue
         mask_ext = cfg["ext_mask"](sub)
         sub_extreme = sub[mask_ext]
         sub_show = sub[~mask_ext].sort_values("gap", ascending=cfg["ascending"])
@@ -703,8 +689,6 @@ def build_reporte_md(df_base: pd.DataFrame,
 
         rows = top.copy()
         if not rest.empty:
-            # dropna(axis=1, how='all') evita FutureWarning de pandas al concatenar
-            # filas con columnas todas-NA (precio/p25/p50 quedan en NaN tras concat).
             otros = pd.DataFrame([{
                 "id_licitacion": f"Otros ({len(rest)} items, {n_extreme} con {cfg['ext_label']})",
                 "producto_canonico": "—",
@@ -715,11 +699,14 @@ def build_reporte_md(df_base: pd.DataFrame,
             "id_licitacion": f"Total: {len(sub):,} items",
             "gap": sub["gap"].median(),
         }
-        md.append(f"### {titulo} (top 10)\n")
         md.append(_md_table(rows, pr_cols, max_rows=len(rows), totals=totals))
+    return md
 
-    # ── 3. Competencia ───────────────────────────────────────────────────
-    md.append("## 3. Competencia (head-to-head)\n")
+
+def _seccion_competencia(t_comp: pd.DataFrame, n_ofertas_promedon: int,
+                         prefix: str = "3") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Competencia (head-to-head)\n")
     md.append(
         "Mide la **dinámica directa** contra cada competidor en los items donde "
         "ambos ofertaron. Para cada par (Promedon, competidor) se calculan "
@@ -744,7 +731,6 @@ def build_reporte_md(df_base: pd.DataFrame,
                      ofertas=("items_compartidos", "sum"))
                 .reset_index()
                 .sort_values("ofertas", ascending=False))
-    # Fila Promedon para que el total cuadre con Ofertas Totales del resumen.
     seg_comp = pd.concat([seg_comp, pd.DataFrame([{
         "cuadrante": "Promedon (referencia)",
         "n_competidores": pd.NA,
@@ -775,7 +761,10 @@ def build_reporte_md(df_base: pd.DataFrame,
     cuad_orden = ["pricing problema", "problema no-precio", "premium real", "eficiencia"]
     for cuad in cuad_orden:
         sub = t_comp[t_comp["cuadrante"] == cuad].sort_values("items_compartidos", ascending=False)
+        md.append(f"### Top en \"{cuad}\" (top 10)\n")
+        md.append(cuad_explicaciones[cuad] + "\n")
         if sub.empty:
+            md.append("_(sin competidores en este cuadrante)_\n")
             continue
         n_total = len(sub)
         items_total = int(sub["items_compartidos"].sum())
@@ -792,12 +781,13 @@ def build_reporte_md(df_base: pd.DataFrame,
             "nombre_proveedor": f"Total {cuad}: {n_total:,} competidores",
             "items_compartidos": items_total,
         }
-        md.append(f"### Top en \"{cuad}\" (top 10)\n")
-        md.append(cuad_explicaciones[cuad] + "\n")
         md.append(_md_table(rows, cuad_cols, max_rows=len(rows), totals=totals))
+    return md
 
-    # ── 4. Comprador ─────────────────────────────────────────────────────
-    md.append("## 4. Compradores (cuentas)\n")
+
+def _seccion_comprador(t_compr: pd.DataFrame, prefix: str = "4") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Compradores (cuentas)\n")
     md.append(
         "Mide el **comportamiento de demanda** por organismo comprador. La "
         "unidad es el `rut_comprador`; se agrega ofertas, win rate, revenue, "
@@ -844,6 +834,10 @@ def build_reporte_md(df_base: pd.DataFrame,
                 "Expandir (alta conv + bajo vol)",
                 "Intervenir (baja conv + alto vol)"]:
         sub = t_compr[t_compr["segmento"] == seg].sort_values("revenue", ascending=False)
+        md.append(f"### {seg} (top 10)\n")
+        if sub.empty:
+            md.append("_(sin compradores en este segmento)_\n")
+            continue
         n_total = int(sub["rut_comprador"].count())
         top = sub.head(10)
         rest = sub.iloc[10:]
@@ -869,15 +863,19 @@ def build_reporte_md(df_base: pd.DataFrame,
             "win_rate": (sub_ganadas / sub_ofertas) if sub_ofertas else float("nan"),
             "revenue": float(sub["revenue"].sum()),
         }
-        md.append(f"### {seg} (top 10)\n")
         md.append(_md_table(rows, seg_cols, max_rows=len(rows), totals=totals))
+    return md
 
-    # ── Recomendaciones consolidadas ─────────────────────────────────────
-    md.append("## 5. Recomendaciones consolidadas\n")
+
+def _seccion_recomendaciones(t_prod: pd.DataFrame, t_prec: pd.DataFrame,
+                             t_comp: pd.DataFrame, t_compr: pd.DataFrame,
+                             prefix: str = "5") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Recomendaciones consolidadas\n")
     md.append(
         "Síntesis cuantitativa de los cortes anteriores: un conteo por acción "
         "en cada dimensión. **Las recomendaciones no son nuevas conclusiones**, "
-        "sino la combinación trazable de los segmentos de las secciones 1–4. "
+        "sino la combinación trazable de los segmentos de las secciones previas. "
         "Cada item/producto/competidor/cuenta listado aquí puede reconstruirse "
         "filtrando la tabla maestra correspondiente.\n"
     )
@@ -908,6 +906,137 @@ def build_reporte_md(df_base: pd.DataFrame,
     md.append(f"- Defender {n_replicar} cuentas Replicar")
     md.append(f"- Expandir {n_expandir} cuentas Expandir")
     md.append(f"- Intervenir {n_intervenir} cuentas Intervenir\n")
+    return md
+
+
+def build_reporte_md(df_base: pd.DataFrame,
+                     rut_promedon: str) -> str:
+    promedon = df_base[df_base["rut_proveedor"] == rut_promedon]
+    n_ofertas_totales = len(df_base)
+    n_ofertas_promedon = len(promedon)
+    n_adjudicadas = int(promedon["flag_adjudicado"].sum())
+    wr_global = n_adjudicadas / n_ofertas_promedon if n_ofertas_promedon else 0
+    revenue_total = float((promedon["flag_adjudicado"].fillna(0)
+                           * promedon["num_unidades"].fillna(0)
+                           * promedon["precio_unitario"].fillna(0)).sum())
+    n_competidores = df_base.loc[df_base["rut_proveedor"] != rut_promedon, "rut_proveedor"].nunique()
+    n_compradores = df_base["rut_comprador"].nunique()
+    fecha = datetime.now().strftime("%Y-%m-%d")
+
+    md = []
+    md.append(f"# Diagnóstico Promedon — ChileCompra\n")
+    md.append(f"**RUT:** {rut_promedon}  ")
+    md.append(f"**Fecha:** {fecha}  ")
+    md.append(f"**Modelo:** item × proveedor (4 dimensiones × 2 segmentos de producto)\n")
+
+    # ── Resumen ejecutivo ────────────────────────────────────────────────
+    md.append("## Resumen ejecutivo\n")
+    md.append(
+        "Foto agregada del universo competitivo donde Promedon participa. "
+        "El universo es el conjunto de items (licitación–producto) en los que "
+        "Promedon presentó al menos una oferta; cada item se observa con todas "
+        "las ofertas competidoras. Las métricas a continuación dimensionan la "
+        "actividad y sirven de referencia (denominador) para los cortes posteriores.\n"
+    )
+    md.append("| Métrica | Valor |")
+    md.append("| --- | --- |")
+    md.append(f"| Ofertas Totales (Promedon + competencia) | {n_ofertas_totales:,} |")
+    md.append(f"| Ofertas Promedon | {n_ofertas_promedon:,} |")
+    md.append(f"| Adjudicaciones | {n_adjudicadas:,} |")
+    md.append(f"| Win rate global | {_fmt_pct(wr_global)} |")
+    md.append(f"| Revenue total | {_fmt_money(revenue_total)} |")
+    md.append(f"| Competidores distintos | {n_competidores:,} |")
+    md.append(f"| Compradores distintos | {n_compradores:,} |\n")
+
+    # ── Segmentación de productos por intensidad competitiva ────────────
+    t_prod_global = build_tabla_producto(df_base, rut_promedon)
+    seg_map, threshold = _segmentar_productos(t_prod_global)
+    df_seg = df_base.copy()
+    df_seg["producto_segmento"] = df_seg["producto_canonico"].map(seg_map)
+
+    md.append("## Segmentación por intensidad competitiva\n")
+    md.append(
+        "Antes de mirar las 4 dimensiones, cada producto se etiqueta como "
+        "**A) Alta competencia (commodities)** o **B) Baja competencia "
+        "(especializados)** según cuántos competidores enfrenta Promedon en "
+        "promedio por item:\n"
+        f"- **A — Alta competencia (commodities):** `n_competidores_promedio ≥ {threshold:.2f}` (mediana del universo).\n"
+        f"- **B — Baja competencia (especializados):** `n_competidores_promedio < {threshold:.2f}`.\n\n"
+        "Productos sin valor de competidores se asignan a B. Las 4 dimensiones se "
+        "rehacen completas dentro de cada segmento — los thresholds locales "
+        "(mediana de volumen/win rate de compradores, percentil 25 de precio) se "
+        "recalculan independientemente para A y para B.\n"
+    )
+
+    rows_split = []
+    for label, label_titulo in [("A", "A — Alta competencia (commodities)"),
+                                ("B", "B — Baja competencia (especializados)")]:
+        sub = df_seg[df_seg["producto_segmento"] == label]
+        sub_p = sub[sub["rut_proveedor"] == rut_promedon]
+        rev = float((sub_p["flag_adjudicado"].fillna(0)
+                     * sub_p["num_unidades"].fillna(0)
+                     * sub_p["precio_unitario"].fillna(0)).sum())
+        rows_split.append({
+            "segmento": label_titulo,
+            "n_productos": sum(1 for v in seg_map.values() if v == label),
+            "ofertas_promedon": int(len(sub_p)),
+            "revenue": rev,
+        })
+    df_split = pd.DataFrame(rows_split)
+    md.append("### Distribución de productos A vs B\n")
+    md.append(_md_table(df_split, {
+        "segmento": ("Segmento", None),
+        "n_productos": ("# productos", lambda v: f"{int(v):,}"),
+        "ofertas_promedon": ("Ofertas Promedon", lambda v: f"{int(v):,}"),
+        "revenue": ("Revenue", _fmt_money),
+    }, max_rows=len(df_split), totals={
+        "n_productos": int(df_split["n_productos"].sum()),
+        "ofertas_promedon": int(df_split["ofertas_promedon"].sum()),
+        "revenue": float(df_split["revenue"].sum()),
+    }))
+
+    descripciones = {
+        "A": (
+            "A. Alta competencia (commodities)",
+            "Productos donde Promedon enfrenta varios proveedores por item. El "
+            "precio relativo es la palanca dominante: gaps pequeños suelen "
+            "explicar las pérdidas y el margen se decide en pocos puntos "
+            "porcentuales. La estrategia natural es eficiencia operacional + "
+            "ajuste fino de pricing.",
+        ),
+        "B": (
+            "B. Baja competencia (especializados)",
+            "Productos donde Promedon es uno de pocos proveedores cualificados. "
+            "El patrón típico es **PR3 dominante** (perdimos aun siendo más "
+            "baratos), señal de que el problema no es precio sino especificación "
+            "técnica, marca, evaluación clínica o relación con el comprador. La "
+            "estrategia natural es palancas no-precio: portafolio, certificaciones, "
+            "foco en cuentas con afinidad.",
+        ),
+    }
+
+    for seg_label in ["A", "B"]:
+        sub_base = df_seg[df_seg["producto_segmento"] == seg_label]
+        if sub_base.empty:
+            continue
+        titulo, descripcion = descripciones[seg_label]
+        sub_promedon = sub_base[sub_base["rut_proveedor"] == rut_promedon]
+
+        t_prod = build_tabla_producto(sub_base, rut_promedon)
+        t_prec = build_tabla_precio(sub_base, rut_promedon)
+        t_comp = build_tabla_competencia(sub_base, rut_promedon)
+        t_compr = build_tabla_comprador(sub_base, rut_promedon)
+
+        md.append("---\n")
+        md.append(f"# {titulo}\n")
+        md.append(descripcion + "\n")
+        md.extend(_seccion_producto(t_prod, prefix=f"{seg_label}.1"))
+        md.extend(_seccion_precio(t_prec, prefix=f"{seg_label}.2"))
+        md.extend(_seccion_competencia(t_comp, len(sub_promedon),
+                                       prefix=f"{seg_label}.3"))
+        md.extend(_seccion_comprador(t_compr, prefix=f"{seg_label}.4"))
+        md.extend(_seccion_recomendaciones(t_prod, t_prec, t_comp, t_compr,
+                                           prefix=f"{seg_label}.5"))
 
     return "\n".join(md)
 
@@ -920,12 +1049,7 @@ def main():
     df.to_csv(os.path.join(OUTPUT_DIR, "matriz_base.csv"), index=False)
     print(f"  matriz_base: {len(df):,} filas (item × proveedor)")
 
-    t_prod = build_tabla_producto(df, PROMEDON_RUT)
-    t_prec = build_tabla_precio(df, PROMEDON_RUT)
-    t_comp = build_tabla_competencia(df, PROMEDON_RUT)
-    t_compr = build_tabla_comprador(df, PROMEDON_RUT)
-
-    md = build_reporte_md(df, t_prod, t_prec, t_comp, t_compr, PROMEDON_RUT)
+    md = build_reporte_md(df, PROMEDON_RUT)
     md_path = os.path.join(OUTPUT_DIR, "diagnostico_promedon.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md)
