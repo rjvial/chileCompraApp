@@ -4,6 +4,160 @@ Matriz base item × proveedor — Promedon en ChileCompra.
 Genera UN SOLO CSV con granularidad (item × proveedor).
 Universo: items donde Promedon (A) participa. Por cada item, una fila
 por cada proveedor (incluido A) que ofertó en ese item.
+
+═══════════════════════════════════════════════════════════════════════════
+MODELO ANALÍTICO
+═══════════════════════════════════════════════════════════════════════════
+
+1) Definir el modelo analítico (antes de cualquier tabla)
+---------------------------------------------------------
+Unidad base única:
+    item × proveedor (licitación–producto–oferta)
+
+Y declarar explícitamente las 4 dimensiones independientes:
+    - Producto     → desempeño estructural (WR)
+    - Precio       → posicionamiento relativo
+    - Competencia  → dinámica head-to-head
+    - Comprador    → comportamiento de demanda
+
+Todo el análisis cuelga de esto. No hay eje dominante.
+
+
+2) Construir 4 "tablas maestras" (una por dimensión)
+----------------------------------------------------
+(A) Tabla Producto (portafolio)
+    Agregación: producto_canonico
+    Columnas mínimas:
+        - ofertas
+        - adjudicaciones
+        - revenue
+        - win_rate
+        - ticket promedio
+        - nº competidores promedio
+        - varianza de precios
+    👉 Esta reemplaza la tabla WR como base real.
+
+(B) Tabla Precio (nivel item)
+    Columnas:
+        - precio_promedon
+        - p25_competidores
+        - p50, p75
+        - ranking de precio
+        - gap (precio_promedon vs p25 competidores)
+
+(C) Tabla Competencia (head-to-head)
+    Agregación: competidor
+        - items compartidos
+        - % victorias Promedon
+        - % victorias competidor
+        - mediana sobreprecio
+        - veces más caro / más barato
+
+(D) Tabla Comprador (cuentas)
+    Agregación: comprador
+        - ofertas
+        - win rate
+        - revenue
+        - ticket promedio
+        - mix de productos
+
+
+3) Generar diagnósticos por dimensión (sin mezclar)
+---------------------------------------------------
+3.1 Portafolio (Producto)
+    Aquí sí usas WR, pero bien definido.
+    Segmentación:
+        - Core:        WR ≥ 40%
+        - Competitivo: 20–40%
+        - Débil:       5–20%
+        - Crítico:     < 5%
+    Y agregas volumen (ofertas) como segunda variable.
+    👉 Esto produce:
+        P1: escalar core
+        P2: optimizar débil
+        P3: eliminar crítico
+    (esto reemplaza R2 y R3, pero más limpio)
+
+3.2 Precio (Pricing power)
+    No depende del WR.
+    Segmentos:
+        - Subcotizado:           ganamos con gap < 0
+        - Sobreprecio perdedor:  perdemos con gap > 0
+        - Barato y pierde:       perdemos con gap ≤ 0
+    Esto produce:
+        PR1: subir precios
+        PR2: bajar precios selectivamente
+        PR3: no tocar precio
+
+3.3 Competencia
+    Clasificación por cuadrantes:
+
+                |Ganas           |Pierdes
+    Más caro    |premium real    |pricing problema
+    Más barato  |eficiencia      |problema no-precio
+
+    👉 Esto genera directamente R4 / R5 pero sin ambigüedad.
+
+3.4 Compradores
+    Segmentación 2D:
+        eje X: volumen (ofertas)
+        eje Y: win rate
+    Cuadrantes:
+        - Alta conv + alto volumen → replicar
+        - Alta conv + bajo volumen → expandir
+        - Baja conv + alto volumen → intervenir
+        - Baja conv + bajo volumen → ignorar
+    👉 Esto reemplaza R7 / R8 de forma más clara.
+
+
+4) Recién aquí generas recomendaciones
+--------------------------------------
+No defines R1–R9 antes. Las construyes desde los cortes.
+
+Ejemplo limpio:
+    Portafolio
+        - Salir de X productos (WR < 5% + volumen alto)
+        - Reducir foco en Y productos (5–20%)
+    Pricing
+        - Subir precios en N items (gap negativo validado)
+        - Ajustar a la baja en M frentes competitivos
+    Competencia
+        - Estrategia precio contra A, B, C
+        - Estrategia no-precio contra D, E
+    Cuentas
+        - Defender top 20 licitaciones
+        - Replicar 15 cuentas
+        - Intervenir 13 cuentas
+
+
+5) Regla clave de diseño
+------------------------
+Cada output debe cumplir:
+    "puedo reconstruir este resultado con un query claro desde una tabla base"
+Si no puedes, está mal definido.
+
+
+6) Qué cambia respecto a la versión previa
+------------------------------------------
+Antes:
+    - WR como eje implícito
+    - Rs mezclando niveles
+    - narrativa fuerte, trazabilidad débil
+Después:
+    - 4 ejes explícitos
+    - cada insight vive en su dimensión
+    - recomendaciones = combinación de cortes
+
+
+7) Insight final
+----------------
+El error original no es técnico, es de modelado:
+    se trató de forzar un problema multidimensional en una sola tabla (WR)
+
+La versión ordenada reconoce que:
+    - no hay una vista única correcta
+    - hay que construir varias vistas coherentes y luego combinarlas
+═══════════════════════════════════════════════════════════════════════════
 """
 import os
 from datetime import datetime
@@ -71,7 +225,8 @@ OPTIONAL MATCH (it)-[:REQUIERE_ITEM]-(lic:Licitacion)
 OPTIONAL MATCH (lic)-[:PUBLICA]-(uc:UnidadDeCompra)-[:TIENE_UNIDAD]-(org:Organismo)
 OPTIONAL MATCH (it)-[:ES_PRODUCTO_GENERICO]-(pc:ProductoCanonico)
 
-RETURN lic.id_licitacion                   AS id_licitacion,
+RETURN elementId(it)                       AS item_key,
+       lic.id_licitacion                   AS id_licitacion,
        lic.fecha_cierre                    AS fecha_cierre,
        lic.year                            AS anio,
        lic.month                           AS mes,
@@ -87,897 +242,990 @@ RETURN lic.id_licitacion                   AS id_licitacion,
 """
 
 
-# ─── ANÁLISIS DERIVADOS (todo desde matriz_base) ─────────────────────────
-ITEM_KEY = ["id_licitacion", "producto_canonico"]
-SIN_PRODUCTO = "__SIN_PRODUCTO__"
 
-# Partición de la tabla maestra por Rango WR a nivel producto.
-WR_BINS = [
-    ("40% <= WR",        0.40, 1.01),
-    ("20% <= WR < 40%",  0.20, 0.40),
-    ("5% <= WR < 20%",   0.05, 0.20),
-    ("0% <= WR < 5%",    0.00, 0.05),
-]
-TOTAL_WR_LABEL = "Total"
-
-# ─── UMBRALES PARA RECOMENDACIONES ───────────────────────────────────────
-# Alineados con los bins de la tabla maestra (Total general — referencia):
-# R2 = bin "5% <= WR < 20%", R3 ⊂ "0% <= WR < 5%".
-WR_DILUCION_MIN          = 0.05   # bin "5% <= WR < 20%": cota inferior
-WR_DILUCION_MAX          = 0.20   # bin "5% <= WR < 20%": cota superior
-OFERTAS_ABANDONO_MIN     = 10
-WR_ABANDONO_MAX          = 0.05   # bin "0% <= WR < 5%"
-SOBREPRECIO_CARO_MIN     = 0.05   # +5% ⇒ frente PRECIO
-SOBREPRECIO_BARATO_MAX   = -0.05  # −5% ⇒ frente NO-PRECIO
-WR_CUENTA_MODELO_FACTOR  = 1.5    # WR > 1.5× WR agregado
-OFERTAS_CUENTA_MODELO    = 20
-OFERTAS_CUENTA_EXPANDIR  = 50
-H2H_TOP_N                = 15
-PRECIO_MIN_COMPETIDOR    = 10     # filtra ofertas ruido (precios $0/$1) en CLP
-MIN_COMPETIDORES_HEADROOM = 3     # ≥3 competidores válidos ⇒ señal robusta para R9
-HEADROOM_CAP_PCT         = 1.0    # cap a +100%: por encima es outlier o mismatch de producto
-
-
-def derive_revenue(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["producto_canonico"] = df["producto_canonico"].fillna(SIN_PRODUCTO)
-    df["revenue_estimado_clp"] = (
-        df["num_unidades"].fillna(0).astype("int64")
-        * df["precio_unitario"].fillna(0).astype("int64")
-    )
-    df["revenue_adj_clp"] = df["revenue_estimado_clp"] * df["flag_adjudicado"]
-    return df
-
-
-def a2_competidores_top(df_c: pd.DataFrame, top: int = 25) -> pd.DataFrame:
-    df_w = df_c[df_c["flag_adjudicado"] == 1]
-    g = df_w.groupby(["rut_proveedor", "nombre_proveedor"], dropna=False).agg(
-        items_ganados=("flag_adjudicado", "size"),
-        revenue_capturado_clp=("revenue_estimado_clp", "sum"),
-    ).reset_index().sort_values("revenue_capturado_clp", ascending=False)
-    return g.head(top)
-
-
-def a3_portafolio_productos(df_p: pd.DataFrame) -> pd.DataFrame:
-    g = df_p.groupby("producto_canonico", dropna=False).agg(
-        ofertas=("flag_adjudicado", "size"),
-        ganadas=("flag_adjudicado", "sum"),
-        revenue_clp=("revenue_adj_clp", "sum"),
-    ).reset_index()
-    g["win_rate"] = (g["ganadas"] / g["ofertas"]).round(3)
-    return g.sort_values("revenue_clp", ascending=False)
-
-
-def a4_compradores_top(df_p: pd.DataFrame, top: int = 25) -> pd.DataFrame:
-    g = df_p.groupby(["rut_comprador", "nombre_comprador"], dropna=False).agg(
-        ofertas=("flag_adjudicado", "size"),
-        ganadas=("flag_adjudicado", "sum"),
-        revenue_clp=("revenue_adj_clp", "sum"),
-    ).reset_index()
-    g["win_rate"] = (g["ganadas"] / g["ofertas"]).round(3)
-    return g.sort_values("revenue_clp", ascending=False).head(top)
-
-
-def _winner_table(df: pd.DataFrame) -> pd.DataFrame:
-    df_w = df[df["flag_adjudicado"] == 1][
-        ITEM_KEY + ["rut_proveedor", "nombre_proveedor",
-                    "precio_unitario", "num_unidades", "revenue_estimado_clp"]
-    ].rename(columns={
-        "rut_proveedor":        "rut_ganador",
-        "nombre_proveedor":     "nombre_ganador",
-        "precio_unitario":      "precio_ganador",
-        "num_unidades":         "num_unidades_ganador",
-        "revenue_estimado_clp": "revenue_ganador_clp",
-    })
-    return df_w.drop_duplicates(ITEM_KEY)
-
-
-def _promedon_prices(df: pd.DataFrame) -> pd.DataFrame:
-    df_p = df[df["rut_proveedor"] == PROMEDON_RUT]
-    return df_p.groupby(ITEM_KEY, dropna=False, as_index=False).agg(
-        precio_promedon=("precio_unitario", "mean"),
-        promedon_gana=("flag_adjudicado", "max"),
-    )
-
-
-def a10_head_to_head(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
+# ═════════════════════════════════════════════════════════════════════════
+# (A) TABLA PRODUCTO — agregación por producto_canonico
+# ═════════════════════════════════════════════════════════════════════════
+def build_tabla_producto(df_base: pd.DataFrame, rut_promedon: str) -> pd.DataFrame:
     """
-    Comparación directa Promedon vs sus principales competidores.
-    Universo: items donde AMBOS (Promedon y el competidor) ofertaron.
-    Para cada competidor calcula:
-      - cuántas veces gana Promedon, el competidor, o un tercero
-      - mediana sobreprecio Promedon vs competidor
-      - cuántos items Promedon ofertó más caro / más barato que el competidor
-    Top competidores se selecciona por revenue capturado en espacio Promedon.
+    Métricas a nivel producto_canonico (sólo ofertas de Promedon):
+        ofertas, adjudicaciones, revenue, win_rate, ticket_promedio,
+        n_competidores_promedio, var_precios_promedio.
+    Segmentación: Core (≥40%) / Competitivo (20–40%) / Débil (5–20%) / Crítico (<5%).
+    Diagnóstico: P1 escalar core / P2 optimizar débil / P3 eliminar crítico.
     """
-    df_c = df[df["rut_proveedor"] != PROMEDON_RUT]
-    top_comp = a2_competidores_top(df_c, top=top_n)
-    top_ruts = top_comp[["rut_proveedor", "nombre_proveedor"]].drop_duplicates()
+    base = df_base.copy()
+    base["revenue"] = (base["flag_adjudicado"].fillna(0)
+                       * base["num_unidades"].fillna(0)
+                       * base["precio_unitario"].fillna(0))
+    base["ticket"] = base["num_unidades"].fillna(0) * base["precio_unitario"].fillna(0)
 
-    df_p_items = df[df["rut_proveedor"] == PROMEDON_RUT].groupby(
-        ITEM_KEY, dropna=False, as_index=False
-    ).agg(precio_promedon=("precio_unitario", "mean"))
+    item_stats = (base.groupby("item_key")
+                  .agg(n_competidores=("rut_proveedor", lambda s: s.nunique() - 1),
+                       var_precio=("precio_unitario", "var"))
+                  .reset_index())
 
-    winners = _winner_table(df)[ITEM_KEY + ["rut_ganador"]]
+    promedon = (base[base["rut_proveedor"] == rut_promedon]
+                .merge(item_stats, on="item_key", how="left"))
 
-    rows = []
-    for _, comp in top_ruts.iterrows():
-        rut_x, nombre_x = comp["rut_proveedor"], comp["nombre_proveedor"]
-        df_x = df[df["rut_proveedor"] == rut_x].groupby(
-            ITEM_KEY, dropna=False, as_index=False
-        ).agg(precio_competidor=("precio_unitario", "mean"))
+    out = (promedon.groupby("producto_canonico", dropna=False)
+           .agg(ofertas=("flag_adjudicado", "size"),
+                adjudicaciones=("flag_adjudicado", "sum"),
+                revenue=("revenue", "sum"),
+                win_rate=("flag_adjudicado", "mean"),
+                ticket_promedio=("ticket", "mean"),
+                n_competidores_promedio=("n_competidores", "mean"),
+                var_precios_promedio=("var_precio", "mean"))
+           .reset_index())
 
-        h2h = df_p_items.merge(df_x, on=ITEM_KEY, how="inner").merge(
-            winners, on=ITEM_KEY, how="left"
-        )
-        n = len(h2h)
-        if n == 0:
-            continue
+    bins = [-0.01, 0.05, 0.20, 0.40, 1.01]
+    labels = ["Crítico", "Débil", "Competitivo", "Core"]
+    out["segmento"] = pd.cut(out["win_rate"], bins=bins, labels=labels)
 
-        wins_p = int((h2h["rut_ganador"] == PROMEDON_RUT).sum())
-        wins_x = int((h2h["rut_ganador"] == rut_x).sum())
-        n_winner = int(h2h["rut_ganador"].notna().sum())
-        wins_3 = n_winner - wins_p - wins_x
-        sin_adj = n - n_winner
+    diag = {"Core": "P1: escalar core",
+            "Débil": "P2: optimizar débil",
+            "Crítico": "P3: eliminar crítico",
+            "Competitivo": "mantener"}
+    out["diagnostico"] = out["segmento"].map(diag)
 
-        h2h["sobreprecio_pct"] = (
-            (h2h["precio_promedon"] - h2h["precio_competidor"])
-            / h2h["precio_competidor"]
-        )
-        med_sobre = h2h["sobreprecio_pct"].median()
-        p_caro = int((h2h["sobreprecio_pct"] > 0).sum())
-        p_barato = int((h2h["sobreprecio_pct"] < 0).sum())
-
-        rows.append({
-            "rut_competidor":           rut_x,
-            "nombre_competidor":        nombre_x,
-            "items_h2h":                n,
-            "items_con_adjudicacion":   n_winner,
-            "promedon_gana":            wins_p,
-            "promedon_gana_pct":        wins_p / n_winner if n_winner else 0,
-            "competidor_gana":          wins_x,
-            "competidor_gana_pct":      wins_x / n_winner if n_winner else 0,
-            "tercero_gana":             wins_3,
-            "tercero_gana_pct":         wins_3 / n_winner if n_winner else 0,
-            "items_sin_adjudicar":      sin_adj,
-            "mediana_sobreprecio_pct":  med_sobre,
-            "items_promedon_mas_caro":  p_caro,
-            "items_promedon_mas_barato": p_barato,
-        })
-    return pd.DataFrame(rows)
+    return out.sort_values("revenue", ascending=False)
 
 
-def a9_items_criticos(df: pd.DataFrame, top: int = 100) -> pd.DataFrame:
-    df_pp = _promedon_prices(df)
-    df_pp = df_pp[df_pp["promedon_gana"] == 0]
-    df_w = _winner_table(df)
-    df_w = df_w[df_w["rut_ganador"] != PROMEDON_RUT]
-    df_j = df_w.merge(df_pp, on=ITEM_KEY, how="inner")
-    df_j["sobreprecio_pct"] = (
-        (df_j["precio_promedon"] - df_j["precio_ganador"]) / df_j["precio_ganador"]
-    )
-    cols = ITEM_KEY + [
-        "rut_ganador", "nombre_ganador",
-        "num_unidades_ganador", "precio_promedon", "precio_ganador",
-        "sobreprecio_pct", "revenue_ganador_clp",
-    ]
-    return df_j.sort_values("revenue_ganador_clp", ascending=False)[cols].head(top)
-
-
-def a11_pricing_headroom(df: pd.DataFrame) -> pd.DataFrame:
+# ═════════════════════════════════════════════════════════════════════════
+# (B) TABLA PRECIO — nivel item
+# ═════════════════════════════════════════════════════════════════════════
+def build_tabla_precio(df_base: pd.DataFrame, rut_promedon: str) -> pd.DataFrame:
     """
-    Items donde Promedon GANA sub-cotizando — pricing power desaprovechado.
-
-    Universo R9 (con filtros de calidad explícitos):
-      - Promedon adjudicado en el item.
-      - ≥ MIN_COMPETIDORES_HEADROOM competidores con precio_unitario ≥
-        PRECIO_MIN_COMPETIDOR (señal robusta; ≤ 2 competidores se descarta).
-      - 0 < headroom_pct ≤ HEADROOM_CAP_PCT  (excluye outliers / mismatch de
-        producto: > +100% típicamente indica que el "competidor" ofertó otro
-        producto en la misma línea).
-
-    Métricas:
-      - precio_p25_competidor: percentil 25 de las ofertas de competidores
-        válidas. Más robusto que el mínimo: tolera 1-2 outliers a la baja sin
-        distorsionar.
-      - headroom_pct = (precio_p25_competidor − precio_promedon) / precio_promedon.
-        Cota superior conservadora del aumento de precio que aún habría ganado
-        en un tender precio-puro contra el competidor del cuartil bajo.
-      - dinero_dejado_clp = (precio_p25_competidor − precio_promedon) × num_unidades.
+    Métricas a nivel item (sólo items donde Promedon ofertó):
+        precio_promedon, p25/p50/p75 competidores, ranking_precio,
+        gap = (precio_promedon - p25_comp) / p25_comp.
+    Diagnóstico: PR1 subir / PR2 bajar / PR3 barato y pierde / OK.
     """
-    df_p_win = df[(df["rut_proveedor"] == PROMEDON_RUT) & (df["flag_adjudicado"] == 1)]
-    df_p_win = df_p_win.groupby(ITEM_KEY, dropna=False, as_index=False).agg(
-        precio_promedon=("precio_unitario", "mean"),
-        num_unidades=("num_unidades", "sum"),
-        revenue_promedon_clp=("revenue_estimado_clp", "sum"),
-    )
+    base = df_base.copy()
 
-    df_comp = df[
-        (df["rut_proveedor"] != PROMEDON_RUT)
-        & (df["precio_unitario"] >= PRECIO_MIN_COMPETIDOR)
-    ]
-    df_comp_agg = df_comp.groupby(ITEM_KEY, dropna=False, as_index=False).agg(
-        precio_min_competidor=("precio_unitario", "min"),
-        precio_p25_competidor=("precio_unitario", lambda s: s.quantile(0.25)),
-        n_competidores=("rut_proveedor", "nunique"),
-    )
+    promedon = (base[base["rut_proveedor"] == rut_promedon]
+                [["item_key", "id_licitacion", "producto_canonico", "rut_comprador",
+                  "precio_unitario", "num_unidades", "flag_adjudicado",
+                  "precio_unitario_ganador"]]
+                .rename(columns={"precio_unitario": "precio_promedon",
+                                 "flag_adjudicado": "promedon_gano"}))
 
-    df_j = df_p_win.merge(df_comp_agg, on=ITEM_KEY, how="inner")
-    df_j = df_j[df_j["precio_promedon"] > 0]
-    df_j = df_j[df_j["n_competidores"] >= MIN_COMPETIDORES_HEADROOM]
-    df_j["headroom_pct"] = (
-        (df_j["precio_p25_competidor"] - df_j["precio_promedon"])
-        / df_j["precio_promedon"]
-    )
-    df_j = df_j[
-        (df_j["headroom_pct"] > 0) & (df_j["headroom_pct"] <= HEADROOM_CAP_PCT)
-    ].copy()
-    df_j["dinero_dejado_clp"] = (
-        (df_j["precio_p25_competidor"] - df_j["precio_promedon"])
-        * df_j["num_unidades"].fillna(0)
-    ).astype("int64")
-    return df_j
+    competidores = base[base["rut_proveedor"] != rut_promedon]
+    stats = (competidores.groupby("item_key")["precio_unitario"]
+             .agg(p25=lambda s: s.quantile(0.25),
+                  p50="median",
+                  p75=lambda s: s.quantile(0.75))
+             .reset_index())
 
+    out = promedon.merge(stats, on="item_key", how="left")
 
-def data_quality_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Resumen de calidad de datos: qué proporción de la matriz cumple los
-    requisitos para sostener cada análisis. Se materializa como sección
-    explícita en el reporte para que las decisiones de pricing no se
-    tomen sobre un universo sucio.
-    """
-    n_filas = len(df)
-    n_items = df.groupby(ITEM_KEY, dropna=False).ngroups
+    base["precio_rank"] = base.groupby("item_key")["precio_unitario"].rank(method="min")
+    rank = base.loc[base["rut_proveedor"] == rut_promedon, ["item_key", "precio_rank"]]
+    out = out.merge(rank, on="item_key", how="left")
 
-    df_items = df.drop_duplicates(ITEM_KEY)
-    sin_prod_mask = (
-        (df_items["producto_canonico"] == SIN_PRODUCTO)
-        | df_items["producto_canonico"].isna()
-    )
-    n_items_sin_prod = int(sin_prod_mask.sum())
-    pct_sin_prod = n_items_sin_prod / n_items if n_items else 0
+    out["gap"] = (out["precio_promedon"] - out["p25"]) / out["p25"]
 
-    mask_comp = df["rut_proveedor"] != PROMEDON_RUT
-    n_ofertas_comp = int(mask_comp.sum())
-    n_ofertas_comp_ruido = int(
-        (mask_comp & (df["precio_unitario"] < PRECIO_MIN_COMPETIDOR)).sum()
-    )
-    pct_ruido = n_ofertas_comp_ruido / n_ofertas_comp if n_ofertas_comp else 0
+    def diag_precio(r):
+        if r["promedon_gano"] and pd.notna(r["gap"]) and r["gap"] < 0:
+            return "PR1: subir precio (subcotizado)"
+        if not r["promedon_gano"] and pd.notna(r["gap"]) and r["gap"] > 0:
+            return "PR2: bajar precio (sobreprecio perdedor)"
+        if not r["promedon_gano"] and pd.notna(r["gap"]) and r["gap"] <= 0:
+            return "PR3: barato y pierde (señal no-precio)"
+        return "OK"
+    out["diagnostico"] = out.apply(diag_precio, axis=1)
 
-    p_wins = df[(df["rut_proveedor"] == PROMEDON_RUT) & (df["flag_adjudicado"] == 1)]
-    p_wins_items = p_wins.drop_duplicates(ITEM_KEY)
-    n_p_wins = len(p_wins_items)
-
-    df_comp_ok = df[
-        (df["rut_proveedor"] != PROMEDON_RUT)
-        & (df["precio_unitario"] >= PRECIO_MIN_COMPETIDOR)
-    ]
-    comp_count = (
-        df_comp_ok.groupby(ITEM_KEY, dropna=False)["rut_proveedor"]
-        .nunique()
-        .rename("n_comp_validos")
-        .reset_index()
-    )
-    p_with_comp = p_wins_items.merge(comp_count, on=ITEM_KEY, how="left")
-    p_with_comp["n_comp_validos"] = p_with_comp["n_comp_validos"].fillna(0)
-    n_p_con_1 = int((p_with_comp["n_comp_validos"] >= 1).sum())
-    n_p_con_3 = int((p_with_comp["n_comp_validos"] >= MIN_COMPETIDORES_HEADROOM).sum())
-
-    a11 = a11_pricing_headroom(df)
-    n_r9 = len(a11)
-    n_r9_excluidos_outlier = max(n_p_con_3 - n_r9, 0)
-
-    rows = [
-        ("Filas matriz_base (item × proveedor)",            n_filas,                ""),
-        ("Items distintos (licitación × producto)",         n_items,                ""),
-        ("Items SIN producto canónico identificado",        n_items_sin_prod,       f"{pct_sin_prod:.1%}"),
-        ("Ofertas de competidores",                          n_ofertas_comp,         ""),
-        (f"  → con precio < ${PRECIO_MIN_COMPETIDOR} (excluidas como ruido)",
-                                                             n_ofertas_comp_ruido,   f"{pct_ruido:.1%}"),
-        ("Items ganados por Promedon",                       n_p_wins,               ""),
-        ("  → con ≥ 1 competidor válido",                    n_p_con_1,              f"{(n_p_con_1/n_p_wins) if n_p_wins else 0:.1%}"),
-        (f"  → con ≥ {MIN_COMPETIDORES_HEADROOM} competidores válidos (universo bruto R9)",
-                                                             n_p_con_3,              f"{(n_p_con_3/n_p_wins) if n_p_wins else 0:.1%}"),
-        (f"  → excluidos por headroom > {HEADROOM_CAP_PCT:.0%} (outlier / mismatch)",
-                                                             n_r9_excluidos_outlier, ""),
-        ("**Universo final R9 (pricing headroom)**",         n_r9,                   f"{(n_r9/n_p_wins) if n_p_wins else 0:.1%}"),
-    ]
-    return pd.DataFrame(rows, columns=["Métrica", "Valor", "% sobre base"])
-
-
-# ─── RECOMENDACIONES PRESCRIPTIVAS ───────────────────────────────────────
-def build_recomendaciones(df: pd.DataFrame, df_p: pd.DataFrame, df_c: pd.DataFrame) -> dict:
-    """Identifica acciones priorizadas con sus criterios cuantitativos y evidencia."""
-    a3 = a3_portafolio_productos(df_p)
-
-    dilucion_full = a3[
-        (a3["win_rate"] >= WR_DILUCION_MIN)
-        & (a3["win_rate"] < WR_DILUCION_MAX)
-        & (a3["producto_canonico"] != SIN_PRODUCTO)
-    ].sort_values("ofertas", ascending=False)
-    dilucion = dilucion_full.head(20)
-
-    cero_wr_full = a3[
-        (a3["ofertas"] >= OFERTAS_ABANDONO_MIN)
-        & (a3["win_rate"] < WR_ABANDONO_MAX)
-        & (a3["producto_canonico"] != SIN_PRODUCTO)
-    ].sort_values("ofertas", ascending=False)
-    cero_wr = cero_wr_full.head(20)
-
-    h2h = a10_head_to_head(df, top_n=H2H_TOP_N)
-    cols_h2h = [
-        "nombre_competidor", "items_h2h", "items_con_adjudicacion",
-        "promedon_gana", "promedon_gana_pct",
-        "competidor_gana", "competidor_gana_pct",
-        "tercero_gana", "tercero_gana_pct",
-        "mediana_sobreprecio_pct",
-        "items_promedon_mas_caro", "items_promedon_mas_barato",
-    ]
-    h2h_caro = h2h[h2h["mediana_sobreprecio_pct"] > SOBREPRECIO_CARO_MIN].sort_values(
-        "competidor_gana", ascending=False
-    )[cols_h2h]
-    h2h_barato = h2h[h2h["mediana_sobreprecio_pct"] < SOBREPRECIO_BARATO_MAX].sort_values(
-        "competidor_gana", ascending=False
-    )[cols_h2h]
-
-    items_top = a9_items_criticos(df, top=20)
-
-    a4 = a4_compradores_top(df_p, top=100)
-    bm = (df_p["flag_adjudicado"].sum() / len(df_p)) if len(df_p) else 0
-    cuentas_modelo = a4[
-        (a4["ofertas"] >= OFERTAS_CUENTA_MODELO)
-        & (a4["win_rate"] > bm * WR_CUENTA_MODELO_FACTOR)
-    ].sort_values("revenue_clp", ascending=False).head(15)
-    cuentas_expandir = a4[
-        (a4["ofertas"] >= OFERTAS_CUENTA_EXPANDIR)
-        & (a4["win_rate"] < bm)
-    ].sort_values("ofertas", ascending=False).head(15)
-
-    a11_full = a11_pricing_headroom(df)
-    a11_resumen = pd.DataFrame([{
-        "items_subcotizados":      len(a11_full),
-        "productos_afectados":     a11_full["producto_canonico"].nunique() if len(a11_full) else 0,
-        "mediana_headroom_pct":    a11_full["headroom_pct"].median() if len(a11_full) else 0,
-        "promedio_headroom_pct":   a11_full["headroom_pct"].mean()   if len(a11_full) else 0,
-        "dinero_dejado_total_clp": int(a11_full["dinero_dejado_clp"].sum()) if len(a11_full) else 0,
-        "revenue_total_clp":       int(a11_full["revenue_promedon_clp"].sum()) if len(a11_full) else 0,
-    }])
-
-    if len(a11_full):
-        a11_productos = a11_full.groupby("producto_canonico", dropna=False).agg(
-            items_subcotizados=("headroom_pct", "size"),
-            mediana_headroom_pct=("headroom_pct", "median"),
-            mediana_precio_promedon=("precio_promedon", "median"),
-            mediana_precio_p25_competidor=("precio_p25_competidor", "median"),
-            dinero_dejado_clp=("dinero_dejado_clp", "sum"),
-            revenue_capturado_clp=("revenue_promedon_clp", "sum"),
-        ).reset_index().sort_values("dinero_dejado_clp", ascending=False).head(20)
-        a11_productos = a11_productos[
-            a11_productos["producto_canonico"] != SIN_PRODUCTO
-        ]
-    else:
-        a11_productos = pd.DataFrame()
-
-    a11_top_items = a11_full.sort_values("dinero_dejado_clp", ascending=False).head(15)[
-        ITEM_KEY + [
-            "precio_promedon", "precio_p25_competidor", "precio_min_competidor",
-            "headroom_pct", "num_unidades", "n_competidores",
-            "dinero_dejado_clp", "revenue_promedon_clp",
-        ]
-    ]
-
-    return {
-        "dilucion":         dilucion,
-        "dilucion_full":    dilucion_full,
-        "cero_wr":          cero_wr,
-        "cero_wr_full":     cero_wr_full,
-        "h2h_caro":         h2h_caro,
-        "h2h_barato":       h2h_barato,
-        "items_top":        items_top,
-        "cuentas_modelo":   cuentas_modelo,
-        "cuentas_expandir": cuentas_expandir,
-        "benchmark_wr":     bm,
-        "a11_resumen":      a11_resumen,
-        "a11_productos":    a11_productos,
-        "a11_top_items":    a11_top_items,
-    }
-
-
-def render_executive_summary(rec: dict, df_p: pd.DataFrame) -> list:
-    total_revenue = int(df_p["revenue_adj_clp"].sum())
-    total_ofertas = len(df_p)
-
-    of_dilucion  = int(rec["dilucion_full"]["ofertas"].sum()) if len(rec["dilucion_full"]) else 0
-    rev_dilucion = int(rec["dilucion_full"]["revenue_clp"].sum()) if len(rec["dilucion_full"]) else 0
-    of_cero      = int(rec["cero_wr_full"]["ofertas"].sum())  if len(rec["cero_wr_full"])  else 0
-    rev_items    = int(rec["items_top"]["revenue_ganador_clp"].sum()) if len(rec["items_top"]) else 0
-    bm = rec["benchmark_wr"]
-
-    a11r = rec["a11_resumen"].iloc[0] if len(rec["a11_resumen"]) else None
-    if a11r is not None and int(a11r["items_subcotizados"]) > 0:
-        n_items   = int(a11r["items_subcotizados"])
-        n_prods   = int(a11r["productos_afectados"])
-        med_hr    = a11r["mediana_headroom_pct"]
-        dinero    = int(a11r["dinero_dejado_total_clp"])
-        top_prods = rec["a11_productos"].head(3)["producto_canonico"].tolist()
-        prods_str = ", ".join(top_prods) if top_prods else "—"
-        r9_line = (
-            f"- **R9 Subir precio donde sobra headroom** — en {n_items:,} items "
-            f"({n_prods:,} productos) con ≥ {MIN_COMPETIDORES_HEADROOM} competidores "
-            f"válidos, Promedon ganó **por debajo del P25 competitivo**. Headroom mediano: "
-            f"{med_hr:.1%} (capeado a {HEADROOM_CAP_PCT:.0%} para excluir outliers). "
-            f"Dinero dejado en mesa: **${dinero:,} CLP** "
-            f"({_pct_of(dinero, total_revenue)} del revenue Promedon — upside de revisar lista). "
-            f"Top productos donde subir lista: {prods_str}."
-        )
-    else:
-        r9_line = (
-            f"- **R9 Subir precio donde sobra headroom** — sin items con ≥ "
-            f"{MIN_COMPETIDORES_HEADROOM} competidores y sub-cotización válida tras "
-            "filtros de calidad."
-        )
-
-    bullets = [
-        f"- **R2 Recortar zona de dilución** (bin `{WR_DILUCION_MIN:.0%} <= WR < {WR_DILUCION_MAX:.0%}`) — {len(rec['dilucion_full'])} productos absorben **{of_dilucion:,} ofertas** ({_pct_of(of_dilucion, total_ofertas)} del total Promedon) y devuelven sólo ${rev_dilucion:,} CLP ({_pct_of(rev_dilucion, total_revenue)} del total). La zona de dilución es **cola larga**, no productos puntuales: capacidad comercial dispersa con baja conversión.",
-        f"- **R3 Abandono** (bin `0% <= WR < {WR_ABANDONO_MAX:.0%}`) — {len(rec['cero_wr_full'])} productos con WR < {WR_ABANDONO_MAX:.0%} y {of_cero:,} ofertas ({_pct_of(of_cero, total_ofertas)} de las ofertas Promedon): casi cero conversión, sin evidencia de ventaja competitiva.",
-        f"- **R4 Frente PRECIO** — {len(rec['h2h_caro'])} competidores donde Promedon es ≥ {SOBREPRECIO_CARO_MIN:.0%} más caro y pierde. Recuperable con ajuste tarifario selectivo.",
-        f"- **R5 Frente NO-PRECIO** — {len(rec['h2h_barato'])} competidores donde Promedon es ≤ {SOBREPRECIO_BARATO_MAX:.0%} más barato y aun así pierde. Decisión binaria: invertir en capacidades no-precio o salir.",
-        f"- **R6 Defender top licitaciones** — {len(rec['items_top'])} items concentran ${rev_items:,} CLP capturados por terceros ({_pct_of(rev_items, total_revenue)} del total Promedon, como referencia de magnitud). Due diligence cuenta por cuenta.",
-        f"- **R7 Replicar cuentas modelo** — {len(rec['cuentas_modelo'])} compradores con WR > {bm * WR_CUENTA_MODELO_FACTOR:.0%} (1.5× del agregado {bm:.1%}). Documentar diferencial.",
-        f"- **R8 Expandir cuentas con conversión baja** — {len(rec['cuentas_expandir'])} cuentas con ≥ {OFERTAS_CUENTA_EXPANDIR} ofertas y WR < {bm:.1%}. Alta exposición sin retorno.",
-        r9_line,
-    ]
-    return ["## Executive Summary", "", *bullets, ""]
-
-
-def render_recomendaciones(rec: dict) -> list:
-    out = ["## Recomendaciones priorizadas", ""]
-    out.append(
-        "Cada recomendación se deriva automáticamente de `df` con un criterio "
-        "cuantitativo explícito. La evidencia lista los productos / competidores "
-        "/ items / compradores exactos que disparan la recomendación."
-    )
-    out.append("")
-
-    f_port = {"revenue_clp": _fmt_clp, "win_rate": _fmt_pct}
-    f_h2h = {
-        "promedon_gana_pct":       _fmt_pct,
-        "competidor_gana_pct":     _fmt_pct,
-        "tercero_gana_pct":        _fmt_pct,
-        "mediana_sobreprecio_pct": _fmt_pct,
-    }
-    f_items = {
-        "revenue_ganador_clp": _fmt_clp,
-        "sobreprecio_pct":     _fmt_pct,
-        "precio_promedon":     _fmt_clp,
-        "precio_ganador":      _fmt_clp,
-    }
-
-    # R2 — vista agregada del bin completo + cola larga
-    of_total_dil  = int(rec["dilucion_full"]["ofertas"].sum())     if len(rec["dilucion_full"]) else 0
-    rev_total_dil = int(rec["dilucion_full"]["revenue_clp"].sum()) if len(rec["dilucion_full"]) else 0
-    n_prods_dil   = len(rec["dilucion_full"])
-    out += [
-        f"### R2 — Recortar zona de dilución ({n_prods_dil} productos en el bin)",
-        "",
-        f"**Bin de referencia:** `{WR_DILUCION_MIN:.0%} <= WR < {WR_DILUCION_MAX:.0%}` "
-        "en la tabla maestra (excluyendo `Sin producto canónico`). R2 cubre el bin "
-        "**completo**, no un subconjunto: la dilución no es un fenómeno de pocos "
-        "productos con muchas ofertas, sino una **cola larga** de productos con "
-        "conversión baja que en agregado consumen capacidad comercial relevante.",
-        "",
-        f"**Criterio:** {WR_DILUCION_MIN:.0%} ≤ WR < {WR_DILUCION_MAX:.0%}, sin "
-        "umbral mínimo de ofertas (la dilución se mide en el agregado del bin, "
-        "no producto a producto).",
-        "",
-        f"**Diagnóstico (agregado del bin):** {n_prods_dil} productos absorben "
-        f"**{of_total_dil:,} ofertas** y devuelven ${rev_total_dil:,} CLP. ROI "
-        f"agregado ≈ ${(rev_total_dil // of_total_dil if of_total_dil else 0):,} "
-        "CLP/oferta, bien por debajo del promedio Promedon.",
-        "",
-        "**Acción:** revisar el mix del bin como bloque — qué líneas / categorías "
-        "concentran la cola larga, dónde tiene sentido seguir cotizando y dónde "
-        "salir. La evidencia muestra los **top 20 productos por ofertas absorbidas** "
-        "(cabeza de la cola larga, donde está la mayor parte de la capacidad).",
-        "",
-        "**Evidencia (top 20 productos del bin por ofertas absorbidas):**",
-        "",
-        _df_to_md(rec["dilucion"], fmt=f_port),
-        "",
-    ]
-
-    # R3
-    of = int(rec["cero_wr"]["ofertas"].sum()) if len(rec["cero_wr"]) else 0
-    out += [
-        f"### R3 — Abandono: WR < {WR_ABANDONO_MAX:.0%} con volumen ({len(rec['cero_wr'])} productos)",
-        "",
-        f"**Bin de referencia:** `0% <= WR < {WR_ABANDONO_MAX:.0%}` en la tabla "
-        "maestra. R3 es el subconjunto del bin con volumen de ofertas relevante.",
-        "",
-        f"**Criterio:** ofertas ≥ {OFERTAS_ABANDONO_MIN} y WR < {WR_ABANDONO_MAX:.0%}.",
-        "",
-        f"**Diagnóstico:** {of:,} ofertas con conversión menor a 1 en 20. La "
-        "señal es estructural, no de muestra: no hay ventaja competitiva visible "
-        "y se invierte capacidad comercial sin retorno proporcional.",
-        "",
-        "**Acción:** salida inmediata o restructuración del enfoque (mix, "
-        "especificación) antes de seguir cotizando.",
-        "",
-        "**Evidencia:**",
-        "",
-        _df_to_md(rec["cero_wr"], fmt=f_port),
-        "",
-    ]
-
-    # R4
-    out += [
-        f"### R4 — Frente PRECIO contra competidores donde Promedon cobra de más ({len(rec['h2h_caro'])} competidores)",
-        "",
-        f"**Criterio:** mediana_sobreprecio_pct > +{SOBREPRECIO_CARO_MIN:.0%} en items "
-        "donde ambos competimos. Significa que Promedon es sistemáticamente más caro.",
-        "",
-        "**Diagnóstico:** la pérdida es atribuible a precio. Es **recuperable**: ajuste "
-        "tarifario selectivo recupera revenue sin tocar producto.",
-        "",
-        "**Acción:** evaluar reducción de lista de precios 10–20% en las categorías "
-        "donde estos competidores concentran sus victorias.",
-        "",
-        "**Evidencia:**",
-        "",
-        _df_to_md(rec["h2h_caro"], fmt=f_h2h),
-        "",
-    ]
-
-    # R5
-    out += [
-        f"### R5 — Frente NO-PRECIO ({len(rec['h2h_barato'])} competidores)",
-        "",
-        f"**Criterio:** mediana_sobreprecio_pct < {SOBREPRECIO_BARATO_MAX:.0%} en items "
-        "donde ambos competimos. Significa que Promedon **es más barato** y aun así pierde.",
-        "",
-        "**Diagnóstico:** bajar precio NO recupera estos items. La pérdida es por "
-        "marca, dossier técnico, especificación en bases o relación con el comprador.",
-        "",
-        "**Acción:** decisión binaria por competidor — (a) invertir en capacidades "
-        "no-precio (medical-science-liaison, dossier, especificación temprana en "
-        "bases) o (b) **salir conscientemente** de las categorías afectadas. "
-        "Reinvertir esa capacidad comercial donde Promedon sí tiene ventaja.",
-        "",
-        "**Evidencia:**",
-        "",
-        _df_to_md(rec["h2h_barato"], fmt=f_h2h),
-        "",
-    ]
-
-    # R6
-    rev = int(rec["items_top"]["revenue_ganador_clp"].sum()) if len(rec["items_top"]) else 0
-    out += [
-        f"### R6 — Licitaciones individuales de mayor daño ({len(rec['items_top'])} items, ${rev:,} CLP)",
-        "",
-        "**Criterio:** items donde Promedon ofertó y perdió, ordenados por revenue "
-        "capturado por el ganador.",
-        "",
-        "**Diagnóstico:** la pérdida está **concentrada**: pocos items explican gran "
-        "parte del revenue ido a competidores. Atención focalizada por cliente tiene "
-        "alto leverage.",
-        "",
-        "**Acción:** due diligence cuenta por cuenta — decisor clínico, ciclo de "
-        "renovación, condiciones del contrato vigente del incumbente. Preparar bid "
-        "ganador para próxima iteración.",
-        "",
-        "**Evidencia:**",
-        "",
-        _df_to_md(rec["items_top"], fmt=f_items),
-        "",
-    ]
-
-    # R7
-    bm = rec["benchmark_wr"]
-    out += [
-        f"### R7 — Cuentas modelo a replicar ({len(rec['cuentas_modelo'])})",
-        "",
-        f"**Criterio:** ofertas ≥ {OFERTAS_CUENTA_MODELO} y WR > {bm * WR_CUENTA_MODELO_FACTOR:.1%} "
-        f"(≥ {WR_CUENTA_MODELO_FACTOR:.1f}× del agregado, que es {bm:.1%}).",
-        "",
-        "**Diagnóstico:** estos compradores adjudican a Promedon a tasa "
-        "atípicamente alta. Debe haber un diferencial replicable: KAM, especificación "
-        "técnica, relación clínica, mix de producto.",
-        "",
-        "**Acción:** documentar el diferencial en cada cuenta modelo. Convertirlo en "
-        "playbook y aplicarlo a las cuentas de R8.",
-        "",
-        "**Evidencia:**",
-        "",
-        _df_to_md(rec["cuentas_modelo"], fmt=f_port),
-        "",
-    ]
-
-    # R8
-    out += [
-        f"### R8 — Cuentas a expandir ({len(rec['cuentas_expandir'])})",
-        "",
-        f"**Criterio:** ofertas ≥ {OFERTAS_CUENTA_EXPANDIR} y WR < {bm:.1%} "
-        "(debajo del agregado).",
-        "",
-        "**Diagnóstico:** alta exposición comercial sin retorno proporcional. La "
-        "relación existe (cotizamos mucho) pero la conversión es baja. Hay un "
-        "problema específico de cuenta: mix producto, precio, especificación, o "
-        "fit con el incumbente.",
-        "",
-        "**Acción:** investigar la causa por cuenta antes de invertir más. Aplicar "
-        "el playbook de R7. Si la causa es estructural (specs incompatibles), "
-        "replantear el mix de productos cotizados a esa cuenta.",
-        "",
-        "**Evidencia:**",
-        "",
-        _df_to_md(rec["cuentas_expandir"], fmt=f_port),
-        "",
-    ]
-
-    # R9 — Subir precio donde sobra headroom (productos sub-cotizados)
-    f_a11_resumen = {
-        "mediana_headroom_pct":    _fmt_pct,
-        "promedio_headroom_pct":   _fmt_pct,
-        "dinero_dejado_total_clp": _fmt_clp,
-        "revenue_total_clp":       _fmt_clp,
-    }
-    f_a11_productos = {
-        "mediana_headroom_pct":          _fmt_pct,
-        "mediana_precio_promedon":       _fmt_clp,
-        "mediana_precio_p25_competidor": _fmt_clp,
-        "dinero_dejado_clp":             _fmt_clp,
-        "revenue_capturado_clp":         _fmt_clp,
-    }
-    f_a11_items = {
-        "precio_promedon":       _fmt_clp,
-        "precio_p25_competidor": _fmt_clp,
-        "precio_min_competidor": _fmt_clp,
-        "headroom_pct":          _fmt_pct,
-        "dinero_dejado_clp":     _fmt_clp,
-        "revenue_promedon_clp":  _fmt_clp,
-    }
-    n_prods = len(rec["a11_productos"])
-    dinero_total = int(rec["a11_resumen"].iloc[0]["dinero_dejado_total_clp"]) if len(rec["a11_resumen"]) else 0
-    out += [
-        f"### R9 — Subir precio donde sobra headroom ({n_prods} productos top)",
-        "",
-        f"**Criterio:** items donde Promedon **gana** y existen ≥ {MIN_COMPETIDORES_HEADROOM} "
-        f"competidores con precio_unitario ≥ ${PRECIO_MIN_COMPETIDOR}. El benchmark "
-        "competitivo es el **percentil 25** de las ofertas de competidores válidas (no "
-        "el mínimo, que se vuelve sensible a un solo outlier). "
-        "`headroom_pct = (precio_p25_competidor − precio_promedon) / precio_promedon`, "
-        f"capeado a {HEADROOM_CAP_PCT:.0%} (por encima se considera mismatch de producto). "
-        "`dinero_dejado_clp = (precio_p25_competidor − precio_promedon) × num_unidades`.",
-        "",
-        "**Diagnóstico:** Promedon ganó cobrando **menos** que el cuartil bajo de los "
-        "competidores que sí pueden servir el ítem. La oferta fue innecesariamente "
-        "agresiva: pudo subir hasta el P25 competitivo y, en un tender precio-puro, "
-        f"habría ganado igual. En agregado, **${dinero_total:,} CLP** de revenue "
-        "quedaron en la mesa por sub-cotizar.",
-        "",
-        "**Por qué P25 y no el mínimo:** el mínimo se contamina con un solo outlier "
-        "(otro proveedor que ofertó un producto distinto en la misma línea, o erró el "
-        "precio). El P25 exige que **al menos 2 de cada 4 competidores** estén por "
-        "encima — señal estructural, no anecdótica.",
-        "",
-        "**Acción:** (a) revisar lista de precios de los productos del top — el "
-        "headroom mediano indica el aumento porcentual que la data soporta sin "
-        "comprometer la victoria contra un cuartil completo de competidores; (b) en "
-        "tenders ponderados (técnico + precio) donde Promedon gana técnico, el alza "
-        "puede ser aún mayor; (c) priorizar productos por `dinero_dejado_clp`, no por "
-        "`headroom_pct` (importa la magnitud absoluta, no el porcentaje).",
-        "",
-        "**Resumen agregado:**",
-        "",
-        _df_to_md(rec["a11_resumen"], fmt=f_a11_resumen),
-        "",
-        "**Productos top por dinero dejado en mesa:**",
-        "",
-        _df_to_md(rec["a11_productos"], fmt=f_a11_productos),
-        "",
-        "**Items individuales con mayor sub-cotización:**",
-        "",
-        _df_to_md(rec["a11_top_items"], fmt=f_a11_items),
-        "",
-    ]
     return out
 
 
-# ─── REPORTE MARKDOWN ────────────────────────────────────────────────────
-def _fmt_clp(v):
-    return "" if pd.isna(v) else f"${int(v):,}"
+# ═════════════════════════════════════════════════════════════════════════
+# (C) TABLA COMPETENCIA — head-to-head por competidor
+# ═════════════════════════════════════════════════════════════════════════
+def build_tabla_competencia(df_base: pd.DataFrame, rut_promedon: str) -> pd.DataFrame:
+    """
+    Para cada competidor que coincidió con Promedon en algún item:
+        items_compartidos, wr_promedon, wr_competidor,
+        mediana_sobreprecio (precio_promedon vs precio_competidor),
+        veces_mas_caro, veces_mas_barato.
+    Cuadrantes: premium real / eficiencia / pricing problema / problema no-precio.
+    """
+    base = df_base.copy()
+
+    promedon = (base[base["rut_proveedor"] == rut_promedon]
+                [["item_key", "precio_unitario", "flag_adjudicado"]]
+                .rename(columns={"precio_unitario": "precio_promedon",
+                                 "flag_adjudicado": "gano_promedon"}))
+    competidores = (base[base["rut_proveedor"] != rut_promedon]
+                    [["item_key", "rut_proveedor", "nombre_proveedor",
+                      "precio_unitario", "flag_adjudicado"]]
+                    .rename(columns={"precio_unitario": "precio_competidor",
+                                     "flag_adjudicado": "gano_competidor"}))
+
+    h2h = competidores.merge(promedon, on="item_key", how="inner")
+    h2h["sobreprecio"] = ((h2h["precio_promedon"] - h2h["precio_competidor"])
+                          / h2h["precio_competidor"])
+    h2h["mas_caro"] = (h2h["precio_promedon"] > h2h["precio_competidor"]).astype(int)
+    h2h["mas_barato"] = (h2h["precio_promedon"] < h2h["precio_competidor"]).astype(int)
+
+    out = (h2h.groupby(["rut_proveedor", "nombre_proveedor"], dropna=False)
+           .agg(items_compartidos=("item_key", "nunique"),
+                wr_promedon=("gano_promedon", "mean"),
+                wr_competidor=("gano_competidor", "mean"),
+                mediana_sobreprecio=("sobreprecio", "median"),
+                veces_mas_caro=("mas_caro", "sum"),
+                veces_mas_barato=("mas_barato", "sum"))
+           .reset_index())
+
+    def cuad(r):
+        gana = r["wr_promedon"] >= 0.5
+        caro = pd.notna(r["mediana_sobreprecio"]) and r["mediana_sobreprecio"] > 0
+        if gana and caro: return "premium real"
+        if gana and not caro: return "eficiencia"
+        if not gana and caro: return "pricing problema"
+        return "problema no-precio"
+    out["cuadrante"] = out.apply(cuad, axis=1)
+
+    return out.sort_values("items_compartidos", ascending=False)
 
 
-def _fmt_pct(v):
-    return "" if pd.isna(v) else f"{v:.1%}"
+# ═════════════════════════════════════════════════════════════════════════
+# (D) TABLA COMPRADOR — agregación por organismo
+# ═════════════════════════════════════════════════════════════════════════
+def build_tabla_comprador(df_base: pd.DataFrame, rut_promedon: str) -> pd.DataFrame:
+    """
+    Métricas Promedon por comprador:
+        ofertas, win_rate, revenue, ticket_promedio, mix_productos.
+    Segmentación 2D (volumen × win_rate, umbrales en mediana):
+        Replicar / Expandir / Intervenir / Ignorar.
+    """
+    promedon = df_base[df_base["rut_proveedor"] == rut_promedon].copy()
+    promedon["revenue"] = (promedon["flag_adjudicado"].fillna(0)
+                           * promedon["num_unidades"].fillna(0)
+                           * promedon["precio_unitario"].fillna(0))
+    promedon["ticket"] = (promedon["num_unidades"].fillna(0)
+                          * promedon["precio_unitario"].fillna(0))
+
+    out = (promedon.groupby(["rut_comprador", "nombre_comprador"], dropna=False)
+           .agg(ofertas=("flag_adjudicado", "size"),
+                win_rate=("flag_adjudicado", "mean"),
+                revenue=("revenue", "sum"),
+                ticket_promedio=("ticket", "mean"),
+                mix_productos=("producto_canonico", "nunique"))
+           .reset_index())
+
+    vol_med = out["ofertas"].median()
+    wr_med = out["win_rate"].median()
+
+    def seg(r):
+        alto_vol = r["ofertas"] >= vol_med
+        alta_wr = r["win_rate"] >= wr_med
+        if alta_wr and alto_vol: return "Replicar (alta conv + alto vol)"
+        if alta_wr and not alto_vol: return "Expandir (alta conv + bajo vol)"
+        if not alta_wr and alto_vol: return "Intervenir (baja conv + alto vol)"
+        return "Ignorar (baja conv + bajo vol)"
+    out["segmento"] = out.apply(seg, axis=1)
+
+    return out.sort_values("revenue", ascending=False)
 
 
-def _df_to_md(df: pd.DataFrame, fmt: dict | None = None) -> str:
-    fmt = fmt or {}
-    headers = list(df.columns)
-    out = ["| " + " | ".join(headers) + " |",
-           "|" + "|".join(["---"] * len(headers)) + "|"]
-    for _, r in df.iterrows():
+# ═════════════════════════════════════════════════════════════════════════
+# REPORTE — diagnóstico Promedon en Markdown
+# ═════════════════════════════════════════════════════════════════════════
+def _fmt_money(x) -> str:
+    if pd.isna(x): return "-"
+    return f"${x:,.0f}".replace(",", ".")
+
+
+def _fmt_pct(x, decimals: int = 1) -> str:
+    if pd.isna(x): return "-"
+    return f"{x*100:.{decimals}f}%"
+
+
+def _md_table(df: pd.DataFrame, cols: dict, max_rows: int = 10,
+              totals: dict | None = None) -> str:
+    """
+    Render df como tabla markdown. cols = {col_origen: (header, formatter)}.
+    totals: dict opcional {col_origen: valor_total} para una fila final "**Total**".
+    """
+    if df.empty:
+        return "_(sin datos)_\n"
+    df = df.head(max_rows)
+    headers = [h for _, (h, _) in cols.items()]
+    lines = ["| " + " | ".join(headers) + " |",
+             "| " + " | ".join(["---"] * len(headers)) + " |"]
+    for _, row in df.iterrows():
         cells = []
-        for c in headers:
-            v = r[c]
-            if c in fmt:
-                cells.append(fmt[c](v))
-            elif pd.isna(v):
-                cells.append("")
-            elif isinstance(v, float):
-                cells.append(f"{v:,.2f}")
-            elif isinstance(v, (int,)) or hasattr(v, "item"):
-                cells.append(f"{int(v):,}")
+        for src, (_, fmt) in cols.items():
+            val = row.get(src)
+            cells.append(fmt(val) if fmt else ("-" if pd.isna(val) else str(val)))
+        lines.append("| " + " | ".join(cells) + " |")
+    if totals is not None:
+        cells = []
+        for i, (src, (_, fmt)) in enumerate(cols.items()):
+            val = totals.get(src)
+            if i == 0 and val is None:
+                cells.append("**Total**")
+            elif val is None:
+                cells.append("-")
             else:
-                cells.append(str(v).replace("|", "\\|"))
-        out.append("| " + " | ".join(cells) + " |")
-    return "\n".join(out)
+                rendered = fmt(val) if fmt else str(val)
+                cells.append(f"**{rendered}**")
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
 
 
-def _pct_of(value: float, total: float) -> str:
-    return "0%" if not total else f"{value / total:.1%}"
+def _wavg(s_val: pd.Series, s_w: pd.Series):
+    s_val = s_val.fillna(0)
+    w = s_w.fillna(0)
+    total_w = float(w.sum())
+    return float((s_val * w).sum() / total_w) if total_w else None
 
 
-def _per_producto_universo_mercado(df: pd.DataFrame) -> pd.DataFrame:
+def _segmentar_productos(t_prod: pd.DataFrame) -> tuple[dict, float]:
     """
-    Stats por producto para TODOS los proveedores, restringido a items donde
-    Promedon ofertó. Distingue 'mercado' (sin sufijo) de 'Promedon' (sólo
-    nuestras ofertas) en la tabla maestra.
+    Clasifica cada producto_canonico en:
+      - "A" (alta competencia / commodity)   si n_competidores_promedio ≥ mediana
+      - "B" (baja competencia / especializado) si n_competidores_promedio < mediana
+    NaN → "B". Retorna (mapping, threshold).
     """
-    p_items = (
-        df[df["rut_proveedor"] == PROMEDON_RUT][ITEM_KEY].drop_duplicates()
+    valid = t_prod.dropna(subset=["n_competidores_promedio"])
+    threshold = float(valid["n_competidores_promedio"].median()) if not valid.empty else 0.0
+    mapping = {}
+    for _, row in t_prod.iterrows():
+        ncomp = row["n_competidores_promedio"]
+        prod = row["producto_canonico"]
+        if pd.isna(ncomp) or ncomp < threshold:
+            mapping[prod] = "B"
+        else:
+            mapping[prod] = "A"
+    return mapping, threshold
+
+
+def _seccion_producto(t_prod_dict: dict, prefix: str = "1") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Portafolio (Producto)\n")
+    md.append(
+        "Mide el **desempeño estructural** de Promedon por categoría de producto. "
+        "La unidad de análisis es `producto_canonico` y la métrica clave es el "
+        "win rate (adjudicaciones / ofertas), complementada por revenue y volumen.\n"
     )
-    df_universe = df.merge(p_items, on=ITEM_KEY, how="inner")
-    return df_universe.groupby(
-        "producto_canonico", dropna=False, as_index=False
-    ).agg(
-        ofertas_total=("flag_adjudicado", "size"),
-        ganadas_total=("flag_adjudicado", "sum"),
-        revenue_total_clp=("revenue_adj_clp", "sum"),
+    md.append(
+        "Notas de columnas:\n"
+        "- **Seg.**: A = alta competencia (commodities), B = baja competencia (especializados).\n"
+        "- **Ofertas / Adjudicaciones / Revenue / WR**: solo Promedon en items del producto.\n"
+        "- **Ticket prom.**: monto medio por oferta Promedon (`num_unidades × precio_unitario`).\n"
+        "- **Comp/item**: competidores promedio por item del producto.\n"
+    )
+    md.append(
+        "Los productos se clasifican en cuatro segmentos según win rate, lo que "
+        "permite separar la conversación \"dónde escalar\" de \"dónde salir\":\n"
+        "- **Core** (WR ≥ 40%): fortaleza estructural, foco de crecimiento.\n"
+        "- **Competitivo** (20–40%): zona de palancas tácticas (precio, comprador).\n"
+        "- **Débil** (5–20%): exige diagnóstico fino antes de invertir más.\n"
+        "- **Crítico** (< 5%): candidatos a desinversión salvo razón estratégica.\n"
     )
 
+    # Distribución por segmento — long format (Seg. × Segmento WR)
+    rows_dist = []
+    for seg_p in ["A", "B"]:
+        agg = (t_prod_dict[seg_p].groupby("segmento", observed=True)
+               .agg(n_productos=("producto_canonico", "count"),
+                    ofertas=("ofertas", "sum"),
+                    adjudicaciones=("adjudicaciones", "sum"),
+                    revenue=("revenue", "sum"))
+               .reset_index())
+        agg["seg_producto"] = seg_p
+        rows_dist.append(agg)
+    df_dist = pd.concat(rows_dist, ignore_index=True)[
+        ["seg_producto", "segmento", "n_productos", "ofertas",
+         "adjudicaciones", "revenue"]
+    ]
+    md.append("### Distribución por segmento\n")
+    md.append(_md_table(df_dist, {
+        "seg_producto": ("Seg.", None),
+        "segmento": ("Segmento", None),
+        "n_productos": ("# productos", lambda v: f"{int(v):,}"),
+        "ofertas": ("Ofertas", lambda v: f"{int(v):,}"),
+        "adjudicaciones": ("Adjudicadas", lambda v: f"{int(v):,}"),
+        "revenue": ("Revenue", _fmt_money),
+    }, max_rows=len(df_dist), totals={
+        "seg_producto": "A+B",
+        "n_productos": int(df_dist["n_productos"].sum()),
+        "ofertas": int(df_dist["ofertas"].sum()),
+        "adjudicaciones": int(df_dist["adjudicaciones"].sum()),
+        "revenue": float(df_dist["revenue"].sum()),
+    }))
 
-def _label_wr(wr: float):
-    for label, lo, hi in WR_BINS:
-        if lo <= wr < hi:
-            return label
-    return None
-
-
-def _cell_row(wr_lab: str, sub: pd.DataFrame) -> dict:
-    of_p      = int(sub["ofertas"].sum())
-    adj_p     = int(sub["ganadas"].sum())
-    rev_p     = int(sub["revenue_clp"].sum())
-    rev_total = int(sub["revenue_total_clp"].sum())
-    return {
-        "Rango WR Promedon x Producto":          wr_lab,
-        "Num Ofertas Presentadas":               int(sub["ofertas_total"].sum()),
-        "Num Ofertas Presentadas Promedon":      of_p,
-        "Num Ofertas Adjudicadas":               int(sub["ganadas_total"].sum()),
-        "Num Ofertas Adjudicadas Promedon":      adj_p,
-        "Monto Adjudicado Total":                rev_total,
-        "Monto Adjudicado Promedon":             rev_p,
-        "Tasa Adjudicación Promedon":            (adj_p / of_p) if of_p else 0,
-        "Tasa Monto Adjudicación Promedon":      (rev_p / rev_total) if rev_total else 0,
-    }
-
-
-def build_tabla_maestra(df: pd.DataFrame, df_p: pd.DataFrame) -> pd.DataFrame:
-    """
-    Tabla maestra: partición exhaustiva de productos por Rango WR (a nivel
-    producto). Cada producto cae en una única fila; las filas suman exacto
-    al Total Promedon (última fila).
-    Columnas sin sufijo = mercado total (todos los proveedores en items
-    donde Promedon ofertó); con sufijo 'Promedon' = sólo Promedon.
-    """
-    a3 = a3_portafolio_productos(df_p)
-    universo = _per_producto_universo_mercado(df)
-    prod = a3.merge(universo, on="producto_canonico", how="left")
-    for col in ("ofertas_total", "ganadas_total", "revenue_total_clp"):
-        prod[col] = prod[col].fillna(0).astype("int64")
-
-    prod["wr_label"] = prod["win_rate"].apply(_label_wr)
-
-    rows = []
-    for wr_lab, _, _ in WR_BINS:
-        rows.append(_cell_row(wr_lab, prod[prod["wr_label"] == wr_lab]))
-    rows.append(_cell_row(TOTAL_WR_LABEL, prod))
-    return pd.DataFrame(rows)
-
-
-def build_diagnostico_md(df: pd.DataFrame, df_p: pd.DataFrame, df_c: pd.DataFrame) -> str:
-    n_ofertas = len(df_p)
-    n_adj     = int(df_p["flag_adjudicado"].sum())
-    rev_total = int(df_p["revenue_adj_clp"].sum())
-    wr        = n_adj / n_ofertas if n_ofertas else 0
-
-    rec = build_recomendaciones(df, df_p, df_c)
-    dq = data_quality_summary(df)
-
-    header = [
-        "# Diagnóstico competitivo Promedon — ChileCompra",
-        "",
-        f"**Proveedor analizado:** PROMEDON · RUT {PROMEDON_RUT}",
-        "**Fuente:** Grafo Neo4j ChileCompra (`matriz_base` item × proveedor)",
-        f"**Generado:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "",
-        "| Métrica baseline | Valor |",
-        "|---|---:|",
-        f"| Filas matriz_base (item × proveedor) | {len(df):,} |",
-        f"| Licitaciones distintas | {df['id_licitacion'].nunique():,} |",
-        f"| Proveedores distintos | {df['rut_proveedor'].nunique():,} |",
-        f"| Ofertas Promedon | {n_ofertas:,} |",
-        f"| Ofertas adjudicadas | {n_adj:,} |",
-        f"| **Win rate agregado** | **{wr:.1%}** |",
-        f"| Revenue estimado adjudicado | ${rev_total:,} CLP |",
-        "",
-        "---",
-        "",
-        "## Data Quality",
-        "",
-        "Reglas explícitas de exclusión que se aplican antes de los análisis "
-        "sensibles a precio (especialmente R9). Sin esta capa, decisiones de "
-        "pricing se contaminan con outliers y mismatches de producto.",
-        "",
-        "**Reglas aplicadas:**",
-        "",
-        f"- Ofertas de competidores con `precio_unitario < ${PRECIO_MIN_COMPETIDOR}` se "
-        "consideran ruido (precios $0/$1 que aparecen por errores de carga) y se "
-        "excluyen al calcular el benchmark competitivo.",
-        f"- Para R9 se exigen ≥ {MIN_COMPETIDORES_HEADROOM} competidores válidos por "
-        "ítem — con 1-2 competidores la señal de pricing no es estructural.",
-        f"- El benchmark competitivo de R9 es el **percentil 25** de las ofertas de "
-        "competidores válidos (no el mínimo, que se contamina con un solo outlier).",
-        f"- `headroom_pct > {HEADROOM_CAP_PCT:.0%}` se descarta como outlier o mismatch "
-        "de producto: precios > 2× el de Promedon en la misma línea típicamente "
-        "indican que el competidor ofertó un producto distinto.",
-        "",
-        "**Cobertura del dataset:**",
-        "",
-        _df_to_md(dq),
-        "",
-        "---",
-        "",
-        "## Total general — referencia",
-        "",
-        "Partición exhaustiva del portafolio por **Rango WR** a nivel producto. "
-        "Cada producto pertenece a **una única fila**; las filas suman exacto al "
-        "Total Promedon (última fila).",
-        "",
-        "**Convención de columnas:** sin sufijo ⇒ mercado total (todos los "
-        "proveedores en items donde Promedon ofertó); con sufijo *Promedon* ⇒ "
-        "solo Promedon. `Tasa Adjudicación Promedon` = "
-        "`Σ adj_Promedon / Σ presentadas_Promedon` (WR agregado de la fila, "
-        "ponderado por volumen). `Tasa Monto Adjudicación Promedon` = "
-        "`Σ Monto Adjudicado Promedon / Σ Monto Adjudicado Total` (share de "
-        "Promedon sobre el monto total adjudicado del mercado en la fila).",
-        "",
-        _df_to_md(
-            build_tabla_maestra(df, df_p),
-            fmt={
-                "Num Ofertas Presentadas":          lambda v: f"{int(v):,}",
-                "Num Ofertas Presentadas Promedon": lambda v: f"{int(v):,}",
-                "Num Ofertas Adjudicadas":          lambda v: f"{int(v):,}",
-                "Num Ofertas Adjudicadas Promedon": lambda v: f"{int(v):,}",
-                "Monto Adjudicado Total":           _fmt_clp,
-                "Monto Adjudicado Promedon":        _fmt_clp,
-                "Tasa Adjudicación Promedon":       _fmt_pct,
-                "Tasa Monto Adjudicación Promedon": _fmt_pct,
-            },
+    p_explicaciones = {
+        "Core": (
+            "P1 — escalar core",
+            "Productos donde Promedon ya gana de forma sistemática (WR ≥ 40%). "
+            "Top 10 por revenue, en cada segmento de competencia (A y B):",
         ),
-        "",
-        "---",
-        "",
+        "Débil": (
+            "P2 — optimizar débil",
+            "Productos con tracción pero baja conversión (WR 5–20%). "
+            "Top 10 por revenue, en cada segmento (A y B):",
+        ),
+        "Crítico": (
+            "P3 — eliminar crítico",
+            "Productos donde Promedon ofertó pero casi nunca gana (WR < 5%). "
+            "Top 10 por revenue, en cada segmento (A y B):",
+        ),
+    }
+    cols = {
+        "seg_producto": ("Seg.", None),
+        "producto_canonico": ("Producto", None),
+        "ofertas": ("Ofertas", lambda v: "-" if pd.isna(v) else f"{int(v):,}"),
+        "win_rate": ("WR", _fmt_pct),
+        "revenue": ("Revenue", _fmt_money),
+        "ticket_promedio": ("Ticket prom.", _fmt_money),
+        "n_competidores_promedio": ("Comp/item", lambda v: f"{v:.1f}" if pd.notna(v) else "-"),
+    }
+    for seg in ["Core", "Débil", "Crítico"]:
+        titulo, descripcion = p_explicaciones[seg]
+        md.append(f"### {titulo}\n")
+        md.append(descripcion + "\n")
+        combined = []
+        all_full = []
+        for seg_p in ["A", "B"]:
+            full = (t_prod_dict[seg_p][t_prod_dict[seg_p]["segmento"] == seg]
+                    .sort_values("revenue", ascending=False))
+            if full.empty:
+                continue
+            top = full.head(10).copy()
+            top["seg_producto"] = seg_p
+            combined.append(top)
+            rest = full.iloc[10:]
+            if not rest.empty:
+                r_of = int(rest["ofertas"].sum())
+                r_adj = int(rest["adjudicaciones"].sum())
+                combined.append(pd.DataFrame([{
+                    "seg_producto": seg_p,
+                    "producto_canonico": f"Otros ({len(rest)} productos)",
+                    "ofertas": r_of,
+                    "adjudicaciones": r_adj,
+                    "revenue": float(rest["revenue"].sum()),
+                    "win_rate": (r_adj / r_of) if r_of else 0,
+                    "ticket_promedio": _wavg(rest["ticket_promedio"], rest["ofertas"]),
+                    "n_competidores_promedio": _wavg(rest["n_competidores_promedio"], rest["ofertas"]),
+                }]))
+            all_full.append(full)
+        if not combined:
+            md.append("_(sin productos en este segmento)_\n")
+            continue
+        df_combined = pd.concat(combined, ignore_index=True)
+        all_df = pd.concat(all_full, ignore_index=True)
+        a_of = int(all_df["ofertas"].sum())
+        a_adj = int(all_df["adjudicaciones"].sum())
+        totals = {
+            "seg_producto": "A+B",
+            "producto_canonico": f"Total {seg}",
+            "ofertas": a_of,
+            "win_rate": (a_adj / a_of) if a_of else 0,
+            "revenue": float(all_df["revenue"].sum()),
+            "ticket_promedio": _wavg(all_df["ticket_promedio"], all_df["ofertas"]),
+            "n_competidores_promedio": _wavg(all_df["n_competidores_promedio"], all_df["ofertas"]),
+        }
+        md.append(_md_table(df_combined, cols, max_rows=len(df_combined), totals=totals))
+    return md
+
+
+def _seccion_precio(t_prec_dict: dict, prefix: str = "2") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Precio (Pricing power)\n")
+    md.append(
+        "Analiza el **posicionamiento relativo** del precio Promedon dentro de "
+        "cada item respecto a sus competidores. La unidad es el item; cada fila "
+        "compara el precio Promedon contra el percentil 25 de los competidores "
+        "vía `gap = (precio_promedon − p25_comp) / p25_comp`.\n"
+    )
+    md.append(
+        "Esto permite separar problemas de precio de problemas no-precio:\n"
+        "- **PR1 — Subcotizado** (ganamos con `gap < 0`): margen para subir precio.\n"
+        "- **PR2 — Sobreprecio perdedor** (perdimos con `gap > 0`): bajar selectivamente.\n"
+        "- **PR3 — Barato y pierde** (perdimos con `gap ≤ 0`): el problema no es precio.\n"
+    )
+    diag_order = [
+        "PR1: subir precio (subcotizado)",
+        "PR2: bajar precio (sobreprecio perdedor)",
+        "PR3: barato y pierde (señal no-precio)",
+        "OK",
     ]
 
-    body = (
-        render_executive_summary(rec, df_p)
-        + ["---", ""]
-        + render_recomendaciones(rec)
+    # Distribución por diagnóstico — long (Seg. × diagnóstico)
+    rows_dist = []
+    for seg_p in ["A", "B"]:
+        agg = (t_prec_dict[seg_p].groupby("diagnostico")
+               .agg(n_items=("item_key", "nunique"))
+               .reset_index())
+        agg["seg_producto"] = seg_p
+        agg["__order"] = agg["diagnostico"].map({d: i for i, d in enumerate(diag_order)})
+        agg = agg.sort_values("__order").drop(columns="__order").reset_index(drop=True)
+        rows_dist.append(agg)
+    df_dist = pd.concat(rows_dist, ignore_index=True)[
+        ["seg_producto", "diagnostico", "n_items"]
+    ]
+    md.append("### Distribución por diagnóstico\n")
+    md.append(_md_table(df_dist, {
+        "seg_producto": ("Seg.", None),
+        "diagnostico": ("Diagnóstico", None),
+        "n_items": ("# items", lambda v: f"{int(v):,}"),
+    }, max_rows=len(df_dist), totals={
+        "seg_producto": "A+B",
+        "n_items": int(df_dist["n_items"].sum()),
+    }))
+
+    pr_cols = {
+        "seg_producto": ("Seg.", None),
+        "id_licitacion": ("Licitación", None),
+        "producto_canonico": ("Producto", None),
+        "precio_promedon": ("Precio Promedon", _fmt_money),
+        "p25": ("P25 comp.", _fmt_money),
+        "p50": ("P50 comp.", _fmt_money),
+        "gap": ("Gap", _fmt_pct),
+    }
+    pr_config = {
+        "PR1": {"ascending": True,  "ext_label": "precio < p25/5",
+                "ext_mask": lambda s: s["precio_promedon"] < s["p25"] / 5},
+        "PR2": {"ascending": False, "ext_label": "precio > 5·p25",
+                "ext_mask": lambda s: s["precio_promedon"] > s["p25"] * 5},
+        "PR3": {"ascending": True,  "ext_label": "precio < p25/5",
+                "ext_mask": lambda s: s["precio_promedon"] < s["p25"] / 5},
+    }
+    for diag, titulo in [("PR1: subir precio (subcotizado)", "PR1 — subir precios (gap más negativo)"),
+                         ("PR2: bajar precio (sobreprecio perdedor)", "PR2 — bajar precios (gap más positivo)"),
+                         ("PR3: barato y pierde (señal no-precio)", "PR3 — barato y pierde (señal no-precio)")]:
+        cfg = pr_config[diag[:3]]
+        md.append(f"### {titulo} (top 10 por segmento)\n")
+
+        # Tabla de uplift potencial — sólo PR1 (Promedon ganó subcotizado)
+        if diag.startswith("PR1"):
+            rows_up = []
+            for seg_p in ["A", "B"]:
+                sub_pr1 = t_prec_dict[seg_p][t_prec_dict[seg_p]["diagnostico"] == diag].copy()
+                if sub_pr1.empty:
+                    continue
+                qty = sub_pr1["num_unidades"].fillna(0)
+                rev_act = float((qty * sub_pr1["precio_promedon"].fillna(0)).sum())
+                rev_p25 = float((qty * sub_pr1["p25"].fillna(0)).sum())
+                rows_up.append({
+                    "seg_producto": seg_p,
+                    "n_items": len(sub_pr1),
+                    "rev_actual": rev_act,
+                    "rev_p25": rev_p25,
+                    "uplift_abs": rev_p25 - rev_act,
+                    "uplift_pct": (rev_p25 / rev_act - 1) if rev_act else None,
+                })
+            if rows_up:
+                df_up = pd.DataFrame(rows_up)
+                tot_act = float(df_up["rev_actual"].sum())
+                tot_p25 = float(df_up["rev_p25"].sum())
+                md.append(
+                    "**Uplift potencial** asumiendo que Promedon hubiera cobrado el "
+                    "P25 de los competidores en estos items (cota superior; ignora "
+                    "elasticidad y posible pérdida de la adjudicación):\n"
+                )
+                md.append(_md_table(df_up, {
+                    "seg_producto": ("Seg.", None),
+                    "n_items": ("# items", lambda v: f"{int(v):,}"),
+                    "rev_actual": ("Revenue Promedon", _fmt_money),
+                    "rev_p25": ("Revenue @ P25", _fmt_money),
+                    "uplift_abs": ("Uplift $", _fmt_money),
+                    "uplift_pct": ("Uplift %", _fmt_pct),
+                }, max_rows=len(df_up), totals={
+                    "seg_producto": "A+B",
+                    "n_items": int(df_up["n_items"].sum()),
+                    "rev_actual": tot_act,
+                    "rev_p25": tot_p25,
+                    "uplift_abs": tot_p25 - tot_act,
+                    "uplift_pct": (tot_p25 / tot_act - 1) if tot_act else None,
+                }))
+
+        # Tabla de recuperación potencial — sólo PR2 (Promedon perdió por sobreprecio)
+        if diag.startswith("PR2"):
+            discounts = [0.10, 0.20, 0.30]
+            rows_dn = []
+            for seg_p in ["A", "B"]:
+                sub_pr2 = t_prec_dict[seg_p][t_prec_dict[seg_p]["diagnostico"] == diag].copy()
+                if sub_pr2.empty:
+                    continue
+                qty = sub_pr2["num_unidades"].fillna(0)
+                price = sub_pr2["precio_promedon"].fillna(0)
+                winner = sub_pr2["precio_unitario_ganador"]
+                row = {"seg_producto": seg_p, "n_items": len(sub_pr2)}
+                for d in discounts:
+                    hyp = price * (1 - d)
+                    won_mask = winner.notna() & (hyp < winner)
+                    row[f"recup_{int(d*100)}"] = int(won_mask.sum())
+                    row[f"rev_{int(d*100)}"] = float((qty * hyp * won_mask.astype(int)).sum())
+                rows_dn.append(row)
+            if rows_dn:
+                df_dn = pd.DataFrame(rows_dn)
+                md.append(
+                    "**Recuperación potencial** asumiendo que Promedon hubiera bajado "
+                    "su precio -10%, -20% o -30%. Un item se considera recuperado si el "
+                    "precio hipotético cae por debajo del precio adjudicado en ese item "
+                    "(`precio_promedon × (1−d) < precio_unitario_ganador`); el revenue "
+                    "se calcula como `num_unidades × precio_hipotético`. Promedon "
+                    "actualmente no factura nada por estos items (los perdió).\n"
+                )
+                md.append(_md_table(df_dn, {
+                    "seg_producto": ("Seg.", None),
+                    "n_items": ("# items PR2", lambda v: f"{int(v):,}"),
+                    "recup_10": ("Rec. -10%", lambda v: f"{int(v):,}"),
+                    "rev_10": ("Revenue -10%", _fmt_money),
+                    "recup_20": ("Rec. -20%", lambda v: f"{int(v):,}"),
+                    "rev_20": ("Revenue -20%", _fmt_money),
+                    "recup_30": ("Rec. -30%", lambda v: f"{int(v):,}"),
+                    "rev_30": ("Revenue -30%", _fmt_money),
+                }, max_rows=len(df_dn), totals={
+                    "seg_producto": "A+B",
+                    "n_items": int(df_dn["n_items"].sum()),
+                    "recup_10": int(df_dn["recup_10"].sum()),
+                    "rev_10": float(df_dn["rev_10"].sum()),
+                    "recup_20": int(df_dn["recup_20"].sum()),
+                    "rev_20": float(df_dn["rev_20"].sum()),
+                    "recup_30": int(df_dn["recup_30"].sum()),
+                    "rev_30": float(df_dn["rev_30"].sum()),
+                }))
+
+        combined = []
+        all_sub = []
+        for seg_p in ["A", "B"]:
+            sub = t_prec_dict[seg_p][t_prec_dict[seg_p]["diagnostico"] == diag].copy()
+            if sub.empty:
+                continue
+            mask_ext = cfg["ext_mask"](sub)
+            sub_extreme = sub[mask_ext]
+            sub_show = sub[~mask_ext].sort_values("gap", ascending=cfg["ascending"])
+            top = sub_show.head(10).copy()
+            top["seg_producto"] = seg_p
+            combined.append(top)
+            rest = pd.concat([sub_show.iloc[10:], sub_extreme], ignore_index=True)
+            n_extreme = int(mask_ext.sum())
+            if not rest.empty:
+                combined.append(pd.DataFrame([{
+                    "seg_producto": seg_p,
+                    "id_licitacion": f"Otros ({len(rest)} items, {n_extreme} con {cfg['ext_label']})",
+                    "producto_canonico": "—",
+                    "gap": rest["gap"].median(),
+                }]))
+            all_sub.append(sub)
+        if not combined:
+            md.append("_(sin items en este diagnóstico)_\n")
+            continue
+        df_combined = pd.concat(combined, ignore_index=True)
+        all_df = pd.concat(all_sub, ignore_index=True)
+        totals = {
+            "seg_producto": "A+B",
+            "id_licitacion": f"Total: {len(all_df):,} items",
+            "gap": all_df["gap"].median(),
+        }
+        md.append(_md_table(df_combined, pr_cols, max_rows=len(df_combined), totals=totals))
+    return md
+
+
+def _seccion_competencia(t_comp_dict: dict, n_ofertas_promedon_dict: dict,
+                         prefix: str = "3") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Competencia (head-to-head)\n")
+    md.append(
+        "Mide la **dinámica directa** contra cada competidor en los items donde "
+        "ambos ofertaron. Para cada par (Promedon, competidor) se calculan "
+        "win rates mutuos, mediana de sobreprecio y conteos de cuándo Promedon "
+        "fue más caro o más barato.\n"
+    )
+    md.append(
+        "Los competidores se ubican en cuatro cuadrantes precio × resultado:\n"
+        "- **premium real** (ganamos siendo más caros): mantener narrativa de valor.\n"
+        "- **eficiencia** (ganamos siendo más baratos): defender posición de costo.\n"
+        "- **pricing problema** (perdemos por más caros): ajustar precio.\n"
+        "- **problema no-precio** (perdemos siendo más baratos): atacar palancas no-precio.\n"
+    )
+    md.append("Cuadrantes precio × resultado:\n")
+    md.append("| | Ganas | Pierdes |")
+    md.append("| --- | --- | --- |")
+    md.append("| Más caro | premium real | pricing problema |")
+    md.append("| Más barato | eficiencia | problema no-precio |\n")
+
+    # Distribución por cuadrante — long
+    rows_dist = []
+    for seg_p in ["A", "B"]:
+        agg = (t_comp_dict[seg_p].groupby("cuadrante")
+               .agg(n_competidores=("rut_proveedor", "count"),
+                    ofertas=("items_compartidos", "sum"))
+               .reset_index()
+               .sort_values("ofertas", ascending=False))
+        agg["seg_producto"] = seg_p
+        rows_dist.append(agg)
+        rows_dist.append(pd.DataFrame([{
+            "seg_producto": seg_p,
+            "cuadrante": "Promedon (referencia)",
+            "n_competidores": pd.NA,
+            "ofertas": int(n_ofertas_promedon_dict[seg_p]),
+        }]))
+    df_dist = pd.concat(rows_dist, ignore_index=True)[
+        ["seg_producto", "cuadrante", "n_competidores", "ofertas"]
+    ]
+    md.append("### Distribución por cuadrante\n")
+    md.append(_md_table(df_dist, {
+        "seg_producto": ("Seg.", None),
+        "cuadrante": ("Cuadrante", None),
+        "n_competidores": ("# competidores", lambda v: f"{int(v):,}" if pd.notna(v) else "—"),
+        "ofertas": ("Ofertas", lambda v: f"{int(v):,}"),
+    }, max_rows=len(df_dist), totals={
+        "seg_producto": "A+B",
+        "n_competidores": int(df_dist["n_competidores"].dropna().sum()),
+        "ofertas": int(df_dist["ofertas"].sum()),
+    }))
+
+    cuad_explicaciones = {
+        "pricing problema": "Perdemos siendo más caros — palanca de precio.",
+        "problema no-precio": "Perdemos siendo más baratos — palanca no-precio (servicio, marca, especificación técnica).",
+        "premium real": "Ganamos siendo más caros — proteger narrativa de valor.",
+        "eficiencia": "Ganamos siendo más baratos — defender posición de costo.",
+    }
+    cuad_cols = {
+        "seg_producto": ("Seg.", None),
+        "nombre_proveedor": ("Competidor", None),
+        "items_compartidos": ("Items", lambda v: f"{int(v):,}"),
+        "wr_promedon": ("WR Promedon", _fmt_pct),
+        "wr_competidor": ("WR comp.", _fmt_pct),
+        "mediana_sobreprecio": ("Mediana sobreprecio", _fmt_pct),
+    }
+    for cuad in ["pricing problema", "problema no-precio", "premium real", "eficiencia"]:
+        md.append(f"### Top en \"{cuad}\" (top 10 por segmento)\n")
+        md.append(cuad_explicaciones[cuad] + "\n")
+        combined = []
+        all_sub = []
+        for seg_p in ["A", "B"]:
+            sub = (t_comp_dict[seg_p][t_comp_dict[seg_p]["cuadrante"] == cuad]
+                   .sort_values("items_compartidos", ascending=False))
+            if sub.empty:
+                continue
+            top = sub.head(10).copy()
+            top["seg_producto"] = seg_p
+            combined.append(top)
+            rest = sub.iloc[10:]
+            if not rest.empty:
+                combined.append(pd.DataFrame([{
+                    "seg_producto": seg_p,
+                    "nombre_proveedor": f"Otros ({len(rest)} competidores)",
+                    "items_compartidos": int(rest["items_compartidos"].sum()),
+                }]))
+            all_sub.append(sub)
+        if not combined:
+            md.append("_(sin competidores en este cuadrante)_\n")
+            continue
+        df_combined = pd.concat(combined, ignore_index=True)
+        all_df = pd.concat(all_sub, ignore_index=True)
+        totals = {
+            "seg_producto": "A+B",
+            "nombre_proveedor": f"Total {cuad}: {len(all_df):,} competidores",
+            "items_compartidos": int(all_df["items_compartidos"].sum()),
+        }
+        md.append(_md_table(df_combined, cuad_cols, max_rows=len(df_combined), totals=totals))
+    return md
+
+
+def _seccion_comprador(t_compr_dict: dict, prefix: str = "4") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Compradores (cuentas)\n")
+    md.append(
+        "Mide el **comportamiento de demanda** por organismo comprador. La "
+        "unidad es el `rut_comprador`; se agrega ofertas, win rate, revenue, "
+        "ticket promedio y mix de productos vendidos a cada cuenta.\n"
+    )
+    md.append(
+        "Cada comprador se ubica en un cuadrante 2D según volumen × win rate "
+        "(umbrales = mediana, recalculados independientemente para A y B):\n"
+        "- **Replicar** (alta conv + alto vol): cuentas a defender y modelar.\n"
+        "- **Expandir** (alta conv + bajo vol): potencial de crecimiento orgánico.\n"
+        "- **Intervenir** (baja conv + alto vol): demanda existente que no se captura.\n"
+        "- **Ignorar** (baja conv + bajo vol): bajo retorno por esfuerzo comercial.\n"
     )
 
-    return "\n".join(header + body)
+    # Distribución por segmento — long
+    rows_dist = []
+    for seg_p in ["A", "B"]:
+        agg = (t_compr_dict[seg_p].groupby("segmento")
+               .agg(n_compradores=("rut_comprador", "count"),
+                    ofertas=("ofertas", "sum"),
+                    revenue=("revenue", "sum"))
+               .reset_index()
+               .sort_values("revenue", ascending=False))
+        agg["seg_producto"] = seg_p
+        rows_dist.append(agg)
+    df_dist = pd.concat(rows_dist, ignore_index=True)[
+        ["seg_producto", "segmento", "n_compradores", "ofertas", "revenue"]
+    ]
+    md.append("### Distribución por segmento\n")
+    md.append(_md_table(df_dist, {
+        "seg_producto": ("Seg.", None),
+        "segmento": ("Segmento", None),
+        "n_compradores": ("# compradores", lambda v: f"{int(v):,}"),
+        "ofertas": ("Ofertas", lambda v: f"{int(v):,}"),
+        "revenue": ("Revenue", _fmt_money),
+    }, max_rows=len(df_dist), totals={
+        "seg_producto": "A+B",
+        "n_compradores": int(df_dist["n_compradores"].sum()),
+        "ofertas": int(df_dist["ofertas"].sum()),
+        "revenue": float(df_dist["revenue"].sum()),
+    }))
+
+    _fmt_int = lambda v: "-" if pd.isna(v) else f"{int(v):,}"
+    seg_cols = {
+        "seg_producto": ("Seg.", None),
+        "nombre_comprador": ("Comprador", None),
+        "ofertas": ("Ofertas", _fmt_int),
+        "win_rate": ("WR", _fmt_pct),
+        "revenue": ("Revenue", _fmt_money),
+        "ticket_promedio": ("Ticket prom.", _fmt_money),
+        "mix_productos": ("Mix prod.", _fmt_int),
+    }
+    for seg in ["Replicar (alta conv + alto vol)",
+                "Expandir (alta conv + bajo vol)",
+                "Intervenir (baja conv + alto vol)"]:
+        md.append(f"### {seg} (top 10 por segmento)\n")
+        combined = []
+        all_sub = []
+        for seg_p in ["A", "B"]:
+            sub = (t_compr_dict[seg_p][t_compr_dict[seg_p]["segmento"] == seg]
+                   .sort_values("revenue", ascending=False))
+            if sub.empty:
+                continue
+            top = sub.head(10).copy()
+            top["seg_producto"] = seg_p
+            combined.append(top)
+            rest = sub.iloc[10:]
+            if not rest.empty:
+                r_of = int(rest["ofertas"].sum())
+                r_won = float((rest["ofertas"] * rest["win_rate"]).sum())
+                n_rest = int(rest["rut_comprador"].count())
+                combined.append(pd.DataFrame([{
+                    "seg_producto": seg_p,
+                    "nombre_comprador": f"Otros ({n_rest} compradores)",
+                    "ofertas": r_of,
+                    "win_rate": (r_won / r_of) if r_of else float("nan"),
+                    "revenue": float(rest["revenue"].sum()),
+                    "ticket_promedio": float("nan"),
+                    "mix_productos": pd.NA,
+                }]))
+            all_sub.append(sub)
+        if not combined:
+            md.append("_(sin compradores en este segmento)_\n")
+            continue
+        df_combined = pd.concat(combined, ignore_index=True)
+        all_df = pd.concat(all_sub, ignore_index=True)
+        a_of = int(all_df["ofertas"].sum())
+        a_won = float((all_df["ofertas"] * all_df["win_rate"]).sum())
+        a_n = int(all_df["rut_comprador"].count())
+        totals = {
+            "seg_producto": "A+B",
+            "nombre_comprador": f"Total: {a_n:,} compradores",
+            "ofertas": a_of,
+            "win_rate": (a_won / a_of) if a_of else float("nan"),
+            "revenue": float(all_df["revenue"].sum()),
+        }
+        md.append(_md_table(df_combined, seg_cols, max_rows=len(df_combined), totals=totals))
+    return md
+
+
+def _seccion_recomendaciones(t_prod_dict: dict, t_prec_dict: dict,
+                             t_comp_dict: dict, t_compr_dict: dict,
+                             prefix: str = "5") -> list[str]:
+    md = []
+    md.append(f"## {prefix} Recomendaciones consolidadas\n")
+    md.append(
+        "Síntesis cuantitativa de los cortes anteriores: un conteo por acción "
+        "en cada dimensión, separado por segmento de producto (A vs B). **Las "
+        "recomendaciones no son nuevas conclusiones**, sino la combinación "
+        "trazable de los segmentos de las secciones previas.\n"
+    )
+
+    def _row(label, key_a, key_b):
+        return [label, key_a, key_b, key_a + key_b]
+
+    # Portafolio
+    rows = []
+    for label_seg, key in [("Escalar Core", "Core"),
+                           ("Optimizar Débil", "Débil"),
+                           ("Evaluar salida Crítico", "Crítico")]:
+        a = int((t_prod_dict["A"]["segmento"] == key).sum())
+        b = int((t_prod_dict["B"]["segmento"] == key).sum())
+        rows.append({"accion": label_seg, "A": a, "B": b, "Total": a + b})
+    md.append("**Portafolio** (# productos)\n")
+    md.append(_md_table(pd.DataFrame(rows), {
+        "accion": ("Acción", None),
+        "A": ("A", lambda v: f"{int(v):,}"),
+        "B": ("B", lambda v: f"{int(v):,}"),
+        "Total": ("Total", lambda v: f"{int(v):,}"),
+    }, max_rows=len(rows)))
+
+    # Pricing
+    rows = []
+    for label_seg, key in [("Subir precio (PR1)", "PR1: subir precio (subcotizado)"),
+                           ("Bajar precio (PR2)", "PR2: bajar precio (sobreprecio perdedor)"),
+                           ("Atacar PR3 (no-precio)", "PR3: barato y pierde (señal no-precio)")]:
+        a = int((t_prec_dict["A"]["diagnostico"] == key).sum())
+        b = int((t_prec_dict["B"]["diagnostico"] == key).sum())
+        rows.append({"accion": label_seg, "A": a, "B": b, "Total": a + b})
+    md.append("**Pricing** (# items)\n")
+    md.append(_md_table(pd.DataFrame(rows), {
+        "accion": ("Acción", None),
+        "A": ("A", lambda v: f"{int(v):,}"),
+        "B": ("B", lambda v: f"{int(v):,}"),
+        "Total": ("Total", lambda v: f"{int(v):,}"),
+    }, max_rows=len(rows)))
+
+    # Competencia
+    rows = []
+    for cuad in ["pricing problema", "problema no-precio", "premium real", "eficiencia"]:
+        a = int((t_comp_dict["A"]["cuadrante"] == cuad).sum())
+        b = int((t_comp_dict["B"]["cuadrante"] == cuad).sum())
+        rows.append({"cuadrante": cuad, "A": a, "B": b, "Total": a + b})
+    md.append("**Competencia** (# competidores)\n")
+    md.append(_md_table(pd.DataFrame(rows), {
+        "cuadrante": ("Cuadrante", None),
+        "A": ("A", lambda v: f"{int(v):,}"),
+        "B": ("B", lambda v: f"{int(v):,}"),
+        "Total": ("Total", lambda v: f"{int(v):,}"),
+    }, max_rows=len(rows)))
+
+    # Cuentas
+    rows = []
+    for label_seg, key in [("Defender Replicar", "Replicar (alta conv + alto vol)"),
+                           ("Expandir", "Expandir (alta conv + bajo vol)"),
+                           ("Intervenir", "Intervenir (baja conv + alto vol)")]:
+        a = int((t_compr_dict["A"]["segmento"] == key).sum())
+        b = int((t_compr_dict["B"]["segmento"] == key).sum())
+        rows.append({"accion": label_seg, "A": a, "B": b, "Total": a + b})
+    md.append("**Cuentas** (# compradores)\n")
+    md.append(_md_table(pd.DataFrame(rows), {
+        "accion": ("Acción", None),
+        "A": ("A", lambda v: f"{int(v):,}"),
+        "B": ("B", lambda v: f"{int(v):,}"),
+        "Total": ("Total", lambda v: f"{int(v):,}"),
+    }, max_rows=len(rows)))
+    return md
+
+
+def build_reporte_md(df_base: pd.DataFrame,
+                     rut_promedon: str) -> str:
+    promedon = df_base[df_base["rut_proveedor"] == rut_promedon]
+    n_ofertas_totales = len(df_base)
+    n_ofertas_promedon = len(promedon)
+    n_adjudicadas = int(promedon["flag_adjudicado"].sum())
+    wr_global = n_adjudicadas / n_ofertas_promedon if n_ofertas_promedon else 0
+    revenue_total = float((promedon["flag_adjudicado"].fillna(0)
+                           * promedon["num_unidades"].fillna(0)
+                           * promedon["precio_unitario"].fillna(0)).sum())
+    n_competidores = df_base.loc[df_base["rut_proveedor"] != rut_promedon, "rut_proveedor"].nunique()
+    n_compradores = df_base["rut_comprador"].nunique()
+    fecha = datetime.now().strftime("%Y-%m-%d")
+
+    md = []
+    md.append(f"# Diagnóstico Promedon — ChileCompra\n")
+    md.append(f"**RUT:** {rut_promedon}  ")
+    md.append(f"**Fecha:** {fecha}  ")
+    md.append(f"**Modelo:** item × proveedor (4 dimensiones × 2 segmentos de producto)\n")
+
+    # ── Resumen ejecutivo ────────────────────────────────────────────────
+    md.append("## Resumen ejecutivo\n")
+    md.append(
+        "Foto agregada del universo competitivo donde Promedon participa. "
+        "El universo es el conjunto de items (licitación–producto) en los que "
+        "Promedon presentó al menos una oferta; cada item se observa con todas "
+        "las ofertas competidoras. Las métricas a continuación dimensionan la "
+        "actividad y sirven de referencia (denominador) para los cortes posteriores.\n"
+    )
+    md.append("| Métrica | Valor |")
+    md.append("| --- | --- |")
+    md.append(f"| Ofertas Totales (Promedon + competencia) | {n_ofertas_totales:,} |")
+    md.append(f"| Ofertas Promedon | {n_ofertas_promedon:,} |")
+    md.append(f"| Adjudicaciones | {n_adjudicadas:,} |")
+    md.append(f"| Win rate global | {_fmt_pct(wr_global)} |")
+    md.append(f"| Revenue total | {_fmt_money(revenue_total)} |")
+    md.append(f"| Competidores distintos | {n_competidores:,} |")
+    md.append(f"| Compradores distintos | {n_compradores:,} |\n")
+
+    # ── Segmentación de productos por intensidad competitiva ────────────
+    t_prod_global = build_tabla_producto(df_base, rut_promedon)
+    seg_map, threshold = _segmentar_productos(t_prod_global)
+    df_seg = df_base.copy()
+    df_seg["producto_segmento"] = df_seg["producto_canonico"].map(seg_map)
+
+    md.append("## Segmentación por intensidad competitiva\n")
+    md.append(
+        "Cada producto se etiqueta como **A) Alta competencia (commodities)** o "
+        "**B) Baja competencia (especializados)** según cuántos competidores "
+        "enfrenta Promedon en promedio por item:\n"
+        f"- **A — Alta competencia (commodities):** `n_competidores_promedio ≥ {threshold:.2f}` (mediana del universo).\n"
+        f"- **B — Baja competencia (especializados):** `n_competidores_promedio < {threshold:.2f}`.\n\n"
+        "Productos sin valor de competidores se asignan a B. En las secciones "
+        "siguientes cada tabla muestra A y B juntos en una sola vista; los "
+        "thresholds locales (mediana de volumen/win rate de compradores, "
+        "percentil 25 de precio, cuadrantes precio×resultado) se calculan "
+        "independientemente dentro de A y dentro de B.\n"
+    )
+
+    rows_split = []
+    sub_dict = {}
+    sub_p_dict = {}
+    for label, label_titulo in [("A", "A — Alta competencia (commodities)"),
+                                ("B", "B — Baja competencia (especializados)")]:
+        sub = df_seg[df_seg["producto_segmento"] == label]
+        sub_p = sub[sub["rut_proveedor"] == rut_promedon]
+        sub_dict[label] = sub
+        sub_p_dict[label] = sub_p
+        rev = float((sub_p["flag_adjudicado"].fillna(0)
+                     * sub_p["num_unidades"].fillna(0)
+                     * sub_p["precio_unitario"].fillna(0)).sum())
+        rows_split.append({
+            "segmento": label_titulo,
+            "n_productos": sum(1 for v in seg_map.values() if v == label),
+            "ofertas_promedon": int(len(sub_p)),
+            "revenue": rev,
+        })
+    df_split = pd.DataFrame(rows_split)
+    md.append("### Distribución de productos A vs B\n")
+    md.append(_md_table(df_split, {
+        "segmento": ("Segmento", None),
+        "n_productos": ("# productos", lambda v: f"{int(v):,}"),
+        "ofertas_promedon": ("Ofertas Promedon", lambda v: f"{int(v):,}"),
+        "revenue": ("Revenue", _fmt_money),
+    }, max_rows=len(df_split), totals={
+        "n_productos": int(df_split["n_productos"].sum()),
+        "ofertas_promedon": int(df_split["ofertas_promedon"].sum()),
+        "revenue": float(df_split["revenue"].sum()),
+    }))
+
+    # Construir tablas maestras por segmento
+    t_prod_dict = {}
+    t_prec_dict = {}
+    t_comp_dict = {}
+    t_compr_dict = {}
+    n_ofertas_dict = {}
+    for label in ["A", "B"]:
+        sub_base = sub_dict[label]
+        if sub_base.empty:
+            continue
+        t_prod_dict[label] = build_tabla_producto(sub_base, rut_promedon)
+        t_prec_dict[label] = build_tabla_precio(sub_base, rut_promedon)
+        t_comp_dict[label] = build_tabla_competencia(sub_base, rut_promedon)
+        t_compr_dict[label] = build_tabla_comprador(sub_base, rut_promedon)
+        n_ofertas_dict[label] = int(len(sub_p_dict[label]))
+
+    md.append("---\n")
+    md.extend(_seccion_producto(t_prod_dict, prefix="1"))
+    md.extend(_seccion_precio(t_prec_dict, prefix="2"))
+    md.extend(_seccion_competencia(t_comp_dict, n_ofertas_dict, prefix="3"))
+    md.extend(_seccion_comprador(t_compr_dict, prefix="4"))
+    md.extend(_seccion_recomendaciones(t_prod_dict, t_prec_dict, t_comp_dict,
+                                       t_compr_dict, prefix="5"))
+
+    return "\n".join(md)
 
 
 # ─── PIPELINE ────────────────────────────────────────────────────────────
@@ -986,31 +1234,13 @@ def main():
 
     df = q(MATRIZ_BASE, rut_A=PROMEDON_RUT)
     df.to_csv(os.path.join(OUTPUT_DIR, "matriz_base.csv"), index=False)
+    print(f"  matriz_base: {len(df):,} filas (item × proveedor)")
 
-    df = derive_revenue(df)
-    df_p = df[df["rut_proveedor"] == PROMEDON_RUT].copy()
-    df_c = df[df["rut_proveedor"] != PROMEDON_RUT].copy()
-
-    md = build_diagnostico_md(df, df_p, df_c)
+    md = build_reporte_md(df, PROMEDON_RUT)
     md_path = os.path.join(OUTPUT_DIR, "diagnostico_promedon.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md)
-
-    print(f"\nfilas (item×proveedor)      : {len(df):,}")
-    print(f"licitaciones distintas      : {df['id_licitacion'].nunique():,}")
-    print(f"proveedores distintos       : {df['rut_proveedor'].nunique():,}")
-
-    n_ofertas = len(df_p)
-    n_adj     = int(df_p["flag_adjudicado"].sum())
-    rev_total = int(df_p["revenue_adj_clp"].sum())
-    wr        = n_adj / n_ofertas if n_ofertas else 0
-    print("\n--- Baseline Promedon ---")
-    print(f"  ofertas presentadas : {n_ofertas:,}")
-    print(f"  ofertas adjudicadas : {n_adj:,}")
-    print(f"  win rate            : {wr:.1%}")
-    print(f"  revenue estimado    : ${rev_total:,} CLP")
-
-    print(f"\n→ {md_path}")
+    print(f"  reporte: {md_path}")
 
 
 if __name__ == "__main__":
