@@ -27,7 +27,8 @@
       "Bash(aws ssm send-command *)",
       "Bash(awk '{print tolower\\($0\\)}')",
       "mcp__neo4j__read_neo4j_cypher",
-      "mcp__neo4j__get_neo4j_schema"
+      "mcp__neo4j__get_neo4j_schema",
+      "Bash(git status *)"
     ]
   },
   "enableAllProjectMcpServers": true,
