@@ -28,7 +28,9 @@
       "Bash(awk '{print tolower\\($0\\)}')",
       "mcp__neo4j__read_neo4j_cypher",
       "mcp__neo4j__get_neo4j_schema",
-      "Bash(git status *)"
+      "Bash(git status *)",
+      "Bash(grep -o \"Distribución por diagnóstico</h3>[^<]*<table[^>]*>.\\\\{0,2000\\\\}\" \"/i/Mi unidad/Python/chileCompraApp/data/analisis_promedon/diagnostico_promedon.html\")",
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\(r'I:\\\\Mi unidad\\\\Python\\\\chileCompraApp\\\\script_analisis_promedon.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,
