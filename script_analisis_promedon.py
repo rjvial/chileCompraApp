@@ -121,6 +121,7 @@ La versión ordenada reconoce que:
     - hay que construir varias vistas coherentes y luego combinarlas
 ═══════════════════════════════════════════════════════════════════════════
 """
+import json
 import os
 from datetime import datetime
 
@@ -1104,6 +1105,253 @@ def _seccion_precio(t_prec_dict: dict, prefix: str = "2") -> list[str]:
     return html
 
 
+def _build_competitor_stats(df_universo: pd.DataFrame, rut_promedon: str) -> pd.DataFrame:
+    """Una fila por proveedor en df_universo (items donde Promedon ofertó) con
+    métricas de footprint y posición competitiva."""
+    item_winner = (df_universo[df_universo["flag_adjudicado"].fillna(0).astype(int) == 1]
+                   .drop_duplicates("item_key")
+                   .set_index("item_key")["rut_proveedor"])
+    promedon_prices = (df_universo[df_universo["rut_proveedor"] == rut_promedon]
+                       .drop_duplicates("item_key")
+                       .set_index("item_key")["precio_unitario"])
+
+    rows = []
+    for (rut, nombre), g in df_universo.groupby(["rut_proveedor", "nombre_proveedor"], dropna=False):
+        n_ofertas = len(g)
+        n_adj = int(g["flag_adjudicado"].fillna(0).sum())
+        wr = (n_adj / n_ofertas) if n_ofertas else 0.0
+        n_productos = int(g["producto_canonico"].nunique())
+        n_compradores = int(g["rut_comprador"].nunique())
+        revenue = float((g["flag_adjudicado"].fillna(0)
+                         * g["num_unidades"].fillna(0)
+                         * g["precio_unitario"].fillna(0)).sum())
+        avg_ticket = (revenue / n_adj) if n_adj else 0.0
+
+        items_arr = g["item_key"].values
+        winners_arr = item_winner.reindex(items_arr).values
+        promedon_won = int((winners_arr == rut_promedon).sum())
+        this_won = int((winners_arr == rut).sum())
+        other_mask = pd.notna(winners_arr) & (winners_arr != rut_promedon) & (winners_arr != rut)
+        other_won = int(other_mask.sum())
+        unawarded_mask = pd.isna(winners_arr)
+        unawarded = int(unawarded_mask.sum())
+        wr_promedon_h2h = (promedon_won / n_ofertas) if n_ofertas else 0.0
+
+        winner_rev_arr = (g["num_unidades"].fillna(0).values
+                          * g["precio_unitario_ganador"].fillna(0).values)
+        rev_promedon_won = float(winner_rev_arr[winners_arr == rut_promedon].sum())
+        rev_this_won = float(winner_rev_arr[winners_arr == rut].sum())
+        rev_other_won = float(winner_rev_arr[other_mask].sum())
+        rev_unawarded = 0.0
+
+        price_rel_median = None
+        price_rel_values: list[float] = []
+        if rut != rut_promedon:
+            g2 = g.copy()
+            g2["pp"] = g2["item_key"].map(promedon_prices)
+            mask = (g2["pp"].fillna(0) > 0) & g2["precio_unitario"].notna()
+            if mask.any():
+                rel = ((g2.loc[mask, "precio_unitario"] - g2.loc[mask, "pp"])
+                       / g2.loc[mask, "pp"])
+                rel = rel.replace([float("inf"), float("-inf")], pd.NA).dropna()
+                if len(rel) > 0:
+                    price_rel_median = float(rel.median())
+                    price_rel_values = rel.astype(float).tolist()
+
+        if "producto_segmento" in g.columns:
+            seg_counts = g["producto_segmento"].value_counts()
+            tot_ab = float(seg_counts.get("A", 0) + seg_counts.get("B", 0))
+            pct_a = (float(seg_counts.get("A", 0)) / tot_ab) if tot_ab > 0 else 0.0
+            pct_b = (float(seg_counts.get("B", 0)) / tot_ab) if tot_ab > 0 else 0.0
+        else:
+            pct_a = pct_b = 0.0
+
+        rows.append({
+            "rut": rut,
+            "nombre": nombre if pd.notna(nombre) else "(sin nombre)",
+            "is_promedon": rut == rut_promedon,
+            "n_ofertas": n_ofertas,
+            "n_adj": n_adj,
+            "wr": wr,
+            "n_productos": n_productos,
+            "n_compradores": n_compradores,
+            "revenue": revenue,
+            "avg_ticket": avg_ticket,
+            "promedon_won": promedon_won,
+            "this_won": this_won,
+            "other_won": other_won,
+            "unawarded": unawarded,
+            "rev_promedon_won": rev_promedon_won,
+            "rev_this_won": rev_this_won,
+            "rev_other_won": rev_other_won,
+            "rev_unawarded": rev_unawarded,
+            "wr_promedon_h2h": wr_promedon_h2h,
+            "price_rel_median": price_rel_median,
+            "price_rel_values": price_rel_values,
+            "pct_a": pct_a,
+            "pct_b": pct_b,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def _seccion_competencia(df_universo: pd.DataFrame, df_seg: pd.DataFrame,
+                          df_rows_split: pd.DataFrame, threshold: float,
+                          rut_promedon: str, prefix: str = "1") -> list[str]:
+    """Análisis competitivo: Promedon vs. mercado en items donde Promedon ofertó."""
+    html = []
+    title = "Análisis competitivo — Promedon vs. mercado"
+
+    df_c = _build_competitor_stats(df_universo, rut_promedon)
+    if df_c.empty or not df_c["is_promedon"].any():
+        html.append(f"<div class='card'><h2><span class='sec-num'>{prefix}</span>{title}</h2>")
+        html.append("<p><i>(sin datos)</i></p></div>")
+        return html
+
+    promedon_row = df_c[df_c["is_promedon"]].iloc[0]
+    competitors = df_c[~df_c["is_promedon"]].copy()
+    if competitors.empty:
+        html.append(f"<div class='card'><h2><span class='sec-num'>{prefix}</span>{title}</h2>")
+        html.append("<p><i>(sin competidores)</i></p></div>")
+        return html
+
+    html.append(f"<div class='card'><h2><span class='sec-num'>{prefix}</span>{title}</h2>")
+    html.append(
+        "<p>El análisis cubre los items donde Promedon ofertó. Los competidores "
+        "comparados son los proveedores que ofertaron en al menos uno de esos items.</p>"
+    )
+
+    # ─── 1.1 Segmentación por intensidad competitiva ───────────────────
+    html.append(f"<h3>{prefix}.1 Segmentación por intensidad competitiva</h3>")
+    html.append(
+        f"<p>Segmentación de la intensidad de la competencia en: "
+        f"<b>Alta competencia</b> (competidores/item ≥ {threshold:.2f}) y "
+        f"<b>Baja competencia</b> (competidores/item &lt; {threshold:.2f}).</p>"
+    )
+    all_promedon_items = df_seg.loc[df_seg["rut_proveedor"] == rut_promedon, "item_key"].unique()
+    total_item_comp = df_seg.groupby("item_key")["rut_proveedor"].nunique() - 1
+    tot_comp_item = (float(total_item_comp[total_item_comp.index.isin(all_promedon_items)].mean())
+                     if len(all_promedon_items) else None)
+    tot_ofertas_p = int(df_rows_split["ofertas_promedon"].sum())
+    tot_adj_p = int(df_rows_split["adjudicaciones"].sum())
+    html.append(_generate_table(df_rows_split, {
+        "segmento": ("Cat.", None),
+        "comp_item": ("Comp./Item", lambda v: f"{v:.1f}" if pd.notna(v) else "-"),
+        "n_productos": ("Productos", lambda v: f"{int(v):,}"),
+        "ofertas_promedon": ("Ofertas", lambda v: f"{int(v):,}"),
+        "adjudicaciones": ("Adjudicadas", lambda v: f"{int(v):,}"),
+        "wr_promedon": ("WR Promedon", _fmt_pct),
+        "revenue": ("Revenue Promedon", _fmt_money),
+    }, totals={
+        "segmento": "Total",
+        "comp_item": tot_comp_item,
+        "n_productos": int(df_rows_split["n_productos"].sum()),
+        "ofertas_promedon": tot_ofertas_p,
+        "adjudicaciones": tot_adj_p,
+        "wr_promedon": (tot_adj_p / tot_ofertas_p) if tot_ofertas_p else 0.0,
+        "revenue": float(df_rows_split["revenue"].sum()),
+    }))
+
+    # ─── 1.2 Footprint comparativo ─────────────────────────────────────
+    html.append(f"<h3>{prefix}.2 Footprint comparativo</h3>")
+    html.append(
+        "<p>Comparación de Promedon con los 15 competidores con más revenue en los "
+        "items ofertados por Promedon. <i>WR Promedon H2H</i>: porcentaje de items en "
+        "que Promedon y el competidor ofertaron juntos en que Promedon se quedó con "
+        "la adjudicación. <i>Compradores</i>: nº de compradores distintos donde "
+        "el proveedor ofertó.</p>"
+    )
+    top_comp = competitors.sort_values("revenue", ascending=False).head(15).copy()
+    table_rows = pd.concat([df_c[df_c["is_promedon"]], top_comp], ignore_index=True)
+    table_rows.loc[table_rows["is_promedon"], "wr_promedon_h2h"] = None
+    table_rows["nombre_disp"] = table_rows.apply(
+        lambda r: f"<b>{r['nombre']} ★</b>" if r["is_promedon"] else r["nombre"], axis=1)
+    html.append(_generate_table(table_rows, {
+        "nombre_disp": ("Proveedor", None),
+        "n_ofertas": ("Ofertas", lambda v: f"{int(v):,}"),
+        "n_adj": ("Adjudic.", lambda v: f"{int(v):,}"),
+        "wr": ("WR", _fmt_pct),
+        "wr_promedon_h2h": ("WR Promedon H2H", lambda v: _fmt_pct(v) if pd.notna(v) else "—"),
+        "n_compradores": ("Compradores", lambda v: f"{int(v):,}"),
+        "revenue": ("Revenue", _fmt_money),
+    }, max_rows=len(table_rows)))
+
+    # ─── 1.3 H2H — distribución de items ──────────────────────────────
+    html.append(f"<h3>{prefix}.3 Comparación head-to-head del porcentaje de items adjudicados</h3>")
+    html.append(
+        "<p>Top 15 competidores por revenue (mismo orden que Footprint comparativo). "
+        "Cada barra al 100% se desglosa en quién ganó los items en que compitieron "
+        "con Promedon: Promedon, el competidor, un tercero, o sin adjudicación.</p>"
+    )
+    top_h2h = competitors.sort_values("revenue", ascending=False).head(15).reset_index(drop=True)
+    h_names = top_h2h["nombre"].tolist()
+    h_n = top_h2h["n_ofertas"].astype(float).tolist()
+    pct_p = [(p / n * 100) if n > 0 else 0 for p, n in zip(top_h2h["promedon_won"], h_n)]
+    pct_c = [(p / n * 100) if n > 0 else 0 for p, n in zip(top_h2h["this_won"], h_n)]
+    pct_o = [(p / n * 100) if n > 0 else 0 for p, n in zip(top_h2h["other_won"], h_n)]
+    pct_u = [(p / n * 100) if n > 0 else 0 for p, n in zip(top_h2h["unawarded"], h_n)]
+    html.append("<div id='chart_h2h_items' style='width:100%;height:480px;'></div>")
+    html.append(
+        "<script>Plotly.newPlot('chart_h2h_items', ["
+        f"{{x:{json.dumps(h_names)}, y:{json.dumps(pct_p)}, type:'bar', name:'Promedon ganó',"
+        " marker:{color:'#1d4ed8'},"
+        " hovertemplate:'<b>%{x}</b><br>Promedon ganó: %{y:.1f}%<extra></extra>'},"
+        f"{{x:{json.dumps(h_names)}, y:{json.dumps(pct_c)}, type:'bar', name:'Competidor ganó',"
+        " marker:{color:'#dc2626'},"
+        " hovertemplate:'<b>%{x}</b><br>Competidor ganó: %{y:.1f}%<extra></extra>'},"
+        f"{{x:{json.dumps(h_names)}, y:{json.dumps(pct_o)}, type:'bar', name:'Tercero ganó',"
+        " marker:{color:'#94a3b8'},"
+        " hovertemplate:'<b>%{x}</b><br>Tercero ganó: %{y:.1f}%<extra></extra>'},"
+        f"{{x:{json.dumps(h_names)}, y:{json.dumps(pct_u)}, type:'bar', name:'Sin adjudicación',"
+        " marker:{color:'#cbd5e1'},"
+        " hovertemplate:'<b>%{x}</b><br>Sin adj.: %{y:.1f}%<extra></extra>'}"
+        "], {"
+        "barmode:'stack',"
+        "xaxis:{tickangle:-35, automargin:true},"
+        "yaxis:{title:'% de items', range:[0, 100], ticksuffix:'%'},"
+        "legend:{orientation:'h', y:1.12},"
+        "margin:{t:40,r:30,b:200,l:60},"
+        "font:{family:'Inter, sans-serif', size:11, color:'#0f172a'}, paper_bgcolor:'white', plot_bgcolor:'#f8fafc'"
+        f"}}, {PLOTLY_CONFIG});</script>"
+    )
+
+    # ─── 1.4 H2H — distribución de revenue ────────────────────────────
+    html.append(f"<h3>{prefix}.4 Comparación head-to-head del revenue porcentual</h3>")
+    html.append(
+        "<p>Mismo desglose que arriba pero ponderado por revenue adjudicado en cada item. "
+        "Pondera más los items grandes; complementa la lectura de la distribución por items.</p>"
+    )
+    rev_totals = (top_h2h["rev_promedon_won"] + top_h2h["rev_this_won"]
+                  + top_h2h["rev_other_won"]).astype(float).tolist()
+    rev_pct_p = [(r / t * 100) if t > 0 else 0 for r, t in zip(top_h2h["rev_promedon_won"], rev_totals)]
+    rev_pct_c = [(r / t * 100) if t > 0 else 0 for r, t in zip(top_h2h["rev_this_won"], rev_totals)]
+    rev_pct_o = [(r / t * 100) if t > 0 else 0 for r, t in zip(top_h2h["rev_other_won"], rev_totals)]
+    html.append("<div id='chart_h2h_rev' style='width:100%;height:480px;'></div>")
+    html.append(
+        "<script>Plotly.newPlot('chart_h2h_rev', ["
+        f"{{x:{json.dumps(h_names)}, y:{json.dumps(rev_pct_p)}, type:'bar', name:'Promedon ganó',"
+        " marker:{color:'#1d4ed8'},"
+        " hovertemplate:'<b>%{x}</b><br>Promedon ganó: %{y:.1f}%<extra></extra>'},"
+        f"{{x:{json.dumps(h_names)}, y:{json.dumps(rev_pct_c)}, type:'bar', name:'Competidor ganó',"
+        " marker:{color:'#dc2626'},"
+        " hovertemplate:'<b>%{x}</b><br>Competidor ganó: %{y:.1f}%<extra></extra>'},"
+        f"{{x:{json.dumps(h_names)}, y:{json.dumps(rev_pct_o)}, type:'bar', name:'Tercero ganó',"
+        " marker:{color:'#94a3b8'},"
+        " hovertemplate:'<b>%{x}</b><br>Tercero ganó: %{y:.1f}%<extra></extra>'}"
+        "], {"
+        "barmode:'stack',"
+        "xaxis:{tickangle:-35, automargin:true},"
+        "yaxis:{title:'% de revenue', range:[0, 100], ticksuffix:'%'},"
+        "legend:{orientation:'h', y:1.12},"
+        "margin:{t:40,r:30,b:200,l:60},"
+        "font:{family:'Inter, sans-serif', size:11, color:'#0f172a'}, paper_bgcolor:'white', plot_bgcolor:'#f8fafc'"
+        f"}}, {PLOTLY_CONFIG});</script>"
+    )
+
+    html.append("</div>")
+    return html
+
+
 def _build_df_l1(df_seg: pd.DataFrame, t_prec_dict: dict) -> pd.DataFrame:
     """Construye el df enriquecido de items L1 — Recoverable (Promedon perdió y un
     descuento moderado habría revertido la adjudicación). Devuelve df vacío si no
@@ -1297,6 +1545,9 @@ def _seccion_l1_deep_dive(df_seg: pd.DataFrame, t_prec_dict: dict,
     return html
 
 
+PLOTLY_CONFIG = "{responsive:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']}"
+
+
 def _seccion_quick_wins(df_seg: pd.DataFrame, t_prec_dict: dict,
                         prefix: str = "3") -> list[str]:
     """Top 20 items L1 por ROI (revenue recuperable / descuento requerido)."""
@@ -1332,6 +1583,7 @@ def _seccion_quick_wins(df_seg: pd.DataFrame, t_prec_dict: dict,
     }, max_rows=20, totals={
         "revenue_recuperable": rev_qw,
     }))
+
     html.append("</div>")
     return html
 
@@ -1370,6 +1622,7 @@ def build_reporte_html(df_base: pd.DataFrame, rut_promedon: str) -> str:
     html.append("<link rel='preconnect' href='https://fonts.googleapis.com'>")
     html.append("<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>")
     html.append("<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap' rel='stylesheet'>")
+    html.append("<script src='https://cdn.plot.ly/plotly-2.35.2.min.js' charset='utf-8'></script>")
     html.append(HTML_STYLE)
     html.append("</head><body><div class='container'>")
     html.append("<div class='report-header'>")
@@ -1392,10 +1645,7 @@ def build_reporte_html(df_base: pd.DataFrame, rut_promedon: str) -> str:
     # Resumen anual
     html.extend(_seccion_anual(df_universo, rut_promedon))
 
-    # Segmentación
-    html.append("<div class='card'><h2>Segmentación por Intensidad Competitiva</h2>")
-    html.append(f"<p>Umbral de mediana: <b>{threshold:.2f} competidores/item</b>.</p>")
-    
+    # Datos de segmentación (renderizados dentro del capítulo de Análisis competitivo)
     rows_split = []
     sub_dict = {}
     sub_p_dict = {}
@@ -1422,32 +1672,7 @@ def build_reporte_html(df_base: pd.DataFrame, rut_promedon: str) -> str:
             "comp_item": comp_item,
             "revenue": rev,
         })
-
     df_rows_split = pd.DataFrame(rows_split)
-    all_promedon_items = df_seg.loc[df_seg["rut_proveedor"] == rut_promedon, "item_key"].unique()
-    total_item_comp = df_seg.groupby("item_key")["rut_proveedor"].nunique() - 1
-    tot_comp_item = (float(total_item_comp[total_item_comp.index.isin(all_promedon_items)].mean())
-                     if len(all_promedon_items) else None)
-    tot_ofertas_p = int(df_rows_split["ofertas_promedon"].sum())
-    tot_adj_p = int(df_rows_split["adjudicaciones"].sum())
-    html.append(_generate_table(df_rows_split, {
-        "segmento": ("Cat.", None),
-        "comp_item": ("Comp./Item", lambda v: f"{v:.1f}" if pd.notna(v) else "-"),
-        "n_productos": ("Productos", lambda v: f"{int(v):,}"),
-        "ofertas_promedon": ("Ofertas", lambda v: f"{int(v):,}"),
-        "adjudicaciones": ("Adjudicadas", lambda v: f"{int(v):,}"),
-        "wr_promedon": ("WR Promedon", _fmt_pct),
-        "revenue": ("Revenue Promedon", _fmt_money),
-    }, totals={
-        "segmento": "Total",
-        "comp_item": tot_comp_item,
-        "n_productos": int(df_rows_split["n_productos"].sum()),
-        "ofertas_promedon": tot_ofertas_p,
-        "adjudicaciones": tot_adj_p,
-        "wr_promedon": (tot_adj_p / tot_ofertas_p) if tot_ofertas_p else 0.0,
-        "revenue": float(df_rows_split["revenue"].sum()),
-    }))
-    html.append("</div>")
 
     # Secciones
     t_prod_dict = {}
@@ -1460,9 +1685,11 @@ def build_reporte_html(df_base: pd.DataFrame, rut_promedon: str) -> str:
         t_prec_dict[label] = build_tabla_precio(sub_base, rut_promedon)
         n_ofertas_dict[label] = int(len(sub_p_dict[label]))
 
-    html.extend(_seccion_precio(t_prec_dict, prefix="1"))
-    html.extend(_seccion_l1_deep_dive(df_seg, t_prec_dict, prefix="2"))
-    html.extend(_seccion_quick_wins(df_seg, t_prec_dict, prefix="3"))
+    html.extend(_seccion_competencia(df_universo, df_seg, df_rows_split, threshold,
+                                      rut_promedon, prefix="1"))
+    html.extend(_seccion_precio(t_prec_dict, prefix="2"))
+    html.extend(_seccion_l1_deep_dive(df_seg, t_prec_dict, prefix="3"))
+    html.extend(_seccion_quick_wins(df_seg, t_prec_dict, prefix="4"))
 
     html.append("</div></body></html>")
     return "".join(html)
