@@ -17,16 +17,6 @@ def pd_read_s3_parquet(bucket, file_name, s3_client=None, **args):
     obj = s3_client.get_object(Bucket=bucket, Key=f'{file_name}')
     return pd.read_parquet(io.BytesIO(obj['Body'].read()), **args)
 
-def create_athena_database(athena_client, database_name, bucket):
-    # Crea una base de datos database_name
-    query = f"CREATE DATABASE IF NOT EXISTS {database_name};"
-    response = athena_client.start_query_execution(
-        QueryString=query,
-        ResultConfiguration={
-            'OutputLocation': f's3://{bucket}/query-results/'
-        }
-    )
-
 def execute_athena_query(athena_client, query, database_name, bucket, output):
     # Ejecuta una query en la base de datos database_name
     response = athena_client.start_query_execution(
@@ -47,14 +37,6 @@ def execute_athena_query(athena_client, query, database_name, bucket, output):
         contador = contador + 1
     print(f'Status Execute_athena_query: {status}')    
     return queryExecutionId
-
-def create_s3_folder(s3_client, athena_bucket, nombre_folder):
-    # Crea un folder S3 dentro de un bucket específico
-    s3_client.put_object(Bucket=athena_bucket, Key=(nombre_folder+'/'))
-
-def create_s3_bucket(s3_client, athena_bucket):
-    response = s3_client.create_bucket(
-        Bucket=athena_bucket)
 
 def get_execution_response(athena_client, queryExecutionId):
     # Obtiene el estatus de la ejecución de una query
@@ -116,82 +98,6 @@ def upload_file(s3_client, local_file, bucket, s3_file, max_retries=3):
         status = check_if_file_exists(s3_client, bucket, s3_file)
     print(f'Status Upload archivo {s3_file}: {status}')
     return response
-
-def check_if_table_exists(athena_client, athena_catalog_name, nombre_tabla, db_name):
-    # Chequea si existe o no una tabla específica 
-    try: 
-        response = athena_client.get_table_metadata(
-        CatalogName=athena_catalog_name,
-        DatabaseName=db_name,
-        TableName=nombre_tabla
-        )
-        response['TableMetadata']['Parameters']['location']
-        satus = 'EXISTS'
-        return satus
-    except:
-        satus = 'ERROR'
-        return satus
-
-
-def genera_tablas(athena_client, athena_catalog_name, nombre_tabla, direccion, columnas_tabla_con_tipo, columnas_particion,
-                  DB_NAME, athena_bucket, athena_output, iceberg_flag = False):
-    # Genera una tabla Athena y una Iceberg a partir de datos en S3. En caso que los datos no hayan sido subidos
-    # a S3, realiza el proceso de descarga y posterior upload de los datos a S3.
-
-    status_table = check_if_table_exists(athena_client, athena_catalog_name, nombre_tabla, f'{DB_NAME}')
-    if status_table != 'EXISTS':  #Si No existe la tabla, se realiza todo el proceso
-        local_file_name = f'{nombre_tabla}.gzip'
-        
-        # Se crea la tabla en Athena y se Pobla con datos inmediatamente
-        print(f'Creando tabla {DB_NAME}.{nombre_tabla} en Athena')
-        if columnas_particion == '':
-            query_create_athena_table = f"""
-            CREATE EXTERNAL TABLE IF NOT EXISTS {DB_NAME}.{nombre_tabla} ( {columnas_tabla_con_tipo}
-                )
-            STORED AS PARQUET
-            LOCATION
-            's3://{athena_bucket}/{direccion}/';
-            """
-        else:
-            query_create_athena_table = f"""
-            CREATE EXTERNAL TABLE IF NOT EXISTS {DB_NAME}.{nombre_tabla} ( {columnas_tabla_con_tipo}
-                )
-            PARTITIONED BY (
-                {columnas_particion}
-            )
-            STORED AS PARQUET
-            LOCATION
-            's3://{athena_bucket}/{direccion}/';
-            """
-
-        execute_athena_query(athena_client, query_create_athena_table, f'{DB_NAME}', athena_bucket, athena_output)
-
-    else: #Si la tabla fue creada previamente
-        print(f'Tabla {nombre_tabla} ya existe. No se volverá a crear')
-
-    query_repair = f"""
-    MSCK REPAIR TABLE {nombre_tabla}
-    """
-    execute_athena_query(athena_client, query_repair, f'{DB_NAME}', athena_bucket, athena_output)
-
-    if iceberg_flag:
-        genera_tabla_iceberg_desde_tabla_athena(athena_client, nombre_tabla, 'iceberg_db', DB_NAME, athena_bucket, athena_output)
-        
-
-def genera_tabla_iceberg_desde_tabla_athena(athena_client, nombre_tabla, iceberg_db, db_name, athena_bucket, athena_output):
-    query = f"""
-    CREATE TABLE {iceberg_db}.{nombre_tabla} WITH (
-    table_type = 'ICEBERG',
-    is_external = false,
-    location = 's3://landengines-data/iceberg/{nombre_tabla}/'
-    ) AS
-    SELECT * FROM {db_name}.{nombre_tabla}
-    """
-    queryExecutionId = execute_athena_query(athena_client, query, 'iceberg_db', athena_bucket, athena_output)
-    print(f'Creando tabla {iceberg_db}.{nombre_tabla} en Iceberg')
-
-    return queryExecutionId
-
 
 def invoke_titan_embedding(bedrock_client, text, dimensions=256,
                            model_id="amazon.titan-embed-text-v2:0"):

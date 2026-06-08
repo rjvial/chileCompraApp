@@ -145,52 +145,6 @@ def transfer_csvs_to_neo4j_import(
     ssh.close()
     
 
-def delete_import_files(
-    public_ip,
-    ssh_user='ec2-user',
-    ssh_port=22,
-    key_path='neo4j-key-pair.pem',
-    import_dir='/var/lib/neo4j/import',
-    target_files=None
-):
-    """
-    Connects via SSH and deletes files in the Neo4j import directory.
-
-    - If target_files is a list of filenames, deletes only those.
-    - If target_files is None, deletes everything in import_dir.
-    """
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(public_ip, port=ssh_port, username=ssh_user, key_filename=key_path)
-
-    # 1) Ensure import dir exists
-    check_dir = f"sudo test -d {import_dir}"
-    _, out, err = ssh.exec_command(check_dir)
-    if out.channel.recv_exit_status() != 0:
-        raise RuntimeError(f"Import directory not found: {err.read().decode()}")
-
-    # 2) Delete files
-    if target_files:
-        for filename in target_files:
-            path = os.path.join(import_dir, filename)
-            cmd = f"sudo rm -f '{path}'"
-            _, out, err = ssh.exec_command(cmd)
-            if out.channel.recv_exit_status() == 0:
-                print(f"✔ Deleted {filename}")
-            else:
-                print(f"✖ Failed to delete {filename}: {err.read().decode()}")
-    else:
-        # delete everything in the folder
-        cmd = f"sudo rm -f {import_dir}/*"
-        _, out, err = ssh.exec_command(cmd)
-        if out.channel.recv_exit_status() == 0:
-            print(f"✔ Deleted all files in {import_dir}")
-        else:
-            print(f"✖ Failed to delete files: {err.read().decode()}")
-
-    ssh.close()
-
-
 def neo4jbrowser(public_ip: str):
     """
     Opens the Neo4j browser in the default web browser.
