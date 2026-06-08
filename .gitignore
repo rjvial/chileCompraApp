@@ -4,6 +4,9 @@ __pycache__/
 *.pyo
 .env
 secrets.env
+*.pem
+*.key
+neo4j-key-pair.pem
 *.egg-info/
 dist/
 build/
