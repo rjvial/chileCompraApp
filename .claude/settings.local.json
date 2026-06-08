@@ -33,7 +33,16 @@
       "PowerShell(python -c \"import ast; ast.parse\\(open\\(r'I:\\\\Mi unidad\\\\Python\\\\chileCompraApp\\\\script_analisis_promedon.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(git remote *)",
       "Bash(git apply *)",
-      "Bash(git ls-remote *)"
+      "Bash(git ls-remote *)",
+      "Bash(Get-ChildItem *)",
+      "PowerShell(Get-ChildItem -Path \"I:\\\\Mi unidad\\\\Python\\\\chileCompraApp\" -Recurse -Directory | Where-Object {$_.Name -notmatch \"^\\(__pycache__|\\\\.git|venv|\\\\.claude\\)$\"})",
+      "PowerShell(Get-ChildItem -Path \"I:\\\\Mi unidad\\\\Python\\\\chileCompraApp\\\\data\" -Recurse | Select-Object Name, @{Name=\"Size\";Expression={$_.Length}} | Select-Object -First 30)",
+      "Bash(Select-Object Name)",
+      "Bash(cd \"I:\\\\Mi unidad\\\\Python\\\\chileCompraApp\")",
+      "Bash(rm -f funcionesPgEC2.py funcionesString.py funcionesUploadNeo4j.py funcionesAthenaMetadata.py)",
+      "Bash(git check-ignore *)",
+      "Bash(git push *)",
+      "Bash(rmdir \"data/analisis_promedon\" \"data/analisis_productos_medicos_promedon_chile_s_a\")"
     ]
   },
   "enableAllProjectMcpServers": true,
