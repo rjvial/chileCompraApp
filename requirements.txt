@@ -1,0 +1,9 @@
+boto3
+pandas
+numpy
+neo4j
+paramiko
+python-dotenv
+rapidfuzz
+scikit-learn
+kumoai

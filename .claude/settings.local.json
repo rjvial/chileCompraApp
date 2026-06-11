@@ -43,7 +43,13 @@
       "Bash(git check-ignore *)",
       "Bash(git push *)",
       "Bash(rmdir \"data/analisis_promedon\" \"data/analisis_productos_medicos_promedon_chile_s_a\")",
-      "PowerShell(git *)"
+      "PowerShell(git *)",
+      "PowerShell(pip show *)",
+      "PowerShell(py *)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m pip install -r requirements.txt --quiet)",
+      "Bash(tasklist //FI \"PID eq 18840\")",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m pip list 2>$null | Select-Object -Skip 2 | Out-String)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe iniciador.py)"
     ]
   },
   "enableAllProjectMcpServers": true,
