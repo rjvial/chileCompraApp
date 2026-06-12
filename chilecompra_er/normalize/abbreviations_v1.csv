@@ -1,0 +1,14 @@
+pattern,replacement,notes
+\bc/\s*,con ,"c/" = con
+\bs/\s*,sin ,"s/" = sin
+\bdesech\w*,desechable,desech. / desechables variants
+\bjga\.?\b,jeringa,jga = jeringa
+\bdos\b,2,number word -> digit (so "dos vias" == "2 vias")
+\btres\b,3,
+\bcuatro\b,4,
+\bcinco\b,5,
+\bseis\b,6,
+\bsiete\b,7,
+\bocho\b,8,
+\bnueve\b,9,
+\bdiez\b,10,

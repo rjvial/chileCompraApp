@@ -1,0 +1,598 @@
+{
+  "register_version": "0.33.0",
+  "notes": "Versioned category register (design note §3 step 7). Every boundary change is a new register_version. v0.2.0: widened from 1 to 10 categories grounded in the segment-42 spend profiling (data/profiling_m0_seg42.csv); the sonda group is split into foley / nasogastrica / aspiracion per the schema-coherence test of the design's worked example. include/exclude are the Tier-1 classifier: regexes over NORMALIZED text (lowercase, accent-stripped, digit/letter boundaries spaced). Exclusions resolve sibling overlaps deterministically (aguja inside a jeringa description is an attribute, not a category — design §3). A category must reach >=95% precision on a ~200-description hand-checked sample before status becomes 'launched'; all entries are drafts/candidates until then. Each category carries corpus_regex: the raw-text filter used to fetch its sample corpus for the schema strawman (generate-schemas). v-merge: bandas_molares_ortodoncia merged into bandas_molares (same family found via two head tokens; design §3 step 4: identical schemas -> merge).",
+  "categories": [
+    {
+      "category_id": "sondas_foley",
+      "name": "Sondas Foley",
+      "status": "candidate",
+      "include": [
+        "\\bfoley\\b"
+      ],
+      "exclude": [
+        "\\bnelaton\\b",
+        "\\bnasogastric\\w*",
+        "\\baspiracion\\b",
+        "\\bsujetador\\w*",
+        "\\bnefrostomia\\b",
+        "\\bset\\b",
+        "\\bkit\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sondas_foley.json",
+      "corpus_regex": "(?i).*foley.*",
+      "canonical_example": "SONDA FOLEY CH16 SILICONA 2 VIAS"
+    },
+    {
+      "category_id": "jeringas",
+      "name": "Jeringas",
+      "status": "candidate",
+      "include": [
+        "\\bjering\\w*"
+      ],
+      "exclude": [
+        "\\bbomba\\b"
+      ],
+      "spend_share": 0.004,
+      "schema_file": "schemas/jeringas.json",
+      "corpus_regex": "(?i).*jering.*",
+      "canonical_example": "JERINGA 10ML C/AGUJA 21G LUER SLIP"
+    },
+    {
+      "category_id": "guantes",
+      "name": "Guantes",
+      "status": "candidate",
+      "include": [
+        "\\bguante\\w*"
+      ],
+      "exclude": [],
+      "spend_share": 0.001,
+      "schema_file": "schemas/guantes.json",
+      "corpus_regex": "(?i).*guante.*",
+      "canonical_example": "GUANTE NITRILO TALLA M NO ESTERIL"
+    },
+    {
+      "category_id": "gasas_apositos",
+      "name": "Gasas y apósitos",
+      "status": "candidate",
+      "include": [
+        "\\bgasa\\w*",
+        "\\baposito\\w*"
+      ],
+      "exclude": [
+        "\\bvenda\\w*"
+      ],
+      "spend_share": 0.026,
+      "schema_file": "schemas/gasas_apositos.json",
+      "corpus_regex": "(?i).*(gasa|aposito|apósito).*",
+      "canonical_example": "GASA ESTERIL 10X10 CM"
+    },
+    {
+      "category_id": "agujas",
+      "name": "Agujas",
+      "status": "candidate",
+      "include": [
+        "\\baguja\\w*"
+      ],
+      "exclude": [
+        "\\bjering\\w*",
+        "\\bsutura\\w*"
+      ],
+      "spend_share": 0.016,
+      "schema_file": "schemas/agujas.json",
+      "corpus_regex": "(?i).*aguja.*",
+      "canonical_example": "AGUJA HIPODERMICA 21G X 1 1/2"
+    },
+    {
+      "category_id": "suturas",
+      "name": "Suturas",
+      "status": "candidate",
+      "include": [
+        "\\bsutura\\w*"
+      ],
+      "exclude": [],
+      "spend_share": 0.007,
+      "schema_file": "schemas/suturas.json",
+      "corpus_regex": "(?i).*sutura.*",
+      "canonical_example": "SUTURA NYLON 3/0 AGUJA CURVA"
+    },
+    {
+      "category_id": "vendas",
+      "name": "Vendas",
+      "status": "candidate",
+      "include": [
+        "\\bvenda\\w*",
+        "\\bvendaje\\w*"
+      ],
+      "exclude": [],
+      "spend_share": 0.005,
+      "schema_file": "schemas/vendas.json",
+      "corpus_regex": "(?i).*(venda|vendaje).*",
+      "canonical_example": "VENDA ELASTICA 10 CM X 5 M"
+    },
+    {
+      "category_id": "circuitos_respiratorios",
+      "name": "Circuitos respiratorios",
+      "status": "candidate",
+      "include": [
+        "\\bcircuito\\w*"
+      ],
+      "exclude": [],
+      "spend_share": 0.016,
+      "schema_file": "schemas/circuitos_respiratorios.json",
+      "corpus_regex": "(?i).*circuito.*",
+      "canonical_example": "CIRCUITO RESPIRATORIO ADULTO DESECHABLE"
+    },
+    {
+      "category_id": "sondas_nasogastricas",
+      "name": "Sondas nasogástricas",
+      "status": "candidate",
+      "include": [
+        "\\bnasogastric\\w*",
+        "\\bnasoyeyunal\\w*"
+      ],
+      "exclude": [
+        "\\bfoley\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sondas_nasogastricas.json",
+      "corpus_regex": "(?i).*(nasogastric|nasográstric|nasoyeyunal|alimentacion enteral|alimentación enteral).*",
+      "canonical_example": "SONDA NASOGASTRICA 16 FR"
+    },
+    {
+      "category_id": "sondas_aspiracion",
+      "name": "Sondas de aspiración",
+      "status": "candidate",
+      "include": [
+        "\\bsonda\\b.*\\baspiracion\\b",
+        "\\baspiracion\\b.*\\bsonda\\b"
+      ],
+      "exclude": [
+        "\\bfoley\\b",
+        "\\bnasogastric\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sondas_aspiracion.json",
+      "corpus_regex": "(?i).*sonda.*aspiraci.*|(?i).*aspiraci.*sonda.*",
+      "canonical_example": "SONDA DE ASPIRACION 14 FR"
+    },
+    {
+      "category_id": "canulas",
+      "name": "Cánulas",
+      "status": "candidate",
+      "include": [
+        "\\bcanula\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/canulas.json",
+      "corpus_regex": "(?i).*(canula).*",
+      "canonical_example": "CANULA DE TRAQUEOSTOMIA N°6 CON BALON"
+    },
+    {
+      "category_id": "mascarillas",
+      "name": "Mascarillas",
+      "status": "candidate",
+      "include": [
+        "\\bmascarilla\\w*",
+        "\\bbarbijo\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/mascarillas.json",
+      "corpus_regex": "(?i).*(mascarilla|barbijo).*",
+      "canonical_example": "MASCARILLA QUIRURGICA 3 PLIEGUES"
+    },
+    {
+      "category_id": "electrodos",
+      "name": "Electrodos",
+      "status": "candidate",
+      "include": [
+        "\\belectrodo\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/electrodos.json",
+      "corpus_regex": "(?i).*(electrodo).*",
+      "canonical_example": "ELECTRODO DESECHABLE ADULTO PARA ECG"
+    },
+    {
+      "category_id": "cateteres_venosos",
+      "name": "Catéteres venosos",
+      "status": "candidate",
+      "include": [
+        "\\bbranula\\w*",
+        "\\bcateter\\w*\\s+venoso\\w*",
+        "\\bcateter\\w*\\s+iv\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/cateteres_venosos.json",
+      "corpus_regex": "(?i).*(branula|bránula|cateter venoso|catéter venoso|cateter iv).*",
+      "canonical_example": "CATETER VENOSO PERIFERICO 18G"
+    },
+    {
+      "category_id": "tubos_endotraqueales",
+      "name": "Tubos endotraqueales",
+      "status": "candidate",
+      "include": [
+        "\\bendotraqueal\\w*",
+        "\\borotraqueal\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/tubos_endotraqueales.json",
+      "corpus_regex": "(?i).*(endotraqueal|orotraqueal).*",
+      "canonical_example": "TUBO ENDOTRAQUEAL 7.5 CON BALON"
+    },
+    {
+      "category_id": "filtros",
+      "name": "Filtros respiratorios",
+      "status": "candidate",
+      "include": [
+        "\\bfiltro\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/filtros.json",
+      "corpus_regex": "(?i).*(filtro).*",
+      "canonical_example": "FILTRO HME ADULTO DESECHABLE"
+    },
+    {
+      "category_id": "bolsas_recolectoras",
+      "name": "Bolsas recolectoras",
+      "status": "candidate",
+      "include": [
+        "\\bbolsa\\w*\\s+recolect\\w*",
+        "\\bbolsa\\w*\\s+(de\\s+)?orina\\b",
+        "\\bbolsa\\w*\\s+(de\\s+)?colostom\\w*",
+        "\\bbolsa\\w*\\s+(de\\s+)?drenaje\\b",
+        "\\brecolector\\w*\\s+(de\\s+)?orina\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/bolsas_recolectoras.json",
+      "corpus_regex": "(?i).*bolsa.*(recolect|orina|colostom|drenaje).*",
+      "canonical_example": "BOLSA RECOLECTORA DE ORINA 2000 ML"
+    },
+    {
+      "category_id": "fresas_dentales",
+      "name": "Fresas dentales",
+      "status": "candidate",
+      "include": [
+        "\\bfresa\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/fresas_dentales.json",
+      "corpus_regex": "(?i).*(fresa).*",
+      "canonical_example": "FRESA CARBIDE REDONDA N°4"
+    },
+    {
+      "category_id": "limas_endodonticas",
+      "name": "Limas endodónticas",
+      "status": "candidate",
+      "include": [
+        "\\blimas?\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/limas_endodonticas.json",
+      "corpus_regex": "(?i).*\\blimas?\\b.*",
+      "canonical_example": "LIMA K 25 MM PRIMERA SERIE"
+    },
+    {
+      "category_id": "drenajes",
+      "name": "Drenajes",
+      "status": "candidate",
+      "include": [
+        "\\bdrenaje\\w*",
+        "\\bdren\\b"
+      ],
+      "exclude": [
+        "\\bbolsa\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/drenajes.json",
+      "corpus_regex": "(?i).*(drenaje|\\bdren\\b).*",
+      "canonical_example": "DRENAJE TORACICO 28 FR"
+    },
+    {
+      "category_id": "trocares",
+      "name": "Trocares",
+      "status": "candidate",
+      "include": [
+        "\\btrocar\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/trocares.json",
+      "corpus_regex": "(?i).*(trocar).*",
+      "canonical_example": "TROCAR LAPAROSCOPIA 10 MM"
+    },
+    {
+      "category_id": "especulos",
+      "name": "Espéculos",
+      "status": "candidate",
+      "include": [
+        "\\bespeculo\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/especulos.json",
+      "corpus_regex": "(?i).*(especulo).*",
+      "canonical_example": "ESPECULO VAGINAL DESECHABLE TALLA M"
+    },
+    {
+      "category_id": "puntas_pipeta",
+      "name": "Puntas de pipeta",
+      "status": "candidate",
+      "include": [
+        "\\bpunta\\w*.*\\bpipeta\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/puntas_pipeta.json",
+      "corpus_regex": "(?i).*punta.*pipeta.*",
+      "canonical_example": "PUNTAS DESECHABLES DE PIPETA 100-1000 UL"
+    },
+    {
+      "category_id": "sensores_saturacion",
+      "name": "Sensores de saturación",
+      "status": "candidate",
+      "include": [
+        "\\bsensor\\w*\\s+(de\\s+)?saturacion\\b",
+        "\\bsensor\\w*\\s+spo\\s*2\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/sensores_saturacion.json",
+      "corpus_regex": "(?i).*sensor.*(saturacion|saturación|spo2).*",
+      "canonical_example": "SENSOR DE SATURACION NEONATAL"
+    },
+    {
+      "category_id": "insumos_esterilizacion",
+      "name": "Insumos de esterilización",
+      "status": "candidate",
+      "include": [
+        "\\besterilizacion\\b"
+      ],
+      "exclude": [
+        "\\bguante\\w*",
+        "\\bservicio\\w*",
+        "\\bfiltro\\w*",
+        "\\bequipo\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/insumos_esterilizacion.json",
+      "corpus_regex": "(?i).*esterilizacion.*",
+      "canonical_example": "PAPEL MIXTO PARA ESTERILIZACION 10 CM X 200 MT"
+    },
+    {
+      "category_id": "brazaletes_identificacion",
+      "name": "Brazaletes de identificación",
+      "status": "candidate",
+      "include": [
+        "\\bbrazalete\\w*"
+      ],
+      "exclude": [
+        "\\bpresion\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/brazaletes_identificacion.json",
+      "corpus_regex": "(?i).*brazalete.*",
+      "canonical_example": "BRAZALETE IDENTIFICACION ADULTO"
+    },
+    {
+      "category_id": "llaves_tres_pasos",
+      "name": "Llaves de tres pasos",
+      "status": "candidate",
+      "include": [
+        "\\bllave\\w*\\s+(de\\s+)?(3|tres)\\s+pasos\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/llaves_tres_pasos.json",
+      "corpus_regex": "(?i).*llave.*(3|tres)\\s*pasos.*",
+      "canonical_example": "LLAVE DE 3 PASOS ALTO FLUJO"
+    },
+    {
+      "category_id": "bisturis",
+      "name": "Bisturís y hojas",
+      "status": "candidate",
+      "include": [
+        "\\bbisturi\\w*"
+      ],
+      "exclude": [
+        "\\belectrobisturi\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/bisturis.json",
+      "corpus_regex": "(?i).*bisturi.*",
+      "canonical_example": "HOJA DE BISTURI N°15 ACERO CARBONO"
+    },
+    {
+      "category_id": "arcos_ortodoncia",
+      "name": "Arcos de ortodoncia",
+      "status": "candidate",
+      "include": [
+        "\\barcos?\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/arcos_ortodoncia.json",
+      "corpus_regex": "(?i).*\\barcos?\\b.*",
+      "canonical_example": "ARCO DE ACERO REDONDO 018 SUPERIOR"
+    },
+    {
+      "category_id": "nariceras",
+      "name": "Nariceras",
+      "status": "candidate",
+      "include": [
+        "\\bnaricera\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/nariceras.json",
+      "corpus_regex": "(?i).*naricera.*",
+      "canonical_example": "NARICERA ADULTO DESECHABLE"
+    },
+    {
+      "category_id": "medias_compresivas",
+      "name": "Medias compresivas",
+      "status": "candidate",
+      "include": [
+        "\\bmedias?\\s+compresivas?\\b"
+      ],
+      "exclude": [
+        "\\bkit\\s+herida\\b",
+        "\\bdoble\\s+capa\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/medias_compresivas.json",
+      "corpus_regex": "(?i).*medias?\\s+compresiv.*",
+      "canonical_example": "MEDIAS COMPRESIVAS DE COMPRESION 20-30 MMHG TALLA L"
+    },
+    {
+      "category_id": "bandas_molares",
+      "name": "Bandas molares de ortodoncia",
+      "status": "candidate",
+      "include": [
+        "\\bbandas?\\s+molares?\\b",
+        "\\bbanda\\w*.{0,40}molar.{0,40}tubo",
+        "\\bbanda\\w*.{0,30}molar.{0,30}\\bmbt\\b"
+      ],
+      "exclude": [
+        "\\btubo\\s+(endotraqueal|recoleccion|de\\s+ensayo|colector)\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/bandas_molares.json",
+      "corpus_regex": "(?i).*banda.*molar.*",
+      "canonical_example": "BANDAS MOLARES MBT N36 INFERIOR DERECHO KITX 5 UD DOBLE TUBO\tBanda 1° Molar Tubo Doble (Par)"
+    },
+    {
+      "category_id": "ventiladores_mecanicos",
+      "name": "Ventiladores mecánicos",
+      "status": "candidate",
+      "include": [
+        "\\bventilador(?:es)?\\s+mecanic\\w*",
+        "\\bventilador(?:es)?\\s+(?:invasiv|no\\s+invasiv)\\w*"
+      ],
+      "exclude": [
+        "\\bcircuito\\w*",
+        "\\bsensor(?:es)?\\s+de\\s+flujo",
+        "\\bcubeta\\w*",
+        "\\bconjunto\\s+exhalatori\\w*",
+        "\\bmembrana\\w*",
+        "\\bvalvula\\s+exhalatori\\w*",
+        "\\bmantenimiento\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/ventiladores_mecanicos.json",
+      "corpus_regex": "(?i).*ventilador(es)?\\s+mec[aá]nic.*",
+      "canonical_example": "SERVICIO DE ARRIENDO MENSUAL DE 5 VENTILADORES MECÁNICOS INVASIVOS PARA LA UNIDAD DE CR MÉDICO QUIRÚRGICO PEDIÁTRICO POR 12 MESES (INGRESAR"
+    },
+    {
+      "category_id": "medicamentos_comprimidos",
+      "name": "Medicamentos en comprimidos",
+      "status": "candidate",
+      "include": [
+        "\\bcomprimid\\w*"
+      ],
+      "exclude": [
+        "\\b(cortador|triturador|partidor|pastiller\\w*|porta)\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/medicamentos_comprimidos.json",
+      "corpus_regex": "(?i).*comprimid.*",
+      "canonical_example": "Citalopram 20 MG comprimidos"
+    },
+    {
+      "category_id": "protectores_retractores_heridas",
+      "name": "Protectores y retractores de heridas",
+      "status": "candidate",
+      "include": [
+        "\\b(protector\\w*|potector\\w*|retractor\\w*|retraccion)\\b.{0,40}herida",
+        "herida\\w*.{0,40}\\b(retract\\w*|protect\\w*|alexis)\\b"
+      ],
+      "exclude": [
+        "\\b(limpiador|hidrogel|lavado|descontaminacion|solucion)\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/protectores_retractores_heridas.json",
+      "corpus_regex": "(?i).*(retrac|protector|potector).*herida.*",
+      "canonical_example": "340-8779\tSISTEMA DE RETRACCION ABDOMINAL DE HERIDAS O RETRACTOR EQUIVALENTE A ALEXIS DE 2.5 A 6 CM."
+    },
+    {
+      "category_id": "suplementos_nutricionales",
+      "name": "Suplementos y fórmulas nutricionales",
+      "status": "candidate",
+      "include": [
+        "\\b(suplemento|formula)\\s+nutricional\\w*",
+        "\\bnutricional\\w*\\s+en\\s+polvo"
+      ],
+      "exclude": [
+        "\\btierra\\b",
+        "\\bforestal\\w*",
+        "\\bbajada\\w*\\s+de\\s+infusion",
+        "\\bcomodato\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/suplementos_nutricionales.json",
+      "corpus_regex": "(?i).*(suplemento|formula|alimento)\\s+nutricional.*",
+      "canonical_example": "Alimento en polvo nutricionalmente balanceado, para uso como suplemento nutricional por vía oral o enteral, en formato de tarro de 900 gr."
+    },
+    {
+      "category_id": "cepillos_limpieza_instrumental",
+      "name": "Cepillos de limpieza de instrumental",
+      "status": "candidate",
+      "include": [
+        "\\bcepillo\\w*\\b.{0,40}\\blimpieza\\b",
+        "\\bcepillo\\w*\\s+de\\s+limpieza"
+      ],
+      "exclude": [
+        "\\bpano\\b",
+        "\\bhisopo\\b",
+        "\\bhuaipe\\b",
+        "\\bdesechable\\b\\s+libre"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cepillos_limpieza_instrumental.json",
+      "corpus_regex": "(?i).*cepillo.*limpieza.*",
+      "canonical_example": "CEPILLO LIMPIEZA LUMEN 15 FR (CMLL0709) LAVADO INSTRUMENTAL"
+    },
+    {
+      "category_id": "tubos_al_vacio",
+      "name": "Tubos al vacío para muestras",
+      "status": "candidate",
+      "include": [
+        "\\btubo\\w*\\s+al\\s+vacio"
+      ],
+      "exclude": [
+        "\\bsoporte\\w*\\b",
+        "\\bcamisa\\w*\\b",
+        "\\bfrasco\\w*\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/tubos_al_vacio.json",
+      "corpus_regex": "(?i).*tubo.*al\\s+vacio.*",
+      "canonical_example": "TUBO  AL VACIO C/GEL TAPA AMARILLA 12 x 75 mm (4 mL)"
+    },
+    {
+      "category_id": "bolsas_fotoprotectoras",
+      "name": "Bolsas fotoprotectoras",
+      "status": "candidate",
+      "include": [
+        "\\bbolsa\\w*\\s+fotoprotectora\\w*"
+      ],
+      "exclude": [
+        "\\bbolsa\\w*\\s+plastica",
+        "\\btorula\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/bolsas_fotoprotectoras.json",
+      "corpus_regex": "(?i).*bolsa.*fotoprotectora.*",
+      "canonical_example": "BOLSAS FOTOPROTECTORAS, COLOR AMARILLO, CON SELLO ADHESIVO, 12 X 20 CM (OBS: PARA 100 CC)."
+    }
+  ]
+}

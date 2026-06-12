@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chilecompra-er"
+version = "0.1.0"
+description = "Entity resolution pipeline for ChileCompra medical devices"
+requires-python = ">=3.11"
+# Runtime deps are managed via requirements.txt (venv-level); kept empty here
+# so `pip install -e .` never fights the pinned environment.
+dependencies = []
+
+[project.scripts]
+chilecompra-er = "chilecompra_er.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["chilecompra_er*"]
+
+[tool.setuptools.package-data]
+chilecompra_er = ["**/*.json", "**/*.csv", "**/*.cypher"]

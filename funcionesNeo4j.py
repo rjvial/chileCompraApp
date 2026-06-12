@@ -58,10 +58,11 @@ class Neo4jConnection:
         if self.__driver is not None:
             self.__driver.close()
 
-    def query(self, cypher: str, db: str | None = None, max_retries: int = 3):
+    def query(self, cypher: str, db: str | None = None, max_retries: int = 3, parameters: dict | None = None):
         """
         Execute a Cypher query and return a list of neo4j.Record objects.
         Includes retry logic for transient connection failures.
+        Pass `parameters` for parameterized queries ($param placeholders).
         """
         assert self.__driver is not None, "Driver not initialized!"
 
@@ -73,7 +74,7 @@ class Neo4jConnection:
                 self.__driver.verify_connectivity()
 
                 session = self.__driver.session(database=db) if db else self.__driver.session()
-                return list(session.run(cypher))
+                return list(session.run(cypher, parameters or {}))
             except (ServiceUnavailable, SessionExpired, OSError) as e:
                 last_exception = e
                 if session:

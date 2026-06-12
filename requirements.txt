@@ -7,3 +7,6 @@ python-dotenv
 rapidfuzz
 scikit-learn
 kumoai
+requests
+pytest
+anthropic
