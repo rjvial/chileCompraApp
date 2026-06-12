@@ -21,6 +21,8 @@ class ResolutionStats:
     by_status: Counter = field(default_factory=Counter)
     by_category: Counter = field(default_factory=Counter)
     by_basis: Counter = field(default_factory=Counter)
+    by_unresolved_reason: Counter = field(default_factory=Counter)
+    resolved_without_attributes: int = 0  # anchored on a category root
     nodes_created: int = 0
     illegal_values: int = 0
 
@@ -28,8 +30,11 @@ class ResolutionStats:
         lines = [
             f"records processed : {self.total}",
             f"by status         : {dict(self.by_status)}",
+            f"unresolved reasons: {dict(self.by_unresolved_reason)}",
             f"by category       : {dict(self.by_category)}",
             f"price basis mix   : {dict(self.by_basis)}",
+            f"resolved w/o attrs: {self.resolved_without_attributes} "
+            "(anchored on category roots — honest partials, no product info)",
             f"nodes created     : {self.nodes_created}",
             f"illegal values    : {self.illegal_values} (dropped, counted — schema dry-run metric)",
         ]
@@ -53,6 +58,11 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
         )
         stats.total += 1
         stats.by_status[report.status] += 1
+        if report.unresolved_reason:
+            stats.by_unresolved_reason[report.unresolved_reason] += 1
+        if report.status == "resolved_generic" and report.extraction is not None \
+                and not report.extraction.values:
+            stats.resolved_without_attributes += 1
         if report.classification.category_id:
             stats.by_category[report.classification.category_id] += 1
         if report.price_basis is not None:

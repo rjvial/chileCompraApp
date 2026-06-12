@@ -63,6 +63,24 @@ class Resolver:
 
     def resolve(self, raw_text: str, source: SourceRef | None = None,
                 price_fields: dict | None = None) -> ResolutionReport:
+        # UNSPSC rubric paths ("Equipamiento y suministros medicos / ... /
+        # Vendas...") are taxonomy strings, not product descriptions: the
+        # family word in them is the taxonomy's, not the buyer's. Routing
+        # them into a category root would inflate it with zero-information
+        # records — explicit unresolved instead (visible debt, design §8).
+        if raw_text.count(" / ") >= 2:
+            normalized = self.normalizer(raw_text)
+            report = ResolutionReport(
+                raw_text=raw_text,
+                normalized=normalized,
+                classification=Classification(None, "unclassified"),
+                status=STATUS_UNRESOLVED,
+                unresolved_reason="boilerplate_rubric",
+            )
+            if source is not None:
+                self.catalog.persist_resolution(source, STATUS_UNRESOLVED, None)
+            return report
+
         normalized = self.normalizer(raw_text)
         classification = self.classifier.classify(normalized)
 

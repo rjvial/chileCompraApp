@@ -289,14 +289,26 @@ def propose(conn, count: int = 10, segment: int | None = 42, min_samples: int = 
 
 
 def apply(conn, candidates: list[Candidate], schema_samples: int = 50, log=print) -> None:
-    from .strawman import generate
+    from .strawman import fetch_samples, generate
 
+    registerable = []
     for cand in candidates:
+        # The vet judged the family from token-group samples; its proposed
+        # corpus_regex can be narrower. A category whose corpus can't feed the
+        # strawman (>=5 samples) must not enter the register at all.
+        yield_count = len(fetch_samples(conn, cand.corpus_regex, 10))
+        if yield_count < 5:
+            log(f"NOT registered {cand.category_id}: corpus_regex matches only "
+                f"{yield_count} descriptions — too thin for a schema")
+            continue
+        registerable.append(cand)
+
+    for cand in registerable:
         entry = add_category(
             category_id=cand.category_id, name=cand.name, include=cand.include,
             exclude=cand.exclude, corpus_regex=cand.corpus_regex,
             canonical_example=cand.canonical_example,
         )
         log(f"registered {entry['category_id']}")
-    for cand in candidates:
+    for cand in registerable:
         generate(conn, only=cand.category_id, samples=schema_samples, log=log)

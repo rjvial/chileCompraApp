@@ -1,6 +1,6 @@
 {
-  "register_version": "0.33.0",
-  "notes": "Versioned category register (design note §3 step 7). Every boundary change is a new register_version. v0.2.0: widened from 1 to 10 categories grounded in the segment-42 spend profiling (data/profiling_m0_seg42.csv); the sonda group is split into foley / nasogastrica / aspiracion per the schema-coherence test of the design's worked example. include/exclude are the Tier-1 classifier: regexes over NORMALIZED text (lowercase, accent-stripped, digit/letter boundaries spaced). Exclusions resolve sibling overlaps deterministically (aguja inside a jeringa description is an attribute, not a category — design §3). A category must reach >=95% precision on a ~200-description hand-checked sample before status becomes 'launched'; all entries are drafts/candidates until then. Each category carries corpus_regex: the raw-text filter used to fetch its sample corpus for the schema strawman (generate-schemas). v-merge: bandas_molares_ortodoncia merged into bandas_molares (same family found via two head tokens; design §3 step 4: identical schemas -> merge).",
+  "register_version": "0.38.0",
+  "notes": "Versioned category register (design note §3 step 7). Every boundary change is a new register_version. v0.2.0: widened from 1 to 10 categories grounded in the segment-42 spend profiling (data/profiling_m0_seg42.csv); the sonda group is split into foley / nasogastrica / aspiracion per the schema-coherence test of the design's worked example. include/exclude are the Tier-1 classifier: regexes over NORMALIZED text (lowercase, accent-stripped, digit/letter boundaries spaced). Exclusions resolve sibling overlaps deterministically (aguja inside a jeringa description is an attribute, not a category — design §3). A category must reach >=95% precision on a ~200-description hand-checked sample before status becomes 'launched'; all entries are drafts/candidates until then. Each category carries corpus_regex: the raw-text filter used to fetch its sample corpus for the schema strawman (generate-schemas). v-merge: bandas_molares_ortodoncia merged into bandas_molares (same family found via two head tokens; design §3 step 4: identical schemas -> merge). v-removal: sistemas_succion_cerrada unregistered (corpus_regex yields 2 descriptions; below the 5-sample strawman minimum). v-fix: includes tightened to exact singular/plural for fresas/canulas/agujas (suffix wildcard captured fresado/canulado/agujero - false categories).",
   "categories": [
     {
       "category_id": "sondas_foley",
@@ -72,7 +72,7 @@
       "name": "Agujas",
       "status": "candidate",
       "include": [
-        "\\baguja\\w*"
+        "\\bagujas?\\b"
       ],
       "exclude": [
         "\\bjering\\w*",
@@ -161,7 +161,7 @@
       "name": "Cánulas",
       "status": "candidate",
       "include": [
-        "\\bcanula\\w*"
+        "\\bcanulas?\\b"
       ],
       "exclude": [],
       "spend_share": null,
@@ -260,7 +260,7 @@
       "name": "Fresas dentales",
       "status": "candidate",
       "include": [
-        "\\bfresa\\w*"
+        "\\bfresas?\\b"
       ],
       "exclude": [],
       "spend_share": null,
@@ -593,6 +593,44 @@
       "schema_file": "schemas/bolsas_fotoprotectoras.json",
       "corpus_regex": "(?i).*bolsa.*fotoprotectora.*",
       "canonical_example": "BOLSAS FOTOPROTECTORAS, COLOR AMARILLO, CON SELLO ADHESIVO, 12 X 20 CM (OBS: PARA 100 CC)."
+    },
+    {
+      "category_id": "controles_esterilizacion",
+      "name": "Controles e indicadores de esterilización",
+      "status": "candidate",
+      "include": [
+        "\\bcontrol\\w*\\s+(de\\s+)?esteriliz\\w*",
+        "\\bcontrol\\w*\\s+biologic\\w*",
+        "\\bcontrol\\w*\\s+esteriliz\\w*\\s+autoclave"
+      ],
+      "exclude": [
+        "\\bcontrolad\\w*",
+        "\\baposito\\b",
+        "\\bjeringa\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/controles_esterilizacion.json",
+      "corpus_regex": "(?i).*control.*(esteriliz|biologic|autoclave|mac\\s*farlan).*",
+      "canonical_example": "CONTROL BIOLOGICO LECTURA EXTRA RAPIDA 1492V"
+    },
+    {
+      "category_id": "tubos_ortodonticos",
+      "name": "Tubos ortodónticos para molares",
+      "status": "candidate",
+      "include": [
+        "\\btubos?\\s+\\w*\\s*molar\\w*",
+        "\\btubos?\\s+\\d+\\s+molar\\w*\\s+\\w*\\s*(mbt|mtb|roth)"
+      ],
+      "exclude": [
+        "\\bendotraqueal\\w*",
+        "\\bcitologia\\b",
+        "\\bhisopos?\\b",
+        "\\bintercambiador\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/tubos_ortodonticos.json",
+      "corpus_regex": "(?i).*tubos?\\s+.*molar.*",
+      "canonical_example": "TUBOS SEGUNDOS MOLARES MTB ESTANDAR INFERIOR DERECHO X 5 UD\tTubos 2 Molar Simple MBT (10 Un)"
     }
   ]
 }

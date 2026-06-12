@@ -101,7 +101,10 @@
       "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests -q 2>&1 | Select-Object -Last 3)",
       "PowerShell($env:PYTHONIOENCODING='utf-8'; $env:PYTHONUNBUFFERED='1'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe widen --count 10 --apply)",
       "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests -q 2>&1 | Select-Object -Last 12)",
-      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --limit 5000 --show 0 --out data\\\\corpus_dry_39cat 2>&1 | Select-Object -First 8)"
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --limit 5000 --show 0 --out data\\\\corpus_dry_39cat 2>&1 | Select-Object -First 8)",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe generate-schemas --only sistemas_succion_cerrada; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests -q 2>&1 | Select-Object -Last 2)",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe examples\\\\curation_20260613.py; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests -q 2>&1 | Select-Object -Last 3)",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --limit 5000 --show 0 --out data\\\\corpus_dry_41cat)"
     ]
   },
   "enableAllProjectMcpServers": true,
