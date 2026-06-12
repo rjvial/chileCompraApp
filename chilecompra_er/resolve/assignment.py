@@ -204,11 +204,17 @@ class InMemoryCatalog:
 
 
 class Neo4jCatalog:
-    """Catalog backed by the Neo4j property graph (funcionesNeo4j connection)."""
+    """Catalog backed by the Neo4j property graph (funcionesNeo4j connection).
+
+    Category snapshots are cached in memory and maintained by apply() — one
+    graph read per category per process instead of one per record. Safe while
+    this process is the only writer (the batch runner); drop the instance to
+    refresh."""
 
     def __init__(self, conn):
         self.conn = conn
         self._categories_synced: set[str] = set()
+        self._snapshots: dict[str, dict[str, NodeView]] = {}
 
     def ensure_category(self, schema: CategorySchema) -> None:
         if schema.category_id in self._categories_synced:
@@ -232,6 +238,8 @@ class Neo4jCatalog:
         self._categories_synced.add(schema.category_id)
 
     def load(self, category_id: str, schema: CategorySchema) -> dict[str, NodeView]:
+        if category_id in self._snapshots:
+            return self._snapshots[category_id]
         records = self.conn.query(
             """
             MATCH (g:GenericProduct {category_id: $cid})
@@ -250,12 +258,25 @@ class Neo4jCatalog:
                                  if k in id_names and v is not None},
                 parent_id=rec["parent_id"],
             )
+        self._snapshots[category_id] = out
         return out
 
     def apply(self, plan: AssignmentPlan, schema: CategorySchema) -> None:
         if plan.created is None:
             return
         self.ensure_category(schema)
+        # keep the cached snapshot in step with what is written below
+        snapshot = self._snapshots.setdefault(schema.category_id, {})
+        id_names = set(schema.identity_names)
+        snapshot[plan.created.id] = NodeView(
+            id=plan.created.id,
+            identity_values={k: v for k, v in plan.created.properties.items()
+                             if k in id_names},
+            parent_id=plan.parent_id,
+        )
+        for child_id, new_parent in plan.repoint:
+            if child_id in snapshot:
+                snapshot[child_id].parent_id = new_parent
         spec = plan.created
         clean_props = {k: v for k, v in spec.properties.items() if k not in _RESERVED_PROPS}
         self.conn.query(
@@ -321,24 +342,19 @@ class Neo4jCatalog:
             return
         if target_label not in (GENERIC_LABEL, PRODUCT_LABEL):
             raise ValueError(f"invalid resolution target label {target_label!r}")
-        rec = self.conn.query(
-            """
-            MATCH (s:SourceRecord {record_key: $rk})-[r:RESOLVED_TO]->()
-            RETURN coalesce(max(r.version), 0) AS v
-            """,
-            parameters={"rk": source.record_key},
-        )
-        next_version = (rec[0]["v"] if rec else 0) + 1
+        # Single round trip: retire current edges, compute next version, and
+        # create the new versioned edge in one statement.
         self.conn.query(
             f"""
             MATCH (s:SourceRecord {{record_key: $rk}})
-            OPTIONAL MATCH (s)-[old:RESOLVED_TO {{current: true}}]->()
-            SET old.current = false
-            WITH DISTINCT s
+            OPTIONAL MATCH (s)-[old:RESOLVED_TO]->()
+            WITH s, collect(old) AS olds, coalesce(max(old.version), 0) AS maxv
+            FOREACH (o IN [x IN olds WHERE x.current] | SET o.current = false)
+            WITH s, maxv
             MATCH (t:{target_label} {{id: $target}})
             CREATE (s)-[r:RESOLVED_TO {{
                 current: true,
-                version: $version,
+                version: maxv + 1,
                 resolved_at: datetime(),
                 evidence: $evidence,
                 extractor_version: $extractor_version,
@@ -349,7 +365,6 @@ class Neo4jCatalog:
             parameters={
                 "rk": source.record_key,
                 "target": target_id,
-                "version": next_version,
                 "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
                 "extractor_version": edge_props.get("extractor_version", ""),
                 "schema_version": edge_props.get("schema_version", ""),

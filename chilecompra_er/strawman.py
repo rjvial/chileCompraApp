@@ -34,10 +34,6 @@ def families(register: dict | None = None) -> list[dict]:
         if c.get("corpus_regex")
     ]
 
-
-# Backward-compatible module-level snapshot (examples/ scripts import this).
-FAMILIES = families()
-
 RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,

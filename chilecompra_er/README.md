@@ -39,16 +39,27 @@ chilecompra-er widen --count 10                     # propose next N categories 
 chilecompra-er widen --count 10 --apply             # ...and register + draft their schemas
 chilecompra-er add-category mascarillas --include "\bmascarilla\w*" --example "MASCARILLA QUIRURGICA 3 PLIEGUES"   # manual single add
 chilecompra-er generate-schemas --only mascarillas  # LLM strawman (Max subscription)
+chilecompra-er price-series bandas_molares          # per-product price history (persisted cats)
 chilecompra-er wipe-category sondas_foley --yes     # destructive, gated
+chilecompra-er wipe-catalog --yes                   # reset ALL catalog data (source data untouched)
 ```
 
-## Run (dev extras)
+Output convention: commands write to FIXED filenames under `data\` and
+overwrite them on every run — `data\resolve_resoluciones.csv` +
+`data\resolve_productos_genericos.csv` (resolve), `data\profiling.csv`
+(profile), `data\price_series_<category>.csv`. Pass `--out`/`--csv` only when
+you explicitly want to keep a snapshot under another name.
+
+## Diagnostics (also CLI)
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q          # offline unit tests
-.\.venv\Scripts\python.exe examples\resolve_demo.py    # offline end-to-end demo
-.\.venv\Scripts\python.exe examples\smoke_neo4j.py     # live round-trip (cleans up after itself)
+chilecompra-er demo                 # offline pipeline demo (no graph, no LLM)
+chilecompra-er smoke [--keep]       # live graph round-trip, cleans up after itself
+chilecompra-er probe-offers         # M3 feasibility metric (read-only)
+.\.venv\Scripts\python.exe -m pytest tests -q   # unit tests
 ```
+
+There is no examples\ folder — the CLI is the single operational surface.
 
 The ingestion source is the graph itself: the transactional layer
 (Licitacion/ItemLicitacion/Oferta/OrdenCompra/ItemOC with run_id/record_hash

@@ -55,10 +55,10 @@ class SourceItem:
     extra: dict = field(default_factory=dict)
 
 
-def _paged(conn, cypher: str, build, contains: str | None, limit: int | None) -> Iterator[SourceItem]:
+def _paged(conn, cypher: str, build, contains: str | None, limit: int | None,
+           skip: int = 0) -> Iterator[SourceItem]:
     """Stream results in SKIP/LIMIT pages so large pulls don't buffer fully."""
     fetched = 0
-    skip = 0
     while True:
         page = min(_BATCH, limit - fetched) if limit is not None else _BATCH
         if page <= 0:
@@ -77,12 +77,18 @@ def _paged(conn, cypher: str, build, contains: str | None, limit: int | None) ->
 
 
 def fetch_tender_items(conn, contains: str | None = None,
-                       limit: int | None = None) -> Iterator[SourceItem]:
-    """Buyer-side tender lines: the primary resolution corpus."""
+                       limit: int | None = None, skip: int = 0,
+                       unspsc_segment: int | None = None) -> Iterator[SourceItem]:
+    """Buyer-side tender lines: the primary resolution corpus.
+
+    Stable ORDER BY makes skip/limit a resumable chunking scheme for
+    corpus-scale persisted builds."""
+    seg = str(unspsc_segment) if unspsc_segment is not None else None
     cypher = """
         MATCH (l:Licitacion)-[:TIENE_ITEM]->(i:ItemLicitacion)
         WHERE i.descripcion_comprador IS NOT NULL
           AND ($contains IS NULL OR toLower(i.descripcion_comprador) CONTAINS $contains)
+          AND ($segment IS NULL OR toString(i.codigo_unspsc_producto) STARTS WITH $segment)
         RETURN i.id_licitacion AS tender_id, i.id_item AS item_id,
                i.descripcion_comprador AS text, i.codigo_unspsc_producto AS unspsc,
                i.cantidad AS quantity, i.moneda_item AS currency,
@@ -105,7 +111,26 @@ def fetch_tender_items(conn, contains: str | None = None,
             extra={"uom": rec["uom"], "source_name": rec["source_name"]},
         )
 
-    return _paged(conn, cypher, build, contains, limit)
+    def paged_with_segment():
+        fetched = 0
+        page_skip = skip
+        while True:
+            page = min(_BATCH, limit - fetched) if limit is not None else _BATCH
+            if page <= 0:
+                return
+            records = conn.query(
+                cypher,
+                parameters={"contains": contains.lower() if contains else None,
+                            "segment": seg, "skip": page_skip, "limit": page},
+            )
+            for rec in records:
+                yield build(rec)
+                fetched += 1
+            if len(records) < page:
+                return
+            page_skip += page
+
+    return paged_with_segment()
 
 
 def fetch_offers(conn, contains: str | None = None, awarded_only: bool = False,

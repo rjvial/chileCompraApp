@@ -143,7 +143,10 @@ def cmd_resolve(args) -> int:
     fetchers = {"tender": fetch_tender_items, "offer": fetch_offers, "oc": fetch_oc_items}
     conn = get_connection()
     try:
-        items = fetchers[args.kind](conn, contains=args.contains, limit=args.limit)
+        kwargs = {"contains": args.contains, "limit": args.limit}
+        if args.kind == "tender":
+            kwargs.update(skip=args.skip, unspsc_segment=args.segment)
+        items = fetchers[args.kind](conn, **kwargs)
         catalog = Neo4jCatalog(conn) if args.persist else InMemoryCatalog()
         resolver = Resolver(catalog)
         mode = "PERSIST (writing to graph)" if args.persist else "dry run (no writes)"
@@ -246,6 +249,87 @@ def cmd_add_category(args) -> int:
     return 0
 
 
+def cmd_demo(args) -> int:
+    from .devtools import run_demo
+
+    run_demo()
+    return 0
+
+
+def cmd_smoke(args) -> int:
+    from .devtools import run_smoke
+    from .graphdb import get_connection
+
+    conn = get_connection()
+    try:
+        ok = run_smoke(conn, keep=args.keep)
+    finally:
+        conn.close()
+    return 0 if ok else 1
+
+
+def cmd_probe_offers(args) -> int:
+    from .devtools import probe_offers
+    from .graphdb import get_connection
+
+    conn = get_connection()
+    try:
+        probe_offers(conn, limit=args.limit)
+    finally:
+        conn.close()
+    return 0
+
+
+def cmd_price_series(args) -> int:
+    from .graphdb import get_connection
+    from .price.series import build_series, summarize, write_series_csv
+
+    conn = get_connection()
+    try:
+        rows = build_series(conn, args.category_id)
+    finally:
+        conn.close()
+    if not rows:
+        print(f"no price observations for '{args.category_id}' — is the "
+              "category persisted? (resolve --contains ... --persist)")
+        return 1
+    out = args.csv or Path(f"data/price_series_{args.category_id}.csv")
+    write_series_csv(rows, out)
+    products = len({r["product"] for r in rows})
+    print(f"{len(rows)} price observations across {products} generic products -> {out}")
+    print("\nproducts with the deepest price history:")
+    for line in summarize(rows):
+        print(line)
+    return 0
+
+
+def cmd_wipe_catalog(args) -> int:
+    """Delete ALL catalog data (Category/GenericProduct/Product/SourceRecord).
+    The transactional layer (Licitacion/Oferta/...) and the schema migrations
+    are untouched — this resets the catalog, not the source data."""
+    if not args.yes:
+        print("refusing to wipe the entire catalog without --yes")
+        return 1
+    from .graphdb import get_connection
+
+    conn = get_connection()
+    try:
+        rec = conn.query(
+            """
+            MATCH (n)
+            WHERE n:GenericProduct OR n:Product OR n:SourceRecord OR n:Category
+            WITH n LIMIT 100000
+            DETACH DELETE n
+            RETURN count(*) AS deleted
+            """
+        )
+        print(f"catalog wiped: {rec[0]['deleted']} nodes deleted "
+              "(transactional data and migrations untouched)")
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_wipe_category(args) -> int:
     if not args.yes:
         print("refusing to wipe without --yes (deletes the category's catalog "
@@ -295,16 +379,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--segment", type=int, default=None,
                    help="UNSPSC segment scope, e.g. 42 = medical supplies")
     p.add_argument("--top", type=int, default=30)
-    p.add_argument("--csv", type=Path, default=None)
+    p.add_argument("--csv", type=Path, default=Path("data/profiling.csv"),
+                   help="ranking CSV; default data\\profiling.csv (overwritten)")
     p.set_defaults(func=cmd_profile)
 
     p = sub.add_parser("resolve", help="resolve source records (dry run by default)")
     p.add_argument("--kind", choices=["tender", "offer", "oc"], default="tender")
     p.add_argument("--contains", default=None, help="filter on buyer text")
     p.add_argument("--limit", type=int, default=200)
+    p.add_argument("--skip", type=int, default=0,
+                   help="skip N records (stable order; chunked corpus builds)")
+    p.add_argument("--segment", type=int, default=None,
+                   help="UNSPSC segment filter, e.g. 42 (tender kind only)")
     p.add_argument("--persist", action="store_true",
                    help="WRITE results to the graph (default: dry run)")
-    p.add_argument("--out", type=Path, default=None, help="CSV output prefix")
+    p.add_argument("--out", type=Path, default=Path("data/resolve"),
+                   help="CSV output prefix; default data\\resolve — the same "
+                        "two files are overwritten on every run")
     p.add_argument("--show", type=int, default=5)
     p.set_defaults(func=cmd_resolve)
 
@@ -347,6 +438,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("category_id")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_wipe_category)
+
+    p = sub.add_parser("demo", help="offline pipeline demo (no graph, no LLM)")
+    p.set_defaults(func=cmd_demo)
+
+    p = sub.add_parser("smoke", help="live graph round-trip test (cleans up after itself)")
+    p.add_argument("--keep", action="store_true", help="keep the smoke data in the graph")
+    p.set_defaults(func=cmd_smoke)
+
+    p = sub.add_parser("probe-offers",
+                       help="M3 feasibility: offer-text recovery rate for rubric-only lines")
+    p.add_argument("--limit", type=int, default=1500)
+    p.set_defaults(func=cmd_probe_offers)
+
+    p = sub.add_parser("price-series",
+                       help="per-product price history for a persisted category")
+    p.add_argument("category_id")
+    p.add_argument("--csv", type=Path, default=None,
+                   help="output path; default data\\price_series_<category>.csv")
+    p.set_defaults(func=cmd_price_series)
+
+    p = sub.add_parser("wipe-catalog",
+                       help="delete ALL catalog data from the graph (destructive; "
+                            "transactional source data untouched)")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_wipe_catalog)
 
     return parser
 
