@@ -109,10 +109,13 @@ Responde SOLO el JSON pedido."""
 
 
 def fetch_samples(conn, corpus_regex: str, limit: int) -> list[str]:
+    from .ingest.neo4j_source import NOT_RUBRIC
+
     records = conn.query(
-        """
+        f"""
         MATCH (i:ItemLicitacion)
         WHERE i.descripcion_comprador IS NOT NULL
+          AND {NOT_RUBRIC}
           AND i.descripcion_comprador =~ $rx
         RETURN DISTINCT i.descripcion_comprador AS text
         LIMIT $limit

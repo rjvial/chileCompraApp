@@ -104,7 +104,12 @@
       "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --limit 5000 --show 0 --out data\\\\corpus_dry_39cat 2>&1 | Select-Object -First 8)",
       "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe generate-schemas --only sistemas_succion_cerrada; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests -q 2>&1 | Select-Object -Last 2)",
       "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe examples\\\\curation_20260613.py; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests -q 2>&1 | Select-Object -Last 3)",
-      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --limit 5000 --show 0 --out data\\\\corpus_dry_41cat)"
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --limit 5000 --show 0 --out data\\\\corpus_dry_41cat)",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --contains sutura --limit 3000 --show 0 --out data\\\\m1_suturas 2>&1 | Select-String \"records|resolved|illegal|unresolved reasons\"; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --contains banda --limit 3000 --show 0 --out data\\\\m1_bandas 2>&1 | Select-String \"records|resolved|illegal|unresolved reasons|by category\")",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe examples\\\\curation_m1_20260613.py; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests -q 2>&1 | Select-Object -Last 2)",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --contains banda --limit 3000 --persist --show 0 --out data\\\\m1_bandas_persist 2>&1 | Select-String \"mode|records|by status|resolved w/o|nodes|illegal\"; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe resolve --contains sutura --limit 3000 --persist --show 0 --out data\\\\m1_suturas_persist 2>&1 | Select-String \"mode|records|by status|resolved w/o|nodes|illegal\"; .\\\\.venv\\\\Scripts\\\\chilecompra-er.exe status 2>&1 | Select-String \"graph\")",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe examples\\\\price_series.py bandas_molares; Write-Output \"===\"; .\\\\.venv\\\\Scripts\\\\python.exe examples\\\\price_series.py suturas 2>&1 | Select-Object -First 12)",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .\\\\.venv\\\\Scripts\\\\python.exe examples\\\\rubric_offer_probe.py 2000)"
     ]
   },
   "enableAllProjectMcpServers": true,

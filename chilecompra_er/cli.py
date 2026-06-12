@@ -190,7 +190,9 @@ def cmd_widen(args) -> int:
     conn = get_connection()
     try:
         chosen, rejected = propose(conn, count=args.count, segment=args.segment,
-                                   min_samples=args.min_samples)
+                                   min_samples=args.min_samples,
+                                   min_spend_share=args.min_spend,
+                                   revisit=args.revisit)
         if rejected:
             print("\nrejected by the vet:")
             for c in rejected:
@@ -317,6 +319,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="UNSPSC segment scope (default 42 = medical supplies)")
     p.add_argument("--min-samples", type=int, default=15,
                    help="minimum distinct corpus descriptions per candidate")
+    p.add_argument("--min-spend", type=float, default=0.0005,
+                   help="spend-share floor; scan stops below it (0.0005 = 0.05%%)")
+    p.add_argument("--revisit", action="store_true",
+                   help="re-evaluate tokens previously vetted as junk")
     p.add_argument("--apply", action="store_true",
                    help="register the proposals and generate their schemas "
                         "(default: preview only)")

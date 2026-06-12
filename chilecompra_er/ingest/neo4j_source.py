@@ -28,6 +28,14 @@ SOURCE_TENDER_ITEM = "mp_item_licitacion"
 SOURCE_OFFER = "mp_oferta"
 SOURCE_OC_ITEM = "mp_item_oc"
 
+# Cypher fragment: true when descripcion_comprador is a real description, not
+# a UNSPSC rubric path ("Equipamiento ... / ... / Vendas..."). Mirrors the
+# resolver's boilerplate rule (>= 2 " / " separators = >= 3 split parts).
+# Used by PROFILING and SAMPLING so rankings and strawman corpora aren't
+# contaminated; record RETRIEVAL stays unfiltered — rubric lines must still
+# be ingested and explicitly resolved as boilerplate (total & explicit).
+NOT_RUBRIC = "size(split(i.descripcion_comprador, ' / ')) < 3"
+
 _BATCH = 1000
 
 

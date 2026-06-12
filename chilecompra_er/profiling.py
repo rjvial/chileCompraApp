@@ -131,13 +131,16 @@ def fetch_item_spend(conn, unspsc_segment: int | None = None) -> list[dict]:
     grouping key (design §3 step 2). Grouping is per item (id keys), so
     repeated descriptions count as separate records.
     """
+    from .ingest.neo4j_source import NOT_RUBRIC
+
     records = conn.query(
-        """
+        f"""
         MATCH (i:ItemLicitacion)
         WHERE i.descripcion_comprador IS NOT NULL
+          AND {NOT_RUBRIC}
           AND ($seg IS NULL OR
                toString(i.codigo_unspsc_producto) STARTS WITH toString($seg))
-        OPTIONAL MATCH (o:Oferta {es_adjudicada: true})-[:PARA_ITEM]->(i)
+        OPTIONAL MATCH (o:Oferta {{es_adjudicada: true}})-[:PARA_ITEM]->(i)
         RETURN i.id_licitacion AS tender_id, i.id_item AS item_id,
                i.descripcion_comprador AS text,
                sum(coalesce(o.precio_total_clp, 0)) AS spend_clp

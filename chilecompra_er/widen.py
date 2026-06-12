@@ -15,10 +15,12 @@ not-viable with a reason, never silently fixed into the register.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from .categories.schema import add_category, load_register
+from .categories.schema import CATEGORIES_DIR, add_category, load_register
 from .llm import complete_json
 from .normalize import Normalizer
 from .profiling import RESIDUE, fetch_item_spend, profile
@@ -39,6 +41,25 @@ class Candidate:
     corpus_regex: str = ""
     canonical_example: str = ""
     reason: str = ""
+    rejected_by: str = ""  # "vet" (junk verdict, cacheable) | "validation" (state-dependent)
+
+
+# Persisted vet verdicts: tokens the LLM judged junk stay rejected across runs
+# (re-vetting "bases"/"meses" every invocation is pure waste). Mechanical
+# validation rejections are NOT cached — they depend on register state.
+VET_REJECTIONS_PATH = CATEGORIES_DIR / "vet_rejections.json"
+
+
+def load_vet_rejections(path: Path = VET_REJECTIONS_PATH) -> dict[str, str]:
+    if not Path(path).exists():
+        return {}
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def save_vet_rejections(rejections: dict[str, str],
+                        path: Path = VET_REJECTIONS_PATH) -> None:
+    Path(path).write_text(json.dumps(rejections, ensure_ascii=False, indent=2,
+                                     sort_keys=True) + "\n", encoding="utf-8")
 
 
 VET_SCHEMA = {
@@ -102,10 +123,13 @@ def _is_covered(token: str, clf: Tier1Classifier) -> bool:
 
 
 def _fetch_token_samples(conn, token: str, limit: int) -> list[str]:
+    from .ingest.neo4j_source import NOT_RUBRIC
+
     records = conn.query(
-        """
+        f"""
         MATCH (i:ItemLicitacion)
         WHERE i.descripcion_comprador IS NOT NULL
+          AND {NOT_RUBRIC}
           AND i.descripcion_comprador =~ $rx
         RETURN DISTINCT i.descripcion_comprador AS text
         LIMIT $limit
@@ -133,7 +157,9 @@ def finalize_candidates(shortlist: list[Candidate], raw: dict,
         if verdict is None or not verdict.get("viable"):
             cand.viable = False
             cand.reason = (verdict or {}).get("reason", "no verdict from vet")
+            cand.rejected_by = "vet" if verdict is not None else "validation"
             continue
+        cand.rejected_by = "validation"  # default for any gate below
 
         cand.category_id = verdict.get("category_id", "").strip()
         cand.name = verdict.get("name", "").strip() or cand.token.capitalize()
@@ -219,18 +245,21 @@ def _llm_vet(batch: list[Candidate]) -> dict:
 
 
 def propose(conn, count: int = 10, segment: int | None = 42, min_samples: int = 15,
+            min_spend_share: float = 0.0005, revisit: bool = False,
             vet=None, batch_size: int = 12,
             log=print) -> tuple[list[Candidate], list[Candidate]]:
-    """Returns (chosen, rejected). No writes anywhere.
+    """Returns (chosen, rejected). Writes only the vet-rejection cache.
 
     Walks the WHOLE spend ranking in vet batches until `count` viable
-    categories are found or the ranking is exhausted — junk-heavy stretches
-    (filler tokens dominate below the obvious families) are skimmed past
-    instead of ending the search.
+    categories are found, the spend floor is reached, or the ranking is
+    exhausted. Tokens the vet previously judged junk are skipped (cache at
+    categories/vet_rejections.json; revisit=True re-evaluates them).
     """
     register = load_register()
     clf = Tier1Classifier(register)
     vet = vet or _llm_vet
+    rejections = {} if revisit else load_vet_rejections()
+    skipped_cached = 0
 
     log("profiling corpus...")
     stats = profile(fetch_item_spend(conn, unspsc_segment=segment))
@@ -271,7 +300,14 @@ def propose(conn, count: int = 10, segment: int | None = 42, min_samples: int = 
     for s in stats:
         if len(chosen) >= count:
             break
+        if s.spend_share < min_spend_share:
+            log(f"  spend floor reached at {s.group!r} "
+                f"({s.spend_share:.2%} < {min_spend_share:.2%}) — stopping scan")
+            break
         if s.group == RESIDUE or _is_covered(s.group, clf):
+            continue
+        if s.group in rejections:
+            skipped_cached += 1
             continue
         samples = _fetch_token_samples(conn, s.group, 30)
         if len(samples) < min_samples:
@@ -283,8 +319,18 @@ def propose(conn, count: int = 10, segment: int | None = 42, min_samples: int = 
             flush_batch()
     flush_batch()
 
+    if skipped_cached:
+        log(f"  skipped {skipped_cached} tokens previously vetted as junk "
+            f"(--revisit to re-evaluate)")
+    newly_junk = {c.token: c.reason for c in rejected if c.rejected_by == "vet"}
+    if newly_junk:
+        cache = load_vet_rejections()
+        cache.update(newly_junk)
+        save_vet_rejections(cache)
+        log(f"  cached {len(newly_junk)} junk verdicts for future runs")
+
     if len(chosen) < count:
-        log(f"  ranking exhausted: {len(chosen)}/{count} viable categories found")
+        log(f"  scan ended: {len(chosen)}/{count} viable categories found")
     return chosen, rejected
 
 
