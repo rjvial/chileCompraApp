@@ -1,11 +1,14 @@
 # Implementation Plan: Item-Centric Resolution
 
-> Status: **steps 1–3 DONE.** 1–2: `--kind item` + UNSPSC fallback (dry-run,
-> commits `7af99d8`, `bf032dd`). 3: offers bound as `:Product` VARIANT_OF the
-> item's GenericProduct (dry-run counted; Neo4j write path verified live).
-> Steps 4–5 (full persist + migration, price-series over Product prices)
-> pending. Supersedes the per-record model for the coverage goal;
-> `tender|offer|oc|joint` stay for comparison.
+> Status: **steps 1–4 DONE.** 1–2: `--kind item` + UNSPSC fallback (commits
+> `7af99d8`, `bf032dd`). 3: offers bound as `:Product` VARIANT_OF the item's
+> GenericProduct (`5f620dc`). 4: persist verified live + price-series now reads
+> prices straight off :Product nodes (no transactional re-join). No migration
+> needed — `product_id_unique` already in 001_init. Step 5 (docs/memory
+> finalize) is the remainder. `tender|offer|oc|joint` stay for comparison.
+>
+> Step-4 validation (jeringa item slice, persisted): 75 offers → :Product,
+> price-series read 11 awarded observations across 7 generics with attributes.
 >
 > Measured (5,000 segment-42 items, dry run): per-record `tender` 34.2% →
 > `item` curated 36.2% → `item` + UNSPSC fallback **100% linked**

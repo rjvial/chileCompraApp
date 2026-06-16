@@ -1,9 +1,12 @@
 """Product-level price series from the persisted catalog.
 
-Joins the catalog's traceability edges back to awarded offers:
-GenericProduct <- RESOLVED_TO - SourceRecord -> ItemLicitacion <- PARA_ITEM -
-Oferta (awarded). Prices are per the published unit — basis normalization is
-pending (design §6: unknown basis is reported, never assumed per-unit).
+Reads prices straight off the catalog's own :Product nodes — one per offer,
+each VARIANT_OF its item's GenericProduct (the item-centric model). The price
+point lives on the Product, so no re-join to the transactional layer is needed:
+(p:Product)-[:VARIANT_OF]->(g:GenericProduct {category_id}). Awarded offers are
+the realized price; pass awarded_only=False to include the full bid spread.
+Prices are per the published unit — basis normalization is pending (design §6:
+unknown basis is reported, never assumed per-unit).
 """
 
 from __future__ import annotations
@@ -18,18 +21,14 @@ _BOOKKEEPING = {"id", "category_id", "identity_key", "specificity",
                 "is_complete", "created_at"}
 
 
-def build_series(conn, category_id: str) -> list[dict]:
+def build_series(conn, category_id: str, awarded_only: bool = True) -> list[dict]:
     records = conn.query(
-        """
-        MATCH (g:GenericProduct {category_id: $cat})<-[r:RESOLVED_TO {current: true}]-(s:SourceRecord)
-        WHERE s.source = 'mp_item_licitacion'
-        MATCH (i:ItemLicitacion {id_licitacion: s.tender_id})
-        WHERE toString(i.id_item) = s.line_no
-        MATCH (o:Oferta {es_adjudicada: true})-[:PARA_ITEM]->(i)
-        OPTIONAL MATCH (l:Licitacion)-[:TIENE_ITEM]->(i)
-        RETURN g.id AS product, g{.*} AS props, s.tender_id AS tender,
-               o.precio_unitario_clean AS unit_price, o.moneda AS currency,
-               coalesce(l.fecha_publicacion, o.fecha) AS date
+        f"""
+        MATCH (p:Product)-[:VARIANT_OF]->(g:GenericProduct {{category_id: $cat}})
+        WHERE p.unit_price IS NOT NULL
+          {'AND p.awarded = true' if awarded_only else ''}
+        RETURN g.id AS product, g{{.*}} AS props, p.tender_id AS tender,
+               p.unit_price AS unit_price, p.currency AS currency, p.date AS date
         ORDER BY product, date
         """,
         parameters={"cat": category_id},

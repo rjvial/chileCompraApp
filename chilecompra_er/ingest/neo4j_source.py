@@ -177,7 +177,8 @@ def fetch_items(conn, contains: str | None = None,
                   awarded: o.es_adjudicada,
                   unit_price: coalesce(o.precio_unitario_clean, o.precio_unitario),
                   quantity: coalesce(o.cantidad_clean, o.cantidad_ofertada),
-                  total_clp: o.precio_total_clp}}] AS offers
+                  total_clp: o.precio_total_clp,
+                  currency: o.moneda, date: o.fecha}}] AS offers
         RETURN i.id_licitacion AS tender_id, i.id_item AS item_id,
                i.descripcion_comprador AS text, i.codigo_unspsc_producto AS unspsc,
                i.cantidad AS quantity, i.moneda_item AS currency,

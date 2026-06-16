@@ -187,6 +187,7 @@ def _bind_offers(catalog, item_ref: SourceRef, offers: list[dict],
             "offer_id": str(oid),
             "unit_price": o.get("unit_price"), "total_clp": o.get("total_clp"),
             "quantity": o.get("quantity"), "awarded": bool(o.get("awarded")),
+            "currency": o.get("currency"), "date": o.get("date"),
             "supplier_text_hash": offer_ref.raw_text_hash,
         }.items() if v is not None}
         catalog.bind_product(pid, generic_id, props)
