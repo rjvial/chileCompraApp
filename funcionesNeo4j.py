@@ -58,6 +58,22 @@ class Neo4jConnection:
         if self.__driver is not None:
             self.__driver.close()
 
+    def stream(self, cypher: str, parameters: dict | None = None, db: str | None = None):
+        """Yield neo4j.Record objects one at a time instead of buffering the
+        whole result (funcionesNeo4j.query does list(...)). For large reads
+        where the caller wants to process/report rows as they arrive. The
+        session stays open for the lifetime of the generator; closing happens
+        when it is exhausted or the consumer stops iterating.
+        """
+        assert self.__driver is not None, "Driver not initialized!"
+        self.__driver.verify_connectivity()
+        session = self.__driver.session(database=db) if db else self.__driver.session()
+        try:
+            for record in session.run(cypher, parameters or {}):
+                yield record
+        finally:
+            session.close()
+
     def query(self, cypher: str, db: str | None = None, max_retries: int = 3, parameters: dict | None = None):
         """
         Execute a Cypher query and return a list of neo4j.Record objects.

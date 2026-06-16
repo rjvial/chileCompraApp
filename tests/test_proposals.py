@@ -1,6 +1,6 @@
 from chilecompra_er.categories import load_register
 from chilecompra_er.resolve import Tier1Classifier
-from chilecompra_er.widen import Candidate, _is_covered, finalize_candidates
+from chilecompra_er.register import Candidate, _is_covered, finalize_candidates
 
 register = load_register()
 clf = Tier1Classifier(register)

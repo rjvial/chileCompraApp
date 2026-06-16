@@ -73,15 +73,16 @@ RESPONSE_SCHEMA = {
 }
 
 SYSTEM = """Eres el asistente de catalogación de un pipeline de resolución de entidades \
-para dispositivos médicos de ChileCompra. Tu tarea: a partir de descripciones reales \
-NORMALIZADAS de una categoría, proponer el borrador del esquema de atributos.
+para compras públicas de ChileCompra (productos de CUALQUIER rubro). Tu tarea: a partir \
+de descripciones reales NORMALIZADAS de una categoría, proponer el borrador del esquema \
+de atributos.
 
 Reglas del esquema (no negociables):
-- role "identity": atributo clínico que fija la identidad del producto (calibre, material, \
-talla, capacidad, vías, estéril SOLO si discrimina dentro de la categoría). role \
-"descriptive": se normaliza pero nunca participa en la igualdad. Máximo 6 atributos; \
-prefiere pocos atributos identity bien fundados.
-- domain: conjunto CERRADO de valores canónicos observados o clínicamente estándar \
+- role "identity": atributo que fija la identidad del producto (p.ej. medida, material, \
+talla, capacidad, potencia, tipo; un atributo distingue identidad SOLO si discrimina \
+entre productos de la categoría). role "descriptive": se normaliza pero nunca participa \
+en la igualdad. Máximo 6 atributos; prefiere pocos atributos identity bien fundados.
+- domain: conjunto CERRADO de valores canónicos observados o estándar del rubro \
 (sé generoso con rangos de tallas/medidas estándar). Formato de valor canónico: ASCII, \
 minúsculas, sin espacios: "10ml", "21g", "16fr", "talla_m", "latex", "esteril", "2_vias".
 - NUNCA propongas atributos de empaque (caja x N) — el empaque es price_basis, no identidad.
@@ -99,21 +100,28 @@ dentro del dominio gana). Para atributos sin unidad deja unit como cadena vacía
 "conexion", "calibre_aguja", "material", "talla", "esteril") — coherente con las
 categorías existentes.
 - curation_notes: una línea por atributo justificando rol y dominio.
-- base_unit: la unidad clínica base de precio (p.ej. "unidad (1 jeringa)") — nunca caja.
+- base_unit: la unidad base de precio del producto (p.ej. "unidad (1 jeringa)", \
+"metro", "kilogramo") — nunca el empaque (caja).
 
 Responde SOLO el JSON pedido."""
 
 
 def fetch_samples(conn, corpus_regex: str, limit: int) -> list[str]:
-    from .ingest.neo4j_source import NOT_RUBRIC
+    from .ingest.neo4j_source import NOT_RUBRIC, combined_text
 
+    # Mine the schema from the item text WITH its tender title appended, so
+    # attributes the line omits but the tender states still feed the strawman
+    # (matches what resolve extracts from). corpus_regex matches the combined.
+    combined = combined_text("i.descripcion_comprador")
     records = conn.query(
         f"""
         MATCH (i:ItemLicitacion)
         WHERE i.descripcion_comprador IS NOT NULL
           AND {NOT_RUBRIC}
-          AND i.descripcion_comprador =~ $rx
-        RETURN DISTINCT i.descripcion_comprador AS text
+        OPTIONAL MATCH (l:Licitacion)-[:TIENE_ITEM]->(i)
+        WITH {combined} AS text
+        WHERE text =~ $rx
+        RETURN DISTINCT text
         LIMIT $limit
         """,
         parameters={"rx": corpus_regex, "limit": limit},

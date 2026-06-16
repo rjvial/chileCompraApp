@@ -32,11 +32,10 @@ Installed via `pip install -e .` (console script `chilecompra-er`, also
 chilecompra-er status                               # register + instance + graph counts
 chilecompra-er instance start|stop|status           # Neo4j EC2 lifecycle
 chilecompra-er migrate [--dry-run]                  # graph schema migrations
-chilecompra-er profile --segment 42 --csv data\m0.csv
 chilecompra-er resolve --contains foley --limit 500 --out data\foley   # DRY RUN by default
 chilecompra-er resolve --contains foley --persist   # explicit writes to the graph
-chilecompra-er widen --count 10                     # propose next N categories (preview)
-chilecompra-er widen --count 10 --apply             # ...and register + draft their schemas
+chilecompra-er register --count 10                  # profile + preview next N categories (no writes)
+chilecompra-er register --count 10 --apply          # ...and add to the register + draft their schemas
 chilecompra-er add-category mascarillas --include "\bmascarilla\w*" --example "MASCARILLA QUIRURGICA 3 PLIEGUES"   # manual single add
 chilecompra-er generate-schemas --only mascarillas  # LLM strawman (Max subscription)
 chilecompra-er price-series bandas_molares          # per-product price history (persisted cats)
@@ -46,9 +45,10 @@ chilecompra-er wipe-catalog --yes                   # reset ALL catalog data (so
 
 Output convention: commands write to FIXED filenames under `data\` and
 overwrite them on every run — `data\resolve_resoluciones.csv` +
-`data\resolve_productos_genericos.csv` (resolve), `data\profiling.csv`
-(profile), `data\price_series_<category>.csv`. Pass `--out`/`--csv` only when
-you explicitly want to keep a snapshot under another name.
+`data\resolve_productos_genericos.csv` (resolve), `data\profiling.csv` +
+`data\proposals.json` (register), `data\price_series_<category>.csv`. Pass
+`--out`/`--proposals`/`--ranking` only when you want to keep a snapshot under
+another name.
 
 ## Diagnostics (also CLI)
 
@@ -85,4 +85,4 @@ updated accordingly (or assign an Elastic IP).
 - **M3:** "branded enough" rule, `:Product` resolution, fuzzy matching
   (rapidfuzz + embeddings + splink) for supplier offers.
 - **M4:** lineage edges (`SPLIT_INTO`/`MERGED_INTO`) before any re-cluster;
-  widen in spend order; daily incremental linkage.
+  register new categories in spend order; daily incremental linkage.

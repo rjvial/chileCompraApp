@@ -1,7 +1,7 @@
 """Register integrity — data-driven from the register itself.
 
 Each register entry carries its own hand-authored canonical_example (written
-when the category is added, by a human or accepted from the widen vet). The
+when the category is added, by a human or accepted from the register vet). The
 tests assert the example exists and classifies unambiguously to its own
 category — golden fixtures stored next to the rules they check, so adding a
 category never requires editing this file. Cross-category boundary decisions

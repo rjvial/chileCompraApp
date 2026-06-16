@@ -3,11 +3,18 @@
     chilecompra-er status                       # register + instance overview
     chilecompra-er instance start|stop|status   # Neo4j EC2 lifecycle
     chilecompra-er migrate [--dry-run]          # apply graph schema migrations
-    chilecompra-er profile [--segment 42] [--top 30] [--csv data\\m0.csv]
+    chilecompra-er register [--segment 42] [--reprofile]  # PREVIEW -> data\\proposals.json
+    chilecompra-er register --apply                        # commit the reviewed proposals
     chilecompra-er resolve [--kind tender|offer|oc] [--contains foley]
                            [--limit 200] [--persist] [--out data\\run1] [--show 5]
     chilecompra-er generate-schemas [--only jeringas] [--samples 50]
     chilecompra-er wipe-category <category_id> --yes
+
+The pipeline is file-driven: `register` profiles the corpus (caching the spend
+ranking to data\\profiling.csv, reused on later runs unless --reprofile), vets
+the candidates, and writes data\\proposals.json — a PREVIEW that changes
+nothing. `register --apply` reads that proposals file and adds the categories
+to the register + drafts the schemas that `resolve` then consumes.
 
 `resolve` is a DRY RUN by default (nothing written to the graph) — pass
 --persist explicitly to write SourceRecords/RESOLVED_TO edges and catalog
@@ -100,74 +107,142 @@ def cmd_migrate(args) -> int:
     return 0
 
 
-def cmd_profile(args) -> int:
-    from .graphdb import get_connection
-    from .profiling import fetch_item_spend, profile
-
-    conn = get_connection()
-    try:
-        rows = fetch_item_spend(conn, unspsc_segment=args.segment)
-    finally:
-        conn.close()
-    print(f"tender items profiled: {len(rows)}")
-    stats = profile(rows)
-
-    header = f"{'group':<22}{'records':>9}{'distinct':>10}{'spend CLP':>18}{'share':>8}{'cum':>8}"
-    print(header)
-    print("-" * len(header))
-    for s in stats[: args.top]:
-        print(f"{s.group:<22}{s.records:>9}{s.distinct_texts:>10}"
-              f"{s.spend_clp:>18,.0f}{s.spend_share:>8.1%}{s.cum_share:>8.1%}")
-
-    if args.csv:
-        import csv
-
-        args.csv.parent.mkdir(parents=True, exist_ok=True)
-        with open(args.csv, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.writer(f)
-            w.writerow(["group", "records", "distinct_texts", "spend_clp",
-                        "spend_share", "cum_share"])
-            for s in stats:
-                w.writerow([s.group, s.records, s.distinct_texts, f"{s.spend_clp:.0f}",
-                            f"{s.spend_share:.6f}", f"{s.cum_share:.6f}"])
-        print(f"\nfull ranking written to {args.csv}")
-    return 0
-
-
 def cmd_resolve(args) -> int:
     from .graphdb import get_connection
     from .ingest import fetch_oc_items, fetch_offers, fetch_tender_items, resolve_items
-    from .ingest.export import export_csv
+    from .ingest.export import write_products_csv
+    from .ingest.resume import (
+        Checkpoint,
+        StreamingResolutionWriter,
+        checkpoint_path,
+        load_checkpoint,
+        products_path,
+        resolutions_path,
+        save_checkpoint,
+        seed_inmemory_catalog,
+        truncate_resolutions,
+    )
+    from .ingest.runner import ResolutionStats
     from .resolve import InMemoryCatalog, Neo4jCatalog, Resolver
 
-    fetchers = {"tender": fetch_tender_items, "offer": fetch_offers, "oc": fetch_oc_items}
+    fetchers = {"tender": fetch_tender_items, "offer": fetch_offers,
+                "oc": fetch_oc_items, "joint": fetch_offers}
+    joint = args.kind == "joint"
+
+    prefix = args.out
+    cp_path = checkpoint_path(prefix)
+    res_csv = resolutions_path(prefix)
+    prod_csv = products_path(prefix)
+
+    # --- resume bookkeeping ---------------------------------------------------
+    base_stats = ResolutionStats()
+    run_start_skip = args.skip
+    effective_skip = args.skip
+    remaining_limit = args.limit
+    append = False
+
+    if args.resume:
+        cp = load_checkpoint(cp_path)
+        if cp is None:
+            print(f"no checkpoint at {cp_path} — nothing to resume "
+                  "(start a fresh run without --resume)")
+            return 1
+        bad = cp.mismatches(kind=args.kind, contains=args.contains,
+                            segment=args.segment, persist=args.persist,
+                            limit=args.limit)
+        if bad:
+            print("refusing to resume: invocation differs from the checkpoint:")
+            for m in bad:
+                print(f"  {m}")
+            return 1
+        if cp.done:
+            print(f"checkpoint already complete ({cp.processed} records) — nothing to do")
+            return 0
+        base_stats = cp.stats()
+        run_start_skip = cp.start_skip
+        effective_skip = cp.start_skip + cp.processed
+        remaining_limit = (args.limit - cp.processed) if args.limit else None
+        # Align the CSV to the checkpoint exactly so kill timing can't dup rows.
+        kept = truncate_resolutions(res_csv, cp.processed)
+        append = True
+        print(f"resuming: {cp.processed} records already done "
+              f"(CSV trimmed to {kept} rows); continuing from skip {effective_skip}")
+
     conn = get_connection()
     try:
-        kwargs = {"contains": args.contains, "limit": args.limit}
-        if args.kind == "tender":
-            kwargs.update(skip=args.skip, unspsc_segment=args.segment)
+        kwargs = {"contains": args.contains, "limit": remaining_limit}
+        if args.kind in ("tender", "offer", "joint"):
+            kwargs.update(skip=effective_skip, unspsc_segment=args.segment)
+        elif args.kind == "oc":
+            kwargs.update(skip=effective_skip)
         items = fetchers[args.kind](conn, **kwargs)
+
         catalog = Neo4jCatalog(conn) if args.persist else InMemoryCatalog()
+        if args.resume and not args.persist:
+            seeded = seed_inmemory_catalog(catalog, prod_csv)
+            print(f"reseeded {seeded} existing products from {prod_csv.name}")
         resolver = Resolver(catalog)
+
         mode = "PERSIST (writing to graph)" if args.persist else "dry run (no writes)"
         print(f"mode: {mode}")
 
-        stats, reports = resolve_items(resolver, items, persist=args.persist,
-                                       collect_reports=True)
+        writer = StreamingResolutionWriter(res_csv, append=append)
+        shown: list = []
+
+        def on_report(r) -> None:
+            writer.write(r)
+            if len(shown) < args.show and r.status != "unresolved":
+                shown.append(r)
+
+        def checkpoint(st, done: bool) -> None:
+            writer.flush()
+            if not args.persist:
+                write_products_csv(catalog, prod_csv)
+            save_checkpoint(cp_path, Checkpoint(
+                kind=args.kind, contains=args.contains, segment=args.segment,
+                persist=args.persist, limit=args.limit,
+                start_skip=run_start_skip, processed=st.total, done=done,
+                stats_dict=st.to_dict()))
+
+        def show_progress(st) -> None:
+            checkpoint(st, done=False)
+            denom = f"/{args.limit}" if args.limit else ""
+            res = st.by_status.get("resolved_generic", 0)
+            unr = st.by_status.get("unresolved", 0)
+            print(f"  ...processed {st.total}{denom}  resolved={res}  "
+                  f"unresolved={unr}  created={st.nodes_created}",
+                  file=sys.stderr, flush=True)
+
+        # Initial checkpoint so even a kill before the first progress tick
+        # leaves a resumable marker.
+        checkpoint(base_stats, done=False)
+        print("fetching + resolving (streamed in pages of 1000)...",
+              file=sys.stderr, flush=True)
+
+        try:
+            stats, _ = resolve_items(resolver, items, persist=args.persist,
+                                     collect_reports=False, on_report=on_report,
+                                     progress=show_progress,
+                                     progress_every=args.progress_every,
+                                     stats=base_stats, joint=joint)
+        finally:
+            writer.flush()
+            writer.close()
+
+        if not args.persist:
+            write_products_csv(catalog, prod_csv)
+        checkpoint(stats, done=True)
+
         print(stats.summary())
+        print(f"written: {res_csv}")
+        if not args.persist:
+            print(f"written: {prod_csv}")
+        print(f"checkpoint: {cp_path}")
 
-        if args.out:
-            for path in export_csv(args.out, reports, catalog):
-                print(f"written: {path}")
-
-        shown = 0
-        for r in reports:
-            if r.status == "unresolved" or shown >= args.show:
-                continue
+        for r in shown:
             print(f"  {r.raw_text[:70]!r}")
             print(f"    -> {r.node_id}  attrs={r.extraction.values}  "
                   f"basis={r.price_basis.basis}")
-            shown += 1
     finally:
         conn.close()
     return 0
@@ -186,42 +261,90 @@ def cmd_generate_schemas(args) -> int:
     return 0
 
 
-def cmd_widen(args) -> int:
+def cmd_register(args) -> int:
+    def log(msg) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
+    # --apply commits a reviewed proposals file; the default is a preview that
+    # profiles + vets and writes that file, touching nothing in the register.
+    if args.apply:
+        return _register_apply(args, log)
+    return _register_preview(args, log)
+
+
+def _register_preview(args, log) -> int:
     from .graphdb import get_connection
-    from .widen import apply, propose
+    from .profiling import fetch_item_spend, load_ranking, profile, write_ranking
+    from .register import propose, write_proposals
 
     conn = get_connection()
     try:
-        chosen, rejected = propose(conn, count=args.count, segment=args.segment,
+        # Profiling the corpus is the slow phase, so the ranking is cached to a
+        # file: reuse it unless it's missing or --reprofile forces a fresh scan.
+        if args.ranking.exists() and not args.reprofile:
+            stats = load_ranking(args.ranking)
+            log(f"reusing ranking from {args.ranking} ({len(stats)} groups; "
+                "--reprofile to rebuild)")
+        else:
+            segment = None if args.all_segments else args.segment
+            log("profiling corpus (streamed)...")
+            rows = fetch_item_spend(conn, unspsc_segment=segment, limit=args.limit,
+                                    progress=lambda n: log(f"  ...fetched {n:,} items"))
+            log(f"  grouping {len(rows):,} items by head-noun...")
+            stats = profile(rows)
+            write_ranking(stats, args.ranking)
+            log(f"  wrote ranking ({len(stats)} groups) to {args.ranking}")
+
+        chosen, rejected = propose(conn, stats, count=args.count,
                                    min_samples=args.min_samples,
                                    min_spend_share=args.min_spend,
-                                   revisit=args.revisit)
-        if rejected:
-            print("\nrejected by the vet:")
-            for c in rejected:
-                print(f"  {c.token:<22}{c.reason}")
-        if not chosen:
-            print("\nno viable candidates found")
-            return 1
-
-        print(f"\nproposed ({len(chosen)}):")
-        for c in chosen:
-            print(f"  {c.category_id:<26}{c.spend_share:>6.1%} spend  include={c.include}"
-                  + (f"  exclude={c.exclude}" if c.exclude else ""))
-            print(f"    {'example':<10}: {c.canonical_example[:90]!r}")
-            print(f"    {'reason':<10}: {c.reason}")
-
-        if not args.apply:
-            print("\npreview only — rerun with --apply to register these and "
-                  "generate their schemas")
-            return 0
-
-        apply(conn, chosen)
-        print("\ndone. next: run the test suite and a corpus dry run:")
-        print("  python -m pytest tests -q")
-        print("  chilecompra-er resolve --limit 5000 --show 0 --out data\\corpus_check")
+                                   revisit=args.revisit, log=log)
     finally:
         conn.close()
+
+    if rejected:
+        print("\nrejected by the vet:")
+        for c in rejected:
+            print(f"  {c.token:<22}{c.reason}")
+    if not chosen:
+        print("\nno viable candidates found")
+        return 1
+
+    print(f"\ncandidates ({len(chosen)}):")
+    for c in chosen:
+        print(f"  {c.category_id:<26}{c.spend_share:>6.1%} spend  include={c.include}"
+              + (f"  exclude={c.exclude}" if c.exclude else ""))
+        print(f"    {'example':<10}: {c.canonical_example[:90]!r}")
+        print(f"    {'reason':<10}: {c.reason}")
+
+    write_proposals(chosen, args.proposals)
+    print(f"\npreview only — wrote {len(chosen)} candidates to {args.proposals}")
+    print(f"review them, then commit: chilecompra-er register --apply --proposals {args.proposals}")
+    return 0
+
+
+def _register_apply(args, log) -> int:
+    from .graphdb import get_connection
+    from .register import apply, load_proposals
+
+    if not args.proposals.exists():
+        print(f"proposals file not found: {args.proposals}\n"
+              f"run `chilecompra-er register` first (writes the proposals)")
+        return 1
+    chosen = load_proposals(args.proposals)
+    log(f"loaded {len(chosen)} proposals from {args.proposals}")
+    if not chosen:
+        print("no proposals to apply")
+        return 1
+
+    conn = get_connection()
+    try:
+        apply(conn, chosen, log=log)
+    finally:
+        conn.close()
+    print("\ndone. next: run the test suite and a corpus dry run:")
+    print("  python -m pytest tests -q")
+    print("  chilecompra-er resolve --limit 5000 --show 0 --out data\\corpus_check")
     return 0
 
 
@@ -375,28 +498,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_migrate)
 
-    p = sub.add_parser("profile", help="M0 head-noun x spend profiling")
-    p.add_argument("--segment", type=int, default=None,
-                   help="UNSPSC segment scope, e.g. 42 = medical supplies")
-    p.add_argument("--top", type=int, default=30)
-    p.add_argument("--csv", type=Path, default=Path("data/profiling.csv"),
-                   help="ranking CSV; default data\\profiling.csv (overwritten)")
-    p.set_defaults(func=cmd_profile)
-
     p = sub.add_parser("resolve", help="resolve source records (dry run by default)")
-    p.add_argument("--kind", choices=["tender", "offer", "oc"], default="tender")
+    p.add_argument("--kind", choices=["tender", "offer", "oc", "joint"], default="tender",
+                   help="tender = resolve each buyer line with its tender title as "
+                        "context (item wins; title is fallback for terse lines). "
+                        "joint = resolve each offer with its tender line's buyer "
+                        "text together (offer wins; disagreement -> review)")
     p.add_argument("--contains", default=None, help="filter on buyer text")
     p.add_argument("--limit", type=int, default=200)
     p.add_argument("--skip", type=int, default=0,
                    help="skip N records (stable order; chunked corpus builds)")
     p.add_argument("--segment", type=int, default=None,
-                   help="UNSPSC segment filter, e.g. 42 (tender kind only)")
+                   help="UNSPSC segment filter, e.g. 42 (tender/offer/joint kinds; ignored for oc)")
     p.add_argument("--persist", action="store_true",
                    help="WRITE results to the graph (default: dry run)")
     p.add_argument("--out", type=Path, default=Path("data/resolve"),
                    help="CSV output prefix; default data\\resolve — the same "
                         "two files are overwritten on every run")
     p.add_argument("--show", type=int, default=5)
+    p.add_argument("--progress-every", type=int, default=200,
+                   help="emit a progress line + checkpoint every N records (default 200)")
+    p.add_argument("--resume", action="store_true",
+                   help="continue the run recorded in <out>.checkpoint.json "
+                        "(must match kind/segment/contains/persist/limit)")
     p.set_defaults(func=cmd_resolve)
 
     p = sub.add_parser("generate-schemas", help="LLM strawman drafts from corpus samples")
@@ -404,20 +528,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--samples", type=int, default=50)
     p.set_defaults(func=cmd_generate_schemas)
 
-    p = sub.add_parser("widen", help="propose and add the next N categories from the spend ranking")
-    p.add_argument("--count", type=int, default=10)
+    p = sub.add_parser("register", help="add the next N categories from the spend ranking (preview by default)")
+    p.add_argument("--apply", action="store_true",
+                   help="commit the reviewed proposals file: register the categories "
+                        "and draft their schemas (default: preview only, no writes)")
+    p.add_argument("--proposals", type=Path, default=Path("data/proposals.json"),
+                   help="proposals file — written by the preview, read back by "
+                        "--apply (default data\\proposals.json)")
+    # preview: corpus profiling phase, cached to --ranking
+    p.add_argument("--ranking", type=Path, default=Path("data/profiling.csv"),
+                   help="cached spend ranking; reused if present, else built by "
+                        "profiling the corpus (default data\\profiling.csv)")
+    p.add_argument("--reprofile", action="store_true",
+                   help="force a fresh corpus profile, overwriting --ranking")
     p.add_argument("--segment", type=int, default=42,
-                   help="UNSPSC segment scope (default 42 = medical supplies)")
+                   help="UNSPSC segment scope when profiling (default 42 = medical supplies)")
+    p.add_argument("--all-segments", action="store_true",
+                   help="profile the WHOLE marketplace (overrides --segment)")
+    p.add_argument("--limit", type=int, default=None,
+                   help="profile only the first N tender items (dev/testing)")
+    p.add_argument("--count", type=int, default=10)
     p.add_argument("--min-samples", type=int, default=15,
                    help="minimum distinct corpus descriptions per candidate")
     p.add_argument("--min-spend", type=float, default=0.0005,
                    help="spend-share floor; scan stops below it (0.0005 = 0.05%%)")
     p.add_argument("--revisit", action="store_true",
                    help="re-evaluate tokens previously vetted as junk")
-    p.add_argument("--apply", action="store_true",
-                   help="register the proposals and generate their schemas "
-                        "(default: preview only)")
-    p.set_defaults(func=cmd_widen)
+    p.set_defaults(func=cmd_register)
 
     p = sub.add_parser("add-category", help="append a category to the register")
     p.add_argument("category_id", help="lowercase snake_case id, e.g. mascarillas")

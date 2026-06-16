@@ -36,7 +36,39 @@ SOURCE_OC_ITEM = "mp_item_oc"
 # be ingested and explicitly resolved as boilerplate (total & explicit).
 NOT_RUBRIC = "size(split(i.descripcion_comprador, ' / ')) < 3"
 
+# Tender-level context. The line item description (descripcion_comprador) is the
+# authoritative product text; the parent tender's title supplements it when the
+# line is terse or boilerplate — the same "item wins, tender is fallback" rule
+# the resolver applies (resolve_joint). `l.titulo` is the concise tender
+# headline (confirmed against the live graph, e.g. "MEDICAMENTOS USO
+# VETERINARIO"); `l.descripcion` is deliberately NOT used — it is
+# bases-administrativas boilerplate ("Las presentes Bases de Licitacion
+# contemplan..."). Change TENDER_NAME alone to switch fields; a missing
+# property reads as null in Cypher (coalesced away), degrading to item-only.
+TENDER_NAME = "l.titulo"
+
+
+def combined_text(item_expr: str, tender_expr: str = TENDER_NAME) -> str:
+    """Cypher expression: the item text with the tender title appended as
+    context (' · ' join — never ' / ', so the combined text can't trip the
+    rubric filter). A null/empty tender leaves the item text unchanged."""
+    return (f"CASE WHEN coalesce({tender_expr}, '') = '' THEN {item_expr} "
+            f"ELSE {item_expr} + ' · ' + coalesce({tender_expr}, '') END")
+
+
 _BATCH = 1000
+
+
+def segment_bounds(segment: int | None) -> tuple[int | None, int | None]:
+    """A UNSPSC prefix -> a half-open numeric range [low, high) over the
+    8-digit code, so a RANGE index on codigo_unspsc_producto serves it
+    directly (toString(...) STARTS WITH could not). Works for any prefix
+    width — 42 -> [42000000, 43000000), 4214 -> [42140000, 42150000), a full
+    8-digit code -> exact match. None means "all segments" (no filter)."""
+    if segment is None:
+        return None, None
+    factor = 10 ** (8 - len(str(segment)))
+    return segment * factor, (segment + 1) * factor
 
 
 @dataclass(frozen=True)
@@ -56,18 +88,18 @@ class SourceItem:
 
 
 def _paged(conn, cypher: str, build, contains: str | None, limit: int | None,
-           skip: int = 0) -> Iterator[SourceItem]:
+           skip: int = 0, extra_params: dict | None = None) -> Iterator[SourceItem]:
     """Stream results in SKIP/LIMIT pages so large pulls don't buffer fully."""
     fetched = 0
     while True:
         page = min(_BATCH, limit - fetched) if limit is not None else _BATCH
         if page <= 0:
             return
-        records = conn.query(
-            cypher,
-            parameters={"contains": contains.lower() if contains else None,
-                        "skip": skip, "limit": page},
-        )
+        params = {"contains": contains.lower() if contains else None,
+                  "skip": skip, "limit": page}
+        if extra_params:
+            params.update(extra_params)
+        records = conn.query(cypher, parameters=params)
         for rec in records:
             yield build(rec)
             fetched += 1
@@ -81,20 +113,24 @@ def fetch_tender_items(conn, contains: str | None = None,
                        unspsc_segment: int | None = None) -> Iterator[SourceItem]:
     """Buyer-side tender lines: the primary resolution corpus.
 
-    Stable ORDER BY makes skip/limit a resumable chunking scheme for
-    corpus-scale persisted builds."""
-    seg = str(unspsc_segment) if unspsc_segment is not None else None
-    cypher = """
+    The segment filter is a numeric range on codigo_unspsc_producto (index-
+    backed); pass any prefix, or None for all segments. No global ORDER BY:
+    skip/limit page in the source's stable scan order — resolution only adds
+    catalog nodes, never mutates Item/Oferta, so the order is repeatable
+    across resumed runs (and persisted writes are idempotent on record_key)."""
+    seg_low, seg_high = segment_bounds(unspsc_segment)
+    cypher = f"""
         MATCH (l:Licitacion)-[:TIENE_ITEM]->(i:ItemLicitacion)
         WHERE i.descripcion_comprador IS NOT NULL
           AND ($contains IS NULL OR toLower(i.descripcion_comprador) CONTAINS $contains)
-          AND ($segment IS NULL OR toString(i.codigo_unspsc_producto) STARTS WITH $segment)
+          AND ($seg_low IS NULL OR
+               (i.codigo_unspsc_producto >= $seg_low AND i.codigo_unspsc_producto < $seg_high))
         RETURN i.id_licitacion AS tender_id, i.id_item AS item_id,
                i.descripcion_comprador AS text, i.codigo_unspsc_producto AS unspsc,
                i.cantidad AS quantity, i.moneda_item AS currency,
                i.unidad_medida AS uom, i.nombre_producto_fuente AS source_name,
+               coalesce({TENDER_NAME}, '') AS tender_text,
                l.fecha_publicacion AS date
-        ORDER BY tender_id, item_id
         SKIP $skip LIMIT $limit
     """
 
@@ -108,40 +144,31 @@ def fetch_tender_items(conn, contains: str | None = None,
             quantity=rec["quantity"],
             currency=rec["currency"],
             date=rec["date"],
-            extra={"uom": rec["uom"], "source_name": rec["source_name"]},
+            extra={"uom": rec["uom"], "source_name": rec["source_name"],
+                   "tender_text": rec["tender_text"]},
         )
 
-    def paged_with_segment():
-        fetched = 0
-        page_skip = skip
-        while True:
-            page = min(_BATCH, limit - fetched) if limit is not None else _BATCH
-            if page <= 0:
-                return
-            records = conn.query(
-                cypher,
-                parameters={"contains": contains.lower() if contains else None,
-                            "segment": seg, "skip": page_skip, "limit": page},
-            )
-            for rec in records:
-                yield build(rec)
-                fetched += 1
-            if len(records) < page:
-                return
-            page_skip += page
-
-    return paged_with_segment()
+    return _paged(conn, cypher, build, contains, limit, skip=skip,
+                  extra_params={"seg_low": seg_low, "seg_high": seg_high})
 
 
 def fetch_offers(conn, contains: str | None = None, awarded_only: bool = False,
-                 limit: int | None = None) -> Iterator[SourceItem]:
-    """Supplier offers for tender items. `contains` filters on the BUYER text
-    of the linked item, so offers retrieve alongside their tender lines."""
+                 limit: int | None = None, skip: int = 0,
+                 unspsc_segment: int | None = None) -> Iterator[SourceItem]:
+    """Supplier offers for tender items, each carrying the linked buyer text
+    (extra['buyer_text']) so the joint path can resolve both together.
+    `contains` filters on the BUYER text; `unspsc_segment` scopes by the
+    item's UNSPSC (numeric range, index-backed; None = all segments). No
+    global ORDER BY — paging uses the read-only source's stable scan order,
+    see fetch_tender_items."""
+    seg_low, seg_high = segment_bounds(unspsc_segment)
     cypher = f"""
         MATCH (o:Oferta)-[:PARA_ITEM]->(i:ItemLicitacion)
         WHERE o.descripcion_proveedor IS NOT NULL
           {'AND o.es_adjudicada = true' if awarded_only else ''}
           AND ($contains IS NULL OR toLower(i.descripcion_comprador) CONTAINS $contains)
+          AND ($seg_low IS NULL OR
+               (i.codigo_unspsc_producto >= $seg_low AND i.codigo_unspsc_producto < $seg_high))
         RETURN o.id_licitacion AS tender_id, o.id_item AS item_id,
                o.id_oferta AS offer_id, o.descripcion_proveedor AS text,
                i.descripcion_comprador AS buyer_text,
@@ -151,7 +178,6 @@ def fetch_offers(conn, contains: str | None = None, awarded_only: bool = False,
                o.precio_total_clp AS total_clp, o.moneda AS currency,
                o.es_adjudicada AS awarded, o.fecha AS date,
                i.codigo_unspsc_producto AS unspsc
-        ORDER BY tender_id, item_id, offer_id
         SKIP $skip LIMIT $limit
     """
 
@@ -171,11 +197,12 @@ def fetch_offers(conn, contains: str | None = None, awarded_only: bool = False,
                    "total_clp": rec["total_clp"]},
         )
 
-    return _paged(conn, cypher, build, contains, limit)
+    return _paged(conn, cypher, build, contains, limit, skip=skip,
+                  extra_params={"seg_low": seg_low, "seg_high": seg_high})
 
 
 def fetch_oc_items(conn, contains: str | None = None,
-                   limit: int | None = None) -> Iterator[SourceItem]:
+                   limit: int | None = None, skip: int = 0) -> Iterator[SourceItem]:
     """Purchase-order lines: award-side records with firm prices."""
     cypher = """
         MATCH (oc:OrdenCompra)-[:CONTIENE_ITEM_OC]->(it:ItemOC)
@@ -207,7 +234,7 @@ def fetch_oc_items(conn, contains: str | None = None,
             extra={"supplier_text": rec["supplier_text"], "uom": rec["uom"]},
         )
 
-    return _paged(conn, cypher, build, contains, limit)
+    return _paged(conn, cypher, build, contains, limit, skip=skip)
 
 
 def count_tender_items(conn, contains: str | None = None) -> int:

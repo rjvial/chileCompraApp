@@ -40,3 +40,30 @@ def test_qualifiers_never_become_families():
 def test_head_noun_first_family_token_wins():
     assert head_noun("sonda foley 16", {"sonda", "foley"}) == "sonda"
     assert head_noun("xyz abc", {"sonda"}) == RESIDUE
+
+
+def test_tender_context_anchors_a_terse_line():
+    # the item line names no family; its tender title does -> it inherits it,
+    # and contributes its spend to that group instead of falling into residue.
+    rows = [
+        {"text": "JERINGA 10ML", "spend_clp": 100},
+        {"text": "JERINGA 5ML", "spend_clp": 100},
+        {"text": "ITEM 5 SEGUN ANEXO", "context": "ADQUISICION DE JERINGA HOSPITAL",
+         "spend_clp": 400},
+    ]
+    by_group = {s.group: s for s in profile(rows, min_count=1)}
+    assert by_group["jeringa"].records == 3
+    assert by_group["jeringa"].spend_clp == 600
+    assert RESIDUE not in by_group
+
+
+def test_item_family_wins_over_tender_context():
+    # the item already names its family; a different tender title must NOT
+    # override it (one tender fans out over many different-product lines).
+    rows = [
+        {"text": "JERINGA 10ML", "context": "ADQUISICION INSUMOS SONDA FOLEY",
+         "spend_clp": 100},
+    ]
+    by_group = {s.group: s for s in profile(rows, min_count=1)}
+    assert "jeringa" in by_group
+    assert "sonda" not in by_group

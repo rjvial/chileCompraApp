@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from chilecompra_er.cli import build_parser
 
 
@@ -16,9 +18,16 @@ def test_wipe_requires_explicit_yes_flag():
     assert args.yes is False  # cmd refuses without it
 
 
-def test_profile_arguments():
-    args = parse(["profile", "--segment", "42", "--top", "10"])
-    assert args.segment == 42 and args.top == 10
+def test_register_previews_by_default():
+    args = parse(["register", "--segment", "42", "--count", "10", "--reprofile"])
+    assert args.apply is False  # default is a no-write preview
+    assert args.segment == 42 and args.count == 10 and args.reprofile is True
+    assert args.proposals == Path("data/proposals.json")
+
+
+def test_register_apply_reads_the_proposals_file():
+    args = parse(["register", "--apply", "--proposals", "data/p.json"])
+    assert args.apply is True and args.proposals == Path("data/p.json")
 
 
 def test_instance_actions():

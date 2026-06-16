@@ -1,5 +1,5 @@
-"""Widen the register by N categories from the spend ranking — the M4 loop
-as one command.
+"""Register the next N categories from the spend ranking — the M4 expansion
+loop as one command.
 
 Pipeline: profile (head-noun x spend) -> drop residue/covered/thin groups ->
 LLM vet of the shortlist (design §8: Tier 3 bootstraps new categories — it
@@ -23,7 +23,7 @@ from pathlib import Path
 from .categories.schema import CATEGORIES_DIR, add_category, load_register
 from .llm import complete_json
 from .normalize import Normalizer
-from .profiling import RESIDUE, fetch_item_spend, profile
+from .profiling import RESIDUE, GroupStat
 from .resolve.classifier import AMBIGUOUS, CLASSIFIED, Tier1Classifier
 
 
@@ -90,15 +90,17 @@ VET_SCHEMA = {
     },
 }
 
-VET_SYSTEM = """Eres el curador de categorías de un catálogo de dispositivos médicos de \
-ChileCompra. Recibes grupos candidatos (token frecuente + gasto + descripciones reales) \
-y decides cuáles son FAMILIAS DE PRODUCTO coherentes (una categoría = un conjunto de \
-ítems que comparte un mismo esquema de atributos de identidad).
+VET_SYSTEM = """Eres el curador de categorías de un catálogo de compras públicas de \
+ChileCompra: bienes y productos de CUALQUIER rubro (insumos médicos, herramientas, \
+materiales de construcción, alimentos, mobiliario, equipos, productos de aseo, etc.). \
+Recibes grupos candidatos (token frecuente + gasto + descripciones reales) y decides \
+cuáles son FAMILIAS DE PRODUCTO coherentes (una categoría = un conjunto de ítems que \
+comparte un mismo esquema de atributos de identidad).
 
 NO son familias: palabras de relleno ("bases", "meses", "tecnica", "compatible"), \
-números de línea de licitación, servicios, grupos que mezclan productos clínicamente \
-distintos sin atributo común. Si el token agrupa varias familias distintas, elige LA \
-dominante en las muestras y di en reason qué quedó fuera.
+números de línea de licitación, servicios (no son bienes), grupos que mezclan productos \
+distintos sin un atributo de identidad común. Si el token agrupa varias familias \
+distintas, elige LA dominante en las muestras y di en reason qué quedó fuera.
 
 Para cada candidato viable propone:
 - category_id: español snake_case ASCII plural (p.ej. "termometros").
@@ -123,15 +125,21 @@ def _is_covered(token: str, clf: Tier1Classifier) -> bool:
 
 
 def _fetch_token_samples(conn, token: str, limit: int) -> list[str]:
-    from .ingest.neo4j_source import NOT_RUBRIC
+    from .ingest.neo4j_source import NOT_RUBRIC, combined_text
 
+    # Sample the item text WITH its tender title as context (the same combined
+    # signal resolve sees), and match the token against the combined text so a
+    # line whose family word lives only in the tender title still surfaces.
+    combined = combined_text("i.descripcion_comprador")
     records = conn.query(
         f"""
         MATCH (i:ItemLicitacion)
         WHERE i.descripcion_comprador IS NOT NULL
           AND {NOT_RUBRIC}
-          AND i.descripcion_comprador =~ $rx
-        RETURN DISTINCT i.descripcion_comprador AS text
+        OPTIONAL MATCH (l:Licitacion)-[:TIENE_ITEM]->(i)
+        WITH {combined} AS text
+        WHERE text =~ $rx
+        RETURN DISTINCT text
         LIMIT $limit
         """,
         parameters={"rx": f"(?i).*{re.escape(token)}.*", "limit": limit},
@@ -244,15 +252,17 @@ def _llm_vet(batch: list[Candidate]) -> dict:
                          VET_SCHEMA, system=VET_SYSTEM)
 
 
-def propose(conn, count: int = 10, segment: int | None = 42, min_samples: int = 15,
+def propose(conn, stats: list[GroupStat], count: int = 10, min_samples: int = 15,
             min_spend_share: float = 0.0005, revisit: bool = False,
             vet=None, batch_size: int = 12,
             log=print) -> tuple[list[Candidate], list[Candidate]]:
     """Returns (chosen, rejected). Writes only the vet-rejection cache.
 
-    Walks the WHOLE spend ranking in vet batches until `count` viable
-    categories are found, the spend floor is reached, or the ranking is
-    exhausted. Tokens the vet previously judged junk are skipped (cache at
+    `stats` is the spend ranking produced by profiling (read from the cached
+    ranking file via profiling.load_ranking) — never re-streamed here.
+    Walks the WHOLE ranking in vet batches until `count` viable categories are
+    found, the spend floor is reached, or the ranking is exhausted. Tokens the
+    vet previously judged junk are skipped (cache at
     categories/vet_rejections.json; revisit=True re-evaluates them).
     """
     register = load_register()
@@ -261,8 +271,7 @@ def propose(conn, count: int = 10, segment: int | None = 42, min_samples: int = 
     rejections = {} if revisit else load_vet_rejections()
     skipped_cached = 0
 
-    log("profiling corpus...")
-    stats = profile(fetch_item_spend(conn, unspsc_segment=segment))
+    log(f"scanning {len(stats)} ranked groups for candidates...")
 
     # Working register: accepted candidates are appended so every later batch
     # validates against them, not just against what was on disk.
@@ -332,6 +341,32 @@ def propose(conn, count: int = 10, segment: int | None = 42, min_samples: int = 
     if len(chosen) < count:
         log(f"  scan ended: {len(chosen)}/{count} viable categories found")
     return chosen, rejected
+
+
+# Fields carried in the proposals file — everything `apply` needs to register
+# a category, plus the ranking metadata for human review. Samples are left out
+# (large, and already consumed by the vet).
+_PROPOSAL_FIELDS = ("token", "records", "spend_share", "category_id", "name",
+                    "include", "exclude", "corpus_regex", "canonical_example",
+                    "reason")
+
+
+def write_proposals(chosen: list[Candidate], path: Path | str) -> None:
+    """Persist the vetted proposals — the `register` preview -> `register
+    --apply` handoff. Only the accepted candidates are written."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"proposals": [{f: getattr(c, f) for f in _PROPOSAL_FIELDS}
+                          for c in chosen]}
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+
+
+def load_proposals(path: Path | str) -> list[Candidate]:
+    """Read a proposals file back into viable Candidates for `apply`."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return [Candidate(viable=True, **{f: p[f] for f in _PROPOSAL_FIELDS if f in p})
+            for p in data["proposals"]]
 
 
 def apply(conn, candidates: list[Candidate], schema_samples: int = 50, log=print) -> None:

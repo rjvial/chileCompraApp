@@ -8,7 +8,7 @@ the basis mix — unresolved is visible debt, never silently dropped.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from ..resolve.resolver import ResolutionReport, Resolver
@@ -25,6 +25,31 @@ class ResolutionStats:
     resolved_without_attributes: int = 0  # anchored on a category root
     nodes_created: int = 0
     illegal_values: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "total": self.total,
+            "by_status": dict(self.by_status),
+            "by_category": dict(self.by_category),
+            "by_basis": dict(self.by_basis),
+            "by_unresolved_reason": dict(self.by_unresolved_reason),
+            "resolved_without_attributes": self.resolved_without_attributes,
+            "nodes_created": self.nodes_created,
+            "illegal_values": self.illegal_values,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ResolutionStats":
+        return cls(
+            total=d.get("total", 0),
+            by_status=Counter(d.get("by_status", {})),
+            by_category=Counter(d.get("by_category", {})),
+            by_basis=Counter(d.get("by_basis", {})),
+            by_unresolved_reason=Counter(d.get("by_unresolved_reason", {})),
+            resolved_without_attributes=d.get("resolved_without_attributes", 0),
+            nodes_created=d.get("nodes_created", 0),
+            illegal_values=d.get("illegal_values", 0),
+        )
 
     def summary(self) -> str:
         lines = [
@@ -43,19 +68,40 @@ class ResolutionStats:
 
 def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
                   persist: bool = True,
-                  collect_reports: bool = False) -> tuple[ResolutionStats, list[ResolutionReport]]:
+                  collect_reports: bool = False,
+                  progress: Callable[[ResolutionStats], None] | None = None,
+                  progress_every: int = 200,
+                  on_report: Callable[[ResolutionReport], None] | None = None,
+                  stats: ResolutionStats | None = None,
+                  joint: bool = False) -> tuple[ResolutionStats, list[ResolutionReport]]:
     """Resolve a stream of source items. With persist=False nothing is
-    written (no SourceRecord either) — profiling/dry-run mode."""
-    stats = ResolutionStats()
+    written (no SourceRecord either) — profiling/dry-run mode.
+
+    `on_report`, if given, is called with each report as it is produced (the
+    streaming/partial-save hook). `progress`, if given, is called with the
+    live stats every `progress_every` records (and once at the end), so long
+    streamed runs can report incremental coverage instead of going silent
+    until done. `stats` seeds the accumulator (resumed runs pass the
+    checkpoint's cumulative stats so counts and progress stay cumulative)."""
+    stats = stats if stats is not None else ResolutionStats()
     reports: list[ResolutionReport] = []
 
     for item in items:
-        report = resolver.resolve(
-            item.raw_text,
-            source=item.ref if persist else None,
-            price_fields={"total": item.total, "quantity": item.quantity,
-                          "unit_price": item.unit_price},
-        )
+        price_fields = {"total": item.total, "quantity": item.quantity,
+                        "unit_price": item.unit_price}
+        src = item.ref if persist else None
+        if joint:
+            report = resolver.resolve_joint(
+                offer_text=item.raw_text,
+                buyer_text=item.extra.get("buyer_text"),
+                source=src,
+                price_fields=price_fields,
+                awarded=item.extra.get("awarded"),
+            )
+        else:
+            report = resolver.resolve(item.raw_text, source=src,
+                                      price_fields=price_fields,
+                                      context_text=item.extra.get("tender_text"))
         stats.total += 1
         stats.by_status[report.status] += 1
         if report.unresolved_reason:
@@ -71,7 +117,13 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
             stats.nodes_created += 1
         if report.extraction is not None:
             stats.illegal_values += len(report.extraction.illegal)
+        if on_report is not None:
+            on_report(report)
         if collect_reports:
             reports.append(report)
+        if progress is not None and stats.total % progress_every == 0:
+            progress(stats)
 
+    if progress is not None and stats.total and stats.total % progress_every != 0:
+        progress(stats)  # final partial batch
     return stats, reports
