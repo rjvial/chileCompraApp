@@ -152,6 +152,57 @@ def fetch_tender_items(conn, contains: str | None = None,
                   extra_params={"seg_low": seg_low, "seg_high": seg_high})
 
 
+def fetch_items(conn, contains: str | None = None,
+                limit: int | None = None, skip: int = 0,
+                unspsc_segment: int | None = None) -> Iterator[SourceItem]:
+    """Item-centric corpus: one record per ItemLicitacion, carrying its buyer
+    line, parent tender title, UNSPSC code, AND all its supplier offers
+    (extra['offers']) so resolve_item can resolve the item once from the pooled
+    signals and bind every offer to that single GenericProduct (design: the
+    item is the anchor; offers are bids for the same product).
+
+    Offers are gathered with a pattern comprehension (yields [] when an item has
+    none, never a list of nulls). Same stable scan order / segment filter as
+    fetch_tender_items."""
+    seg_low, seg_high = segment_bounds(unspsc_segment)
+    cypher = f"""
+        MATCH (l:Licitacion)-[:TIENE_ITEM]->(i:ItemLicitacion)
+        WHERE i.descripcion_comprador IS NOT NULL
+          AND ($contains IS NULL OR toLower(i.descripcion_comprador) CONTAINS $contains)
+          AND ($seg_low IS NULL OR
+               (i.codigo_unspsc_producto >= $seg_low AND i.codigo_unspsc_producto < $seg_high))
+        WITH l, i,
+             [(i)<-[:PARA_ITEM]-(o:Oferta) WHERE o.descripcion_proveedor IS NOT NULL |
+                {{offer_id: o.id_oferta, text: o.descripcion_proveedor,
+                  awarded: o.es_adjudicada,
+                  unit_price: coalesce(o.precio_unitario_clean, o.precio_unitario),
+                  quantity: coalesce(o.cantidad_clean, o.cantidad_ofertada),
+                  total_clp: o.precio_total_clp}}] AS offers
+        RETURN i.id_licitacion AS tender_id, i.id_item AS item_id,
+               i.descripcion_comprador AS text, i.codigo_unspsc_producto AS unspsc,
+               i.cantidad AS quantity, i.moneda_item AS currency,
+               coalesce({TENDER_NAME}, '') AS tender_text,
+               l.fecha_publicacion AS date, offers
+        SKIP $skip LIMIT $limit
+    """
+
+    def build(rec) -> SourceItem:
+        return SourceItem(
+            ref=SourceRef(SOURCE_TENDER_ITEM, str(rec["tender_id"]),
+                          str(rec["item_id"]), rec["text"]),
+            kind="item",
+            raw_text=rec["text"],
+            unspsc=rec["unspsc"],
+            quantity=rec["quantity"],
+            currency=rec["currency"],
+            date=rec["date"],
+            extra={"tender_text": rec["tender_text"], "offers": rec["offers"]},
+        )
+
+    return _paged(conn, cypher, build, contains, limit, skip=skip,
+                  extra_params={"seg_low": seg_low, "seg_high": seg_high})
+
+
 def fetch_offers(conn, contains: str | None = None, awarded_only: bool = False,
                  limit: int | None = None, skip: int = 0,
                  unspsc_segment: int | None = None) -> Iterator[SourceItem]:

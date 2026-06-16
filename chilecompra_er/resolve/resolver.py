@@ -11,6 +11,7 @@ workstream — it needs the written "branded enough" rule first.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 from .. import __version__
@@ -158,6 +159,141 @@ class Resolver:
             raw_text=raw_text,
             normalized=normalized,
             classification=classification,
+            status=STATUS_GENERIC,
+            extraction=extraction,
+            price_basis=basis,
+            node_id=plan.home_id,
+            identity_key=plan.created.identity_key if created else None,
+            created=created,
+            parent_id=plan.parent_id,
+            is_complete=plan.created.is_complete if created else None,
+            schema_version=schema.schema_version,
+            evidence=evidence,
+        )
+
+    # --- item-centric resolution ---------------------------------------------
+
+    def resolve_item(self, buyer_text: str | None, tender_text: str | None,
+                     offers: list[dict] | None, *,
+                     unspsc: int | None = None,
+                     source: SourceRef | None = None,
+                     price_fields: dict | None = None) -> ResolutionReport:
+        """Resolve ONE ItemLicitacion to ONE GenericProduct by pooling every
+        signal it carries. Category priority: the buyer line, then OFFER
+        CONSENSUS (majority category across the item's offers — this is what
+        rescues terse/boilerplate buyer lines), then the tender title. The
+        winning text drives attribute extraction; the buyer line fills the
+        attributes it omits. Because the item resolves once, all of its offers
+        share this single node (the intra-item invariant) — binding them as
+        :Product variants is a later step. Step 1: no UNSPSC fallback yet, so a
+        zero-signal item is still left unresolved (visible debt)."""
+        b_norm, b_cls, b_boiler = self._prepare(buyer_text)
+        t_norm, t_cls, _t_boiler = self._prepare(tender_text)
+
+        offer_sig: list[tuple[dict, str, Classification]] = []
+        for o in offers or []:
+            o_norm, o_cls, _ = self._prepare(o.get("text"))
+            offer_sig.append((o, o_norm, o_cls))
+        votes = Counter(c.category_id for _o, _n, c in offer_sig
+                        if c.status == CLASSIFIED)
+
+        chosen_cat: str | None = None
+        category_source: str | None = None
+        win_norm = ""
+        if b_cls.status == CLASSIFIED:
+            chosen_cat, category_source, win_norm = b_cls.category_id, "buyer", b_norm
+        elif votes:
+            chosen_cat = votes.most_common(1)[0][0]
+            category_source = "offer"
+            # extract from a representative offer for that category, awarded first
+            reps = [(o, n) for o, n, c in offer_sig
+                    if c.status == CLASSIFIED and c.category_id == chosen_cat]
+            reps.sort(key=lambda on: 0 if on[0].get("awarded") else 1)
+            win_norm = reps[0][1] if reps else ""
+        elif t_cls.status == CLASSIFIED:
+            chosen_cat, category_source, win_norm = t_cls.category_id, "tender", t_norm
+
+        base_evidence = {
+            "buyer_normalized": b_norm,
+            "buyer_category": b_cls.category_id,
+            "tender_category": t_cls.category_id,
+            "offer_votes": dict(votes),
+            "n_offers": len(offer_sig),
+        }
+
+        if chosen_cat is None:
+            statuses = {b_cls.status, t_cls.status,
+                        *(c.status for _o, _n, c in offer_sig)}
+            if AMBIGUOUS in statuses:
+                reason = AMBIGUOUS
+            elif b_boiler and not votes:
+                reason = REASON_BOILERPLATE
+            else:
+                reason = UNCLASSIFIED
+            report = ResolutionReport(
+                raw_text=buyer_text or "",
+                normalized=b_norm or t_norm,
+                classification=Classification(
+                    None, AMBIGUOUS if reason == AMBIGUOUS else UNCLASSIFIED),
+                status=STATUS_UNRESOLVED,
+                unresolved_reason=reason,
+                evidence=base_evidence,
+            )
+            if source is not None:
+                self.catalog.persist_resolution(source, STATUS_UNRESOLVED, None)
+            return report
+
+        schema = self.schema(chosen_cat)
+        win_ext = extract(win_norm, schema) if win_norm else Extraction()
+        b_ext = extract(b_norm, schema) if b_norm else Extraction()
+        # winning text wins; the buyer line fills attributes it omits
+        values = {**b_ext.values, **win_ext.values}
+        provenance = {k: {**v, "text": "buyer"} for k, v in b_ext.provenance.items()}
+        provenance.update({k: {**v, "text": category_source}
+                           for k, v in win_ext.provenance.items()})
+        extraction = Extraction(values=values, provenance=provenance,
+                                illegal=win_ext.illegal + b_ext.illegal)
+
+        basis = infer_basis(win_norm or b_norm)
+        if price_fields:
+            promoted = cross_check(
+                price_fields.get("total") or 0,
+                price_fields.get("quantity") or 0,
+                price_fields.get("unit_price") or 0,
+                pack_size=basis.pack_size,
+            )
+            if promoted and promoted != basis.basis:
+                basis.evidence.append({"cross_check_promoted": promoted})
+                basis.basis = promoted
+
+        existing = self.catalog.load(schema.category_id, schema)
+        plan = plan_assignment(schema, extraction.values, existing)
+        self.catalog.apply(plan, schema)
+
+        evidence = {
+            **base_evidence,
+            "category_source": category_source,
+            "attributes": extraction.provenance,
+            "illegal": extraction.illegal,
+            "price_basis": {"basis": basis.basis, "pack_size": basis.pack_size,
+                            "evidence": basis.evidence},
+        }
+        if source is not None:
+            self.catalog.persist_resolution(
+                source,
+                STATUS_GENERIC,
+                plan.home_id,
+                evidence=evidence,
+                extractor_version=EXTRACTOR_VERSION,
+                schema_version=f"{schema.category_id}/{schema.schema_version}",
+                normalizer_version=self.normalizer.version,
+            )
+
+        created = plan.created is not None
+        return ResolutionReport(
+            raw_text=buyer_text or "",
+            normalized=win_norm or b_norm,
+            classification=Classification(chosen_cat, CLASSIFIED),
             status=STATUS_GENERIC,
             extraction=extraction,
             price_basis=basis,

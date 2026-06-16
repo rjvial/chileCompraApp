@@ -73,7 +73,8 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
                   progress_every: int = 200,
                   on_report: Callable[[ResolutionReport], None] | None = None,
                   stats: ResolutionStats | None = None,
-                  joint: bool = False) -> tuple[ResolutionStats, list[ResolutionReport]]:
+                  joint: bool = False,
+                  item_mode: bool = False) -> tuple[ResolutionStats, list[ResolutionReport]]:
     """Resolve a stream of source items. With persist=False nothing is
     written (no SourceRecord either) — profiling/dry-run mode.
 
@@ -90,7 +91,16 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
         price_fields = {"total": item.total, "quantity": item.quantity,
                         "unit_price": item.unit_price}
         src = item.ref if persist else None
-        if joint:
+        if item_mode:
+            report = resolver.resolve_item(
+                buyer_text=item.raw_text,
+                tender_text=item.extra.get("tender_text"),
+                offers=item.extra.get("offers"),
+                unspsc=item.unspsc,
+                source=src,
+                price_fields=price_fields,
+            )
+        elif joint:
             report = resolver.resolve_joint(
                 offer_text=item.raw_text,
                 buyer_text=item.extra.get("buyer_text"),

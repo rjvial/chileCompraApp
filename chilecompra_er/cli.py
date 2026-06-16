@@ -27,10 +27,20 @@ nodes. Destructive commands require --yes.
 from __future__ import annotations
 
 import argparse
+import time
 import sys
 from pathlib import Path
 
 from .categories.schema import CATEGORIES_DIR, load_register, load_schema
+
+
+def _opt_limit(value: str) -> int | None:
+    """resolve --limit parser: 'all'/'none'/'0'/negative -> None (no limit),
+    any positive integer -> that cap."""
+    if value.strip().lower() in ("all", "none"):
+        return None
+    n = int(value)
+    return None if n <= 0 else n
 
 
 def _utf8_stdout() -> None:
@@ -112,7 +122,13 @@ def cmd_migrate(args) -> int:
 
 def cmd_resolve(args) -> int:
     from .graphdb import get_connection
-    from .ingest import fetch_oc_items, fetch_offers, fetch_tender_items, resolve_items
+    from .ingest import (
+        fetch_items,
+        fetch_oc_items,
+        fetch_offers,
+        fetch_tender_items,
+        resolve_items,
+    )
     from .ingest.export import write_products_csv
     from .ingest.resume import (
         Checkpoint,
@@ -129,8 +145,9 @@ def cmd_resolve(args) -> int:
     from .resolve import InMemoryCatalog, Neo4jCatalog, Resolver
 
     fetchers = {"tender": fetch_tender_items, "offer": fetch_offers,
-                "oc": fetch_oc_items, "joint": fetch_offers}
+                "oc": fetch_oc_items, "joint": fetch_offers, "item": fetch_items}
     joint = args.kind == "joint"
+    item_mode = args.kind == "item"
 
     prefix = args.out
     cp_path = checkpoint_path(prefix)
@@ -174,7 +191,7 @@ def cmd_resolve(args) -> int:
     conn = get_connection()
     try:
         kwargs = {"contains": args.contains, "limit": remaining_limit}
-        if args.kind in ("tender", "offer", "joint"):
+        if args.kind in ("tender", "offer", "joint", "item"):
             kwargs.update(skip=effective_skip, unspsc_segment=args.segment)
         elif args.kind == "oc":
             kwargs.update(skip=effective_skip)
@@ -198,17 +215,50 @@ def cmd_resolve(args) -> int:
                 shown.append(r)
 
         def checkpoint(st, done: bool) -> None:
+            """Durable, resumable checkpoint: for dry runs, rewrite the products
+            CSV AND save the checkpoint JSON together so the two always describe
+            the same `processed` point (resume reseeds the catalog from the CSV,
+            then trims resoluciones to `processed`). The products CSV is a FULL
+            rewrite — the expensive, OneDrive-lock-prone part — so this is called
+            sparsely (see show_progress), not on every progress tick. A transient
+            lock mid-run skips the whole checkpoint (both files stay at the last
+            in-sync point) rather than killing a long run; the final checkpoint
+            retries before giving up."""
             writer.flush()
             if not args.persist:
-                write_products_csv(catalog, prod_csv)
+                for attempt in range(5 if done else 1):
+                    try:
+                        write_products_csv(catalog, prod_csv)
+                        break
+                    except PermissionError:
+                        if done and attempt < 4:
+                            time.sleep(0.5)
+                            continue
+                        if done:
+                            print(f"  warning: could not write {prod_csv} "
+                                  "(file locked — OneDrive/AV?); products CSV may "
+                                  "be stale. Resoluciones CSV is complete.",
+                                  file=sys.stderr, flush=True)
+                            break  # still record the (complete) checkpoint below
+                        return     # mid-run: leave both files at last good point
             save_checkpoint(cp_path, Checkpoint(
                 kind=args.kind, contains=args.contains, segment=args.segment,
                 persist=args.persist, limit=args.limit,
                 start_skip=run_start_skip, processed=st.total, done=done,
                 stats_dict=st.to_dict()))
 
+        # The products-CSV rewrite is expensive at scale and lock-prone under a
+        # syncing folder, so checkpoint durably only every ~20k records; the
+        # cheap progress line + resoluciones flush still happen every tick.
+        durable_every = max(1, 20_000 // max(args.progress_every, 1))
+        ticks = 0
+
         def show_progress(st) -> None:
-            checkpoint(st, done=False)
+            nonlocal ticks
+            ticks += 1
+            writer.flush()
+            if ticks % durable_every == 0:
+                checkpoint(st, done=False)
             denom = f"/{args.limit}" if args.limit else ""
             res = st.by_status.get("resolved_generic", 0)
             unr = st.by_status.get("unresolved", 0)
@@ -227,14 +277,13 @@ def cmd_resolve(args) -> int:
                                      collect_reports=False, on_report=on_report,
                                      progress=show_progress,
                                      progress_every=args.progress_every,
-                                     stats=base_stats, joint=joint)
+                                     stats=base_stats, joint=joint,
+                                     item_mode=item_mode)
         finally:
             writer.flush()
             writer.close()
 
-        if not args.persist:
-            write_products_csv(catalog, prod_csv)
-        checkpoint(stats, done=True)
+        checkpoint(stats, done=True)  # final: writes products CSV (with retries)
 
         print(stats.summary())
         print(f"written: {res_csv}")
@@ -517,13 +566,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("resolve", help="resolve source records (dry run by default)")
-    p.add_argument("--kind", choices=["tender", "offer", "oc", "joint"], default="tender",
+    p.add_argument("--kind", choices=["tender", "offer", "oc", "joint", "item"],
+                   default="tender",
                    help="tender = resolve each buyer line with its tender title as "
                         "context (item wins; title is fallback for terse lines). "
                         "joint = resolve each offer with its tender line's buyer "
-                        "text together (offer wins; disagreement -> review)")
+                        "text together (offer wins; disagreement -> review). "
+                        "item = item-centric: resolve each ItemLicitacion ONCE by "
+                        "pooling buyer line + ALL its offers (consensus) + title, "
+                        "so every offer shares the item's one generic product")
     p.add_argument("--contains", default=None, help="filter on buyer text")
-    p.add_argument("--limit", type=int, default=200)
+    p.add_argument("--limit", type=_opt_limit, default=200,
+                   help="max records to process; 'all' or 0 = no limit (default 200)")
     p.add_argument("--skip", type=int, default=0,
                    help="skip N records (stable order; chunked corpus builds)")
     p.add_argument("--segment", type=int, default=None,

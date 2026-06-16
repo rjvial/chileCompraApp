@@ -13,6 +13,12 @@ def test_resolve_is_dry_run_by_default():
     assert args.kind == "tender"
 
 
+def test_resolve_limit_all_means_no_cap():
+    assert parse(["resolve", "--limit", "all"]).limit is None
+    assert parse(["resolve", "--limit", "0"]).limit is None
+    assert parse(["resolve", "--limit", "500"]).limit == 500
+
+
 def test_wipe_requires_explicit_yes_flag():
     args = parse(["wipe-category", "sondas_foley"])
     assert args.yes is False  # cmd refuses without it

@@ -210,7 +210,7 @@ chilecompra-er resolve --kind tender --segment 42 --persist --resume
 | `--persist` | off | **WRITE** SourceRecord + RESOLVED_TO edges + catalog nodes to the graph. Off = dry run. |
 | `--segment <n>` | none | UNSPSC segment filter, e.g. 42 (tender/offer/joint kinds; ignored for oc). |
 | `--contains <str>` | none | Filter on buyer text (e.g. `foley`). |
-| `--limit <n>` | `200` | Max records to process. |
+| `--limit <n>` | `200` | Max records to process. `all` (or `0`) = no limit — process the whole filtered set. |
 | `--skip <n>` | `0` | Skip N records (stable order; for chunked corpus builds). |
 | `--show <n>` | `5` | Print the first N resolved examples as a spot-check (display only). |
 | `--out <prefix>` | `data\resolve` | Output prefix (see files below). |
