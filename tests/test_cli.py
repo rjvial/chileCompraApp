@@ -53,6 +53,34 @@ def test_instance_actions():
         assert parse(["instance", action]).action == action
 
 
+def test_clean_keeps_cached_inputs_removes_artifacts(tmp_path):
+    from chilecompra_er.cli import cmd_clean
+    import argparse
+    for name in ("profiling.csv", "proposals.json", "check_resoluciones.csv",
+                 "check.checkpoint.json", "run.log", "price_series_x.csv"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    cmd_clean(argparse.Namespace(dir=tmp_path, all=False, dry_run=False))
+    left = {p.name for p in tmp_path.iterdir()}
+    assert left == {"profiling.csv", "proposals.json"}
+
+
+def test_clean_dry_run_deletes_nothing(tmp_path):
+    from chilecompra_er.cli import cmd_clean
+    import argparse
+    (tmp_path / "check_resoluciones.csv").write_text("x", encoding="utf-8")
+    cmd_clean(argparse.Namespace(dir=tmp_path, all=False, dry_run=True))
+    assert (tmp_path / "check_resoluciones.csv").exists()
+
+
+def test_clean_all_removes_cached_inputs_too(tmp_path):
+    from chilecompra_er.cli import cmd_clean
+    import argparse
+    (tmp_path / "profiling.csv").write_text("x", encoding="utf-8")
+    (tmp_path / "proposals.json").write_text("x", encoding="utf-8")
+    cmd_clean(argparse.Namespace(dir=tmp_path, all=True, dry_run=False))
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_every_subcommand_has_a_handler():
     for argv in (["status"], ["migrate", "--dry-run"],
                  ["generate-schemas", "--only", "jeringas"]):

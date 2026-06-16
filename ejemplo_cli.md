@@ -244,6 +244,7 @@ Outputs (prefix from `--out`, e.g. `data\check`):
 | `demo` | Offline pipeline demo — no graph, no LLM. Good first run. |
 | `smoke [--keep]` | Live graph round-trip test; cleans up after itself (`--keep` leaves the data). |
 | `probe-offers [--limit 1500]` | M3 feasibility metric: offer-text recovery rate for rubric-only tender lines. Read-only. |
+| `clean [--all] [--dry-run]` | Delete regenerable run artifacts from `data\` (resolve CSVs/checkpoints, `price_series_*`, logs). Keeps the cached ranking + proposals unless `--all`; `--dry-run` previews. Never touches the graph. |
 
 ### Destructive (gated by `--yes`)
 

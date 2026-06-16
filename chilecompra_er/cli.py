@@ -545,6 +545,45 @@ def cmd_wipe_category(args) -> int:
     return 0
 
 
+# Files under data\ that are inputs reused across runs, not throwaway output:
+# the cached spend ranking and the register preview->apply handoff. `clean`
+# keeps these unless --all.
+_DATA_KEEP = {"profiling.csv", "proposals.json"}
+# Regenerable run artifacts `clean` removes: the resolve output triplets plus
+# loose run logs/redirects.
+_DATA_TEMP_GLOBS = ("*_resoluciones.csv", "*_productos_genericos.csv",
+                    "*.checkpoint.json", "price_series_*.csv", "*.log", "*.out")
+
+
+def cmd_clean(args) -> int:
+    """Remove regenerable run artifacts from data\\ (resolve CSVs/checkpoints
+    and logs). Keeps the cached ranking + proposals unless --all. The graph is
+    never touched — use wipe-catalog for that."""
+    data = args.dir
+    if not data.exists():
+        print(f"no {data}\\ directory — nothing to clean")
+        return 0
+    keep = set() if args.all else _DATA_KEEP
+    globs = _DATA_TEMP_GLOBS + (("*.csv", "*.json") if args.all else ())
+    victims = sorted({p for g in globs for p in data.glob(g)
+                      if p.is_file() and p.name not in keep})
+    if not victims:
+        print(f"{data}\\ already clean")
+        return 0
+    freed = sum(p.stat().st_size for p in victims)
+    for p in victims:
+        if args.dry_run:
+            print(f"  would remove {p.name} ({p.stat().st_size/1e6:.2f} MB)")
+        else:
+            p.unlink()
+    verb = "would free" if args.dry_run else "removed"
+    print(f"{verb} {len(victims)} file(s), {freed/1e6:.1f} MB"
+          + (" (dry run — nothing deleted)" if args.dry_run else ""))
+    if keep:
+        print(f"kept {', '.join(sorted(keep))} (cached inputs) — --all removes these too")
+    return 0
+
+
 # --- parser --------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -657,6 +696,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("category_id")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_wipe_category)
+
+    p = sub.add_parser("clean",
+                       help="remove regenerable run artifacts from data\\ "
+                            "(resolve CSVs/checkpoints + logs); keeps cached inputs")
+    p.add_argument("--all", action="store_true",
+                   help="also remove the cached ranking + proposals (the kept inputs)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="list what would be removed without deleting")
+    p.add_argument("--dir", type=Path, default=Path("data"),
+                   help="directory to clean (default data\\)")
+    p.set_defaults(func=cmd_clean)
 
     p = sub.add_parser("demo", help="offline pipeline demo (no graph, no LLM)")
     p.set_defaults(func=cmd_demo)
