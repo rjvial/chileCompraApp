@@ -36,8 +36,8 @@ paths (`data\...`).
     spend ranking; rebuild with `--reprofile`), and `resolve`'s
     `*_resoluciones.csv` / `*_productos_genericos.csv` / `.checkpoint.json`.
   - **The populated catalog lives in Neo4j**, written only by `resolve --persist`
-    (`GenericProduct` / `SourceRecord` / `RESOLVED_TO`). `register` never touches
-    the graph.
+    (`GenericProduct` / `Product` / `SourceRecord` / `RESOLVED_TO` / `VARIANT_OF`).
+    `register` never touches the graph.
 - **Destructive commands are gated** behind `--yes` (`wipe-category`,
   `wipe-catalog`).
 - Progress + diagnostics go to **stderr**; the actual report/result goes to
@@ -58,13 +58,16 @@ chilecompra-er migrate
 #    file for review, then `register --apply` to commit the edited file.
 chilecompra-er register --segment 42
 
-# 2. Resolve a sample as a DRY RUN and inspect quality (no graph writes)
-chilecompra-er resolve --kind tender --segment 42 --limit 5000 --show 10 --out data\check
+# 2. Resolve a sample as a DRY RUN and inspect quality (no graph writes).
+#    --kind item pools each ItemLicitacion's offers + UNSPSC fallback -> ~100%
+#    item coverage; the summary leads with "items linked = curated + fallback".
+chilecompra-er resolve --kind item --segment 42 --limit 5000 --show 10 --out data\check
 
-# 3. Happy with the split? Persist for real (resumable)
-chilecompra-er resolve --kind tender --segment 42 --persist
+# 3. Happy with the split? Persist for real (resumable). Offers land as
+#    :Product price points under each item's generic product.
+chilecompra-er resolve --kind item --segment 42 --persist
 
-# 4. Analyze + verify
+# 4. Analyze + verify (price-series reads the persisted :Product prices)
 chilecompra-er price-series sondas_foley
 chilecompra-er status
 
@@ -232,7 +235,7 @@ Outputs (prefix from `--out`, e.g. `data\check`):
 
 | Command | What it does |
 |---|---|
-| `price-series <category_id> [--csv <path>]` | Per-product price history for a **persisted** category. Default output `data\price_series_<category>.csv`. Empty until you've `resolve --persist`ed that category. |
+| `price-series <category_id> [--csv <path>]` | Per-product price history for a **persisted** category, read from the awarded `:Product` offers under each generic product. Default output `data\price_series_<category>.csv`. Empty until you've `resolve --kind item --persist`ed that category (it's the offers that carry the prices). |
 
 ### Diagnostics
 

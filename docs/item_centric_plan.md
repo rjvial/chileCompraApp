@@ -1,14 +1,18 @@
 # Implementation Plan: Item-Centric Resolution
 
-> Status: **steps 1–4 DONE.** 1–2: `--kind item` + UNSPSC fallback (commits
-> `7af99d8`, `bf032dd`). 3: offers bound as `:Product` VARIANT_OF the item's
-> GenericProduct (`5f620dc`). 4: persist verified live + price-series now reads
-> prices straight off :Product nodes (no transactional re-join). No migration
-> needed — `product_id_unique` already in 001_init. Step 5 (docs/memory
-> finalize) is the remainder. `tender|offer|oc|joint` stay for comparison.
+> Status: **ALL STEPS DONE (1–5).** 1–2: `--kind item` + UNSPSC fallback
+> (`7af99d8`, `bf032dd`). 3: offers as `:Product` VARIANT_OF the item's generic
+> (`5f620dc`). 4: price-series reads :Product prices, persist verified live
+> (`5cd330f`). 5: docs (`ejemplo_cli.md`) + memory. No migration needed —
+> `product_id_unique` already in 001_init. `tender|offer|oc|joint` stay for
+> comparison.
 >
-> Step-4 validation (jeringa item slice, persisted): 75 offers → :Product,
+> Validation (jeringa item slice, persisted): 75 offers → :Product,
 > price-series read 11 awarded observations across 7 generics with attributes.
+>
+> Follow-ups (not in this plan): `:Product` cross-offer brand dedup (the
+> "branded enough" rule), price-basis normalization (unit vs box), and
+> registering the largest UNSPSC-fallback buckets as curated families.
 >
 > Measured (5,000 segment-42 items, dry run): per-record `tender` 34.2% →
 > `item` curated 36.2% → `item` + UNSPSC fallback **100% linked**
