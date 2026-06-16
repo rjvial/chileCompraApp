@@ -142,7 +142,7 @@ def cmd_resolve(args) -> int:
         truncate_resolutions,
     )
     from .ingest.runner import ResolutionStats
-    from .resolve import InMemoryCatalog, Neo4jCatalog, Resolver
+    from .resolve import BatchedNeo4jCatalog, InMemoryCatalog, Resolver
 
     fetchers = {"tender": fetch_tender_items, "offer": fetch_offers,
                 "oc": fetch_oc_items, "joint": fetch_offers, "item": fetch_items}
@@ -197,7 +197,7 @@ def cmd_resolve(args) -> int:
             kwargs.update(skip=effective_skip)
         items = fetchers[args.kind](conn, **kwargs)
 
-        catalog = Neo4jCatalog(conn) if args.persist else InMemoryCatalog()
+        catalog = BatchedNeo4jCatalog(conn) if args.persist else InMemoryCatalog()
         if args.resume and not args.persist:
             seeded = seed_inmemory_catalog(catalog, prod_csv)
             print(f"reseeded {seeded} existing products from {prod_csv.name}")
@@ -225,7 +225,11 @@ def cmd_resolve(args) -> int:
             in-sync point) rather than killing a long run; the final checkpoint
             retries before giving up."""
             writer.flush()
-            if not args.persist:
+            if args.persist:
+                # Flush buffered graph writes so the checkpoint's processed count
+                # matches what's durably in the graph (BatchedNeo4jCatalog).
+                catalog.flush()
+            else:
                 for attempt in range(5 if done else 1):
                     try:
                         write_products_csv(catalog, prod_csv)

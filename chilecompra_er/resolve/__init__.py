@@ -2,6 +2,7 @@ from .classifier import Classification, Tier1Classifier
 from .extractor import Extraction, extract
 from .assignment import (
     AssignmentPlan,
+    BatchedNeo4jCatalog,
     InMemoryCatalog,
     Neo4jCatalog,
     NodeView,
@@ -18,6 +19,7 @@ __all__ = [
     "Extraction",
     "extract",
     "AssignmentPlan",
+    "BatchedNeo4jCatalog",
     "InMemoryCatalog",
     "Neo4jCatalog",
     "NodeView",

@@ -179,6 +179,10 @@ class InMemoryCatalog:
     def bind_product(self, product_id: str, generic_id: str, props: dict) -> None:
         self.products[product_id] = {"generic_id": generic_id, **props}
 
+    def flush(self) -> None:
+        """No-op: in-memory writes are already applied. Present so callers can
+        flush any catalog uniformly (see BatchedNeo4jCatalog)."""
+
     def load(self, category_id: str, schema: CategorySchema) -> dict[str, NodeView]:
         return {nid: n for nid, n in self.nodes.items() if self.specs[nid].category_id == category_id}
 
@@ -397,3 +401,171 @@ class Neo4jCatalog:
                 "normalizer_version": edge_props.get("normalizer_version", ""),
             },
         )
+
+    def flush(self) -> None:
+        """No-op: each write is its own round trip. See BatchedNeo4jCatalog for
+        the buffered variant used by large persist runs."""
+
+
+class BatchedNeo4jCatalog(Neo4jCatalog):
+    """Neo4jCatalog that buffers graph mutations and flushes them in bulk via
+    UNWIND — for large `resolve --persist` runs against a remote graph, where
+    one round trip per node/edge (the base class) caps throughput at a few
+    writes/sec on network latency alone.
+
+    Planning stays correct because the in-memory category snapshots are updated
+    synchronously (same as the base class); only the actual graph writes are
+    deferred. Buffers flush in dependency order (categories → generic products →
+    parent/repoint edges → products → resolutions) when the resolution buffer
+    reaches `batch_size`, and on any explicit flush() (the runner calls it at
+    each checkpoint and at the end). MERGE keys make every flush idempotent, so
+    a kill + --resume re-merges safely."""
+
+    def __init__(self, conn, batch_size: int = 1000):
+        super().__init__(conn)
+        self.batch_size = batch_size
+        self._cat_buf: list[dict] = []
+        self._gp_buf: list[dict] = []
+        self._parent_buf: list[dict] = []
+        self._repoint_buf: list[dict] = []
+        self._prod_buf: list[dict] = []
+        self._res_buf: list[dict] = []
+
+    def ensure_category(self, schema: CategorySchema) -> None:
+        if schema.category_id in self._categories_synced:
+            return
+        self._cat_buf.append({"cid": schema.category_id, "name": schema.name,
+                              "base_unit": schema.base_unit,
+                              "version": schema.schema_version, "defs": schema.raw_json})
+        self._categories_synced.add(schema.category_id)
+
+    def apply(self, plan: AssignmentPlan, schema: CategorySchema) -> None:
+        if plan.created is None:
+            return
+        self.ensure_category(schema)
+        # keep the in-memory snapshot current so planning sees buffered creates
+        snapshot = self._snapshots.setdefault(schema.category_id, {})
+        id_names = set(schema.identity_names)
+        snapshot[plan.created.id] = NodeView(
+            id=plan.created.id,
+            identity_values={k: v for k, v in plan.created.properties.items()
+                             if k in id_names},
+            parent_id=plan.parent_id)
+        for child_id, new_parent in plan.repoint:
+            if child_id in snapshot:
+                snapshot[child_id].parent_id = new_parent
+        spec = plan.created
+        self._gp_buf.append({
+            "key": spec.identity_key, "id": spec.id, "cid": spec.category_id,
+            "props": {k: v for k, v in spec.properties.items()
+                      if k not in _RESERVED_PROPS},
+            "spec": spec.specificity, "complete": spec.is_complete})
+        if plan.parent_id:
+            self._parent_buf.append({"pid": plan.parent_id, "chid": spec.id})
+        for child_id, new_parent in plan.repoint:
+            self._repoint_buf.append({"chid": child_id, "pid": new_parent})
+
+    def bind_product(self, product_id: str, generic_id: str, props: dict) -> None:
+        self._prod_buf.append({"pid": product_id, "gid": generic_id, "props": props})
+
+    def persist_resolution(self, source: SourceRef, status: str, target_id: str | None,
+                           target_label: str = GENERIC_LABEL, **edge_props) -> None:
+        if target_id is not None and target_label not in (GENERIC_LABEL, PRODUCT_LABEL):
+            raise ValueError(f"invalid resolution target label {target_label!r}")
+        self._res_buf.append({
+            "rk": source.record_key, "src": source.source, "tid": source.tender_id,
+            "line": source.line_no, "hash": source.raw_text_hash, "status": status,
+            "target": target_id, "label": target_label,
+            "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
+            "extractor": edge_props.get("extractor_version", ""),
+            "schema": edge_props.get("schema_version", ""),
+            "norm": edge_props.get("normalizer_version", "")})
+        if len(self._res_buf) >= self.batch_size:
+            self.flush()
+
+    def flush(self) -> None:
+        if self._cat_buf:
+            self.conn.query(
+                """
+                UNWIND $rows AS row
+                MERGE (c:Category {category_id: row.cid})
+                SET c.name = row.name, c.base_unit = row.base_unit,
+                    c.schema_version = row.version, c.attribute_defs = row.defs
+                """, parameters={"rows": self._cat_buf})
+            self._cat_buf = []
+        if self._gp_buf:
+            self.conn.query(
+                """
+                UNWIND $rows AS row
+                MERGE (g:GenericProduct {identity_key: row.key})
+                  ON CREATE SET g.id = row.id, g.category_id = row.cid, g.created_at = datetime()
+                SET g += row.props, g.specificity = row.spec, g.is_complete = row.complete
+                WITH g, row
+                MATCH (c:Category {category_id: row.cid})
+                MERGE (g)-[:IN_CATEGORY]->(c)
+                """, parameters={"rows": self._gp_buf})
+            self._gp_buf = []
+        if self._parent_buf:
+            self.conn.query(
+                """
+                UNWIND $rows AS row
+                MATCH (p:GenericProduct {id: row.pid}), (ch:GenericProduct {id: row.chid})
+                MERGE (p)-[:PARENT_OF]->(ch)
+                """, parameters={"rows": self._parent_buf})
+            self._parent_buf = []
+        if self._repoint_buf:
+            self.conn.query(
+                """
+                UNWIND $rows AS row
+                MATCH (ch:GenericProduct {id: row.chid})
+                OPTIONAL MATCH (:GenericProduct)-[r:PARENT_OF]->(ch)
+                DELETE r
+                WITH DISTINCT ch, row
+                MATCH (p:GenericProduct {id: row.pid})
+                MERGE (p)-[:PARENT_OF]->(ch)
+                """, parameters={"rows": self._repoint_buf})
+            self._repoint_buf = []
+        if self._prod_buf:
+            self.conn.query(
+                """
+                UNWIND $rows AS row
+                MERGE (p:Product {id: row.pid})
+                SET p += row.props
+                WITH p, row
+                MATCH (g:GenericProduct {id: row.gid})
+                MERGE (p)-[:VARIANT_OF]->(g)
+                """, parameters={"rows": self._prod_buf})
+            self._prod_buf = []
+        if self._res_buf:
+            self._flush_resolutions(self._res_buf)
+            self._res_buf = []
+
+    def _flush_resolutions(self, rows: list[dict]) -> None:
+        # SourceRecord upserts always; the versioned RESOLVED_TO edge only when a
+        # target exists, split by target label so the MATCH uses the right index.
+        self.conn.query(
+            """
+            UNWIND $rows AS row
+            MERGE (s:SourceRecord {record_key: row.rk})
+              ON CREATE SET s.source = row.src, s.tender_id = row.tid, s.line_no = row.line
+            SET s.raw_text_hash = row.hash, s.resolution_status = row.status
+            """, parameters={"rows": rows})
+        for label in (GENERIC_LABEL, PRODUCT_LABEL):
+            targeted = [r for r in rows if r["target"] is not None and r["label"] == label]
+            if not targeted:
+                continue
+            self.conn.query(
+                f"""
+                UNWIND $rows AS row
+                MATCH (s:SourceRecord {{record_key: row.rk}})
+                OPTIONAL MATCH (s)-[old:RESOLVED_TO]->()
+                WITH s, row, collect(old) AS olds, coalesce(max(old.version), 0) AS maxv
+                FOREACH (o IN [x IN olds WHERE x.current] | SET o.current = false)
+                WITH s, row, maxv
+                MATCH (t:{label} {{id: row.target}})
+                CREATE (s)-[:RESOLVED_TO {{
+                    current: true, version: maxv + 1, resolved_at: datetime(),
+                    evidence: row.evidence, extractor_version: row.extractor,
+                    schema_version: row.schema, normalizer_version: row.norm
+                }}]->(t)
+                """, parameters={"rows": targeted})
