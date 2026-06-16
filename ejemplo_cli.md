@@ -41,7 +41,8 @@ chilecompra-er migrate
 
 # 1. Build the register (PREVIEW): profile the corpus, vet candidates,
 #    write data\proposals.json. Nothing is registered yet — review the file.
-chilecompra-er register --segment 42 --count 10
+#    No --count = every viable family above --min-spend; add --count 10 to cap.
+chilecompra-er register --segment 42
 
 # 2. Commit the reviewed proposals: add the categories + draft their schemas
 chilecompra-er register --apply
@@ -75,12 +76,17 @@ chilecompra-er instance stop
 ### Build the category register
 
 **`register`** — the M4 expansion loop. Profiles the corpus by head-noun ×
-spend, lets the LLM vet the top of the ranking into coherent product families,
-validates every proposed regex mechanically, and writes the survivors to a
-proposals file. **Preview by default (no register writes); `--apply` commits.**
+spend, walks the ranking in vet batches (the LLM judges each token group into a
+coherent product family or rejects it), validates every proposed regex
+mechanically, and writes the survivors to a proposals file. **Preview by default
+(no register writes); `--apply` commits.** By default there is **no count cap** —
+it proposes every viable family down to the `--min-spend` floor; pass `--count N`
+to stop after the top N. Progress (scan position, batches vetted, candidates
+accepted) streams to stderr as it goes.
 
 ```powershell
-chilecompra-er register --segment 42 --count 10      # PREVIEW -> data\proposals.json
+chilecompra-er register --segment 42                 # PREVIEW (all families) -> data\proposals.json
+chilecompra-er register --segment 42 --count 10      # ...or cap at the top 10
 chilecompra-er register --apply                      # commit the reviewed proposals
 ```
 
@@ -93,14 +99,16 @@ chilecompra-er register --apply                      # commit the reviewed propo
 | `--segment <n>` | `42` | UNSPSC segment scope when profiling (42 = medical supplies). |
 | `--all-segments` | off | Profile the WHOLE marketplace (overrides `--segment`). |
 | `--limit <n>` | all | Profile only the first N tender items — for fast dev runs. |
-| `--count <n>` | `10` | Stop after N viable categories are found. |
+| `--count <n>` | none | Stop after N viable categories. **Default: no limit** — propose every viable family down to `--min-spend` (`0`/negative also = no limit). |
 | `--min-samples <n>` | `15` | Minimum distinct corpus descriptions a candidate must have. |
 | `--min-spend <f>` | `0.0005` | Spend-share floor; the scan stops below it (0.0005 = 0.05%). |
 | `--revisit` | off | Re-evaluate tokens previously cached as junk (`categories\vet_rejections.json`). |
 
 > The first preview run does the slow full-corpus scan and caches the ranking.
 > Re-running `register` to tune `--count` / `--min-spend` reuses that cache;
-> add `--reprofile` only when the underlying data changed.
+> add `--reprofile` only when the underlying data changed. With no `--count`,
+> `--min-spend` is the real stop — lower it to reach deeper into the long tail,
+> raise it to keep the preview short.
 
 **`add-category`** — manually append one known family (skips the LLM vet).
 

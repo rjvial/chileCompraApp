@@ -295,7 +295,8 @@ def _register_preview(args, log) -> int:
             write_ranking(stats, args.ranking)
             log(f"  wrote ranking ({len(stats)} groups) to {args.ranking}")
 
-        chosen, rejected = propose(conn, stats, count=args.count,
+        count = None if (args.count is None or args.count <= 0) else args.count
+        chosen, rejected = propose(conn, stats, count=count,
                                    min_samples=args.min_samples,
                                    min_spend_share=args.min_spend,
                                    revisit=args.revisit, log=log)
@@ -528,7 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--samples", type=int, default=50)
     p.set_defaults(func=cmd_generate_schemas)
 
-    p = sub.add_parser("register", help="add the next N categories from the spend ranking (preview by default)")
+    p = sub.add_parser("register", help="propose categories from the spend ranking (all viable families by default; preview unless --apply)")
     p.add_argument("--apply", action="store_true",
                    help="commit the reviewed proposals file: register the categories "
                         "and draft their schemas (default: preview only, no writes)")
@@ -547,7 +548,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="profile the WHOLE marketplace (overrides --segment)")
     p.add_argument("--limit", type=int, default=None,
                    help="profile only the first N tender items (dev/testing)")
-    p.add_argument("--count", type=int, default=10)
+    p.add_argument("--count", type=int, default=None,
+                   help="stop after N viable categories (default: no limit — propose "
+                        "every viable family above --min-spend; 0 or negative also = no limit)")
     p.add_argument("--min-samples", type=int, default=15,
                    help="minimum distinct corpus descriptions per candidate")
     p.add_argument("--min-spend", type=float, default=0.0005,

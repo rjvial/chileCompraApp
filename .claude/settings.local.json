@@ -151,7 +151,10 @@
       "Bash(./.venv/Scripts/chilecompra-er.exe instance *)",
       "Bash(./.venv/Scripts/python.exe -c ' *)",
       "Bash(./.venv/Scripts/python.exe -m chilecompra_er.cli resolve --help)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_proposals.py tests/test_register.py -q)",
+      "Bash(./.venv/Scripts/python.exe *)"
     ]
   },
   "enableAllProjectMcpServers": true,

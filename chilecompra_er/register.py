@@ -252,7 +252,8 @@ def _llm_vet(batch: list[Candidate]) -> dict:
                          VET_SCHEMA, system=VET_SYSTEM)
 
 
-def propose(conn, stats: list[GroupStat], count: int = 10, min_samples: int = 15,
+def propose(conn, stats: list[GroupStat], count: int | None = 10,
+            min_samples: int = 15,
             min_spend_share: float = 0.0005, revisit: bool = False,
             vet=None, batch_size: int = 12,
             log=print) -> tuple[list[Candidate], list[Candidate]]:
@@ -261,8 +262,10 @@ def propose(conn, stats: list[GroupStat], count: int = 10, min_samples: int = 15
     `stats` is the spend ranking produced by profiling (read from the cached
     ranking file via profiling.load_ranking) — never re-streamed here.
     Walks the WHOLE ranking in vet batches until `count` viable categories are
-    found, the spend floor is reached, or the ranking is exhausted. Tokens the
-    vet previously judged junk are skipped (cache at
+    found, the spend floor is reached, or the ranking is exhausted. `count=None`
+    lifts the cap entirely: every viable family above the spend floor is
+    proposed (the spend floor / ranking exhaustion become the only stops).
+    Tokens the vet previously judged junk are skipped (cache at
     categories/vet_rejections.json; revisit=True re-evaluates them).
     """
     register = load_register()
@@ -270,6 +273,8 @@ def propose(conn, stats: list[GroupStat], count: int = 10, min_samples: int = 15
     vet = vet or _llm_vet
     rejections = {} if revisit else load_vet_rejections()
     skipped_cached = 0
+    limit = float("inf") if count is None else count
+    count_disp = "all" if count is None else str(count)
 
     log(f"scanning {len(stats)} ranked groups for candidates...")
 
@@ -285,13 +290,13 @@ def propose(conn, stats: list[GroupStat], count: int = 10, min_samples: int = 15
 
     def flush_batch() -> None:
         nonlocal batch
-        if not batch or len(chosen) >= count:
+        if not batch or len(chosen) >= limit:
             batch = []
             return
         log(f"  vetting batch of {len(batch)}: {[c.token for c in batch]}")
         vetted = finalize_candidates(batch, vet(batch), working)
         for c in vetted:
-            if c.viable and c.category_id not in chosen_ids and len(chosen) < count:
+            if c.viable and c.category_id not in chosen_ids and len(chosen) < limit:
                 chosen.append(c)
                 chosen_ids.add(c.category_id)
                 working["categories"].append({
@@ -306,8 +311,8 @@ def propose(conn, stats: list[GroupStat], count: int = 10, min_samples: int = 15
                 rejected.append(c)
         batch = []
 
-    for s in stats:
-        if len(chosen) >= count:
+    for idx, s in enumerate(stats, 1):
+        if len(chosen) >= limit:
             break
         if s.spend_share < min_spend_share:
             log(f"  spend floor reached at {s.group!r} "
@@ -318,6 +323,8 @@ def propose(conn, stats: list[GroupStat], count: int = 10, min_samples: int = 15
         if s.group in rejections:
             skipped_cached += 1
             continue
+        log(f"  [{idx}/{len(stats)}] sampling {s.group!r} "
+            f"({s.spend_share:.2%} spend; chosen {len(chosen)}/{count_disp})...")
         samples = _fetch_token_samples(conn, s.group, 30)
         if len(samples) < min_samples:
             log(f"  skip {s.group}: only {len(samples)} distinct samples")
@@ -338,8 +345,8 @@ def propose(conn, stats: list[GroupStat], count: int = 10, min_samples: int = 15
         save_vet_rejections(cache)
         log(f"  cached {len(newly_junk)} junk verdicts for future runs")
 
-    if len(chosen) < count:
-        log(f"  scan ended: {len(chosen)}/{count} viable categories found")
+    if count is None or len(chosen) < count:
+        log(f"  scan ended: {len(chosen)}/{count_disp} viable categories found")
     return chosen, rejected
 
 
