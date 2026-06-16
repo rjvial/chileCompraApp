@@ -1,9 +1,11 @@
 # Implementation Plan: Item-Centric Resolution
 
-> Status: **steps 1–2 DONE** (dry-run; `--kind item` + UNSPSC fallback —
-> commits `7af99d8` and the step-2 commit). Steps 3–5 (`:Product` branded layer,
-> persist path + migration, price-series) pending. Supersedes the per-record
-> model for the coverage goal; `tender|offer|oc|joint` stay for comparison.
+> Status: **steps 1–3 DONE.** 1–2: `--kind item` + UNSPSC fallback (dry-run,
+> commits `7af99d8`, `bf032dd`). 3: offers bound as `:Product` VARIANT_OF the
+> item's GenericProduct (dry-run counted; Neo4j write path verified live).
+> Steps 4–5 (full persist + migration, price-series over Product prices)
+> pending. Supersedes the per-record model for the coverage goal;
+> `tender|offer|oc|joint` stay for comparison.
 >
 > Measured (5,000 segment-42 items, dry run): per-record `tender` 34.2% →
 > `item` curated 36.2% → `item` + UNSPSC fallback **100% linked**

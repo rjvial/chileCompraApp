@@ -111,6 +111,37 @@ def test_fallback_counts_in_stats():
     assert stats.resolved_via_fallback == 1
 
 
+def _item_with_offers():
+    return SourceItem(
+        ref=SourceRef("mp_item_licitacion", "L1", "1", RUBRIC),
+        kind="item", raw_text=RUBRIC, unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "o1", "text": "SONDA FOLEY CH16 2 VIAS",
+             "unit_price": 1000.0, "awarded": True},
+            {"offer_id": "o2", "text": "SONDA FOLEY CH18 SILICONA",
+             "unit_price": 1200.0, "awarded": False}]},
+    )
+
+
+def test_offers_counted_but_not_written_in_dry_run():
+    catalog = InMemoryCatalog()
+    stats, _ = resolve_items(Resolver(catalog), [_item_with_offers()],
+                             persist=False, item_mode=True)
+    assert stats.offers_bound == 2
+    assert catalog.products == {}  # dry run writes nothing
+
+
+def test_offers_bound_as_products_share_one_generic_node():
+    catalog = InMemoryCatalog()
+    stats, _ = resolve_items(Resolver(catalog), [_item_with_offers()],
+                             persist=True, item_mode=True)
+    assert stats.offers_bound == 2
+    assert len(catalog.products) == 2
+    # the intra-item invariant: both offers' Products point to ONE generic node
+    assert len({p["generic_id"] for p in catalog.products.values()}) == 1
+    assert all(p["unit_price"] for p in catalog.products.values())
+
+
 def test_runner_dispatches_item_mode():
     catalog = InMemoryCatalog()
     items = [SourceItem(

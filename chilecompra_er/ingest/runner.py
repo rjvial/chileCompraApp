@@ -11,8 +11,14 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-from ..resolve.resolver import ResolutionReport, Resolver
-from .neo4j_source import SourceItem
+from ..resolve.assignment import (
+    PRODUCT_LABEL,
+    STATUS_PRODUCT,
+    SourceRef,
+    product_id_for,
+)
+from ..resolve.resolver import EXTRACTOR_VERSION, ResolutionReport, Resolver
+from .neo4j_source import SOURCE_OFFER, SourceItem
 
 
 @dataclass
@@ -24,6 +30,7 @@ class ResolutionStats:
     by_unresolved_reason: Counter = field(default_factory=Counter)
     resolved_without_attributes: int = 0  # anchored on a category root
     resolved_via_fallback: int = 0        # linked to a UNSPSC commodity bucket
+    offers_bound: int = 0                 # offers tied to their item's node as :Product
     nodes_created: int = 0
     illegal_values: int = 0
 
@@ -36,6 +43,7 @@ class ResolutionStats:
             "by_unresolved_reason": dict(self.by_unresolved_reason),
             "resolved_without_attributes": self.resolved_without_attributes,
             "resolved_via_fallback": self.resolved_via_fallback,
+            "offers_bound": self.offers_bound,
             "nodes_created": self.nodes_created,
             "illegal_values": self.illegal_values,
         }
@@ -50,6 +58,7 @@ class ResolutionStats:
             by_unresolved_reason=Counter(d.get("by_unresolved_reason", {})),
             resolved_without_attributes=d.get("resolved_without_attributes", 0),
             resolved_via_fallback=d.get("resolved_via_fallback", 0),
+            offers_bound=d.get("offers_bound", 0),
             nodes_created=d.get("nodes_created", 0),
             illegal_values=d.get("illegal_values", 0),
         )
@@ -68,6 +77,7 @@ class ResolutionStats:
             f"price basis mix   : {dict(self.by_basis)}",
             f"resolved w/o attrs: {self.resolved_without_attributes} "
             "(anchored on category roots — honest partials, no product info)",
+            f"offers bound      : {self.offers_bound} (as :Product variants under their item's node)",
             f"nodes created     : {self.nodes_created}",
             f"illegal values    : {self.illegal_values} (dropped, counted — schema dry-run metric)",
         ]
@@ -135,6 +145,14 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
             stats.by_basis[report.price_basis.basis] += 1
         if report.evidence.get("category_source") == "unspsc_fallback":
             stats.resolved_via_fallback += 1
+        # Bind the item's offers to its single resolved node (the intra-item
+        # invariant). Counted always (coverage metric); written only when
+        # persisting — as :Product variants carrying the offer's price point.
+        if item_mode and report.status == "resolved_generic" and report.node_id:
+            offers = item.extra.get("offers") or []
+            stats.offers_bound += len(offers)
+            if persist:
+                _bind_offers(resolver.catalog, item.ref, offers, report.node_id)
         if report.created:
             stats.nodes_created += 1
         if report.extraction is not None:
@@ -149,3 +167,29 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
     if progress is not None and stats.total and stats.total % progress_every != 0:
         progress(stats)  # final partial batch
     return stats, reports
+
+
+def _bind_offers(catalog, item_ref: SourceRef, offers: list[dict],
+                 generic_id: str) -> None:
+    """Write each of an item's offers as a :Product VARIANT_OF the item's one
+    GenericProduct, plus the offer's own :SourceRecord -[:RESOLVED_TO]-> Product
+    (the price point). Keyed by the offer's stable record id; derived from the
+    item ref (tender + item) + the offer id."""
+    for o in offers:
+        oid = o.get("offer_id")
+        if oid is None:
+            continue
+        offer_ref = SourceRef(SOURCE_OFFER, item_ref.tender_id,
+                              f"{item_ref.line_no}:{oid}", o.get("text") or "")
+        pid = product_id_for(offer_ref.record_key)
+        props = {k: v for k, v in {
+            "tender_id": item_ref.tender_id, "item_id": item_ref.line_no,
+            "offer_id": str(oid),
+            "unit_price": o.get("unit_price"), "total_clp": o.get("total_clp"),
+            "quantity": o.get("quantity"), "awarded": bool(o.get("awarded")),
+            "supplier_text_hash": offer_ref.raw_text_hash,
+        }.items() if v is not None}
+        catalog.bind_product(pid, generic_id, props)
+        catalog.persist_resolution(offer_ref, STATUS_PRODUCT, pid,
+                                   target_label=PRODUCT_LABEL,
+                                   extractor_version=EXTRACTOR_VERSION)

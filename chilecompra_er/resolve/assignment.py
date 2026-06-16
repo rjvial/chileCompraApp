@@ -43,6 +43,12 @@ def node_id_for(key: str) -> str:
     return "gp_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
+def product_id_for(record_key: str) -> str:
+    """Stable :Product id from an offer's record key — one Product per offer
+    (brand-level SKU / price point). Cross-offer brand dedup is a later rule."""
+    return "pr_" + hashlib.sha1(record_key.encode("utf-8")).hexdigest()[:12]
+
+
 def subsumes(parent_values: dict[str, str], child_values: dict[str, str]) -> bool:
     """P may parent C iff every identity attribute of P equals C's and P has
     strictly fewer present attributes (design §4 subsumption)."""
@@ -168,6 +174,10 @@ class InMemoryCatalog:
         self.nodes: dict[str, NodeView] = {}
         self.specs: dict[str, NodeSpec] = {}
         self.resolutions: list[dict] = []
+        self.products: dict[str, dict] = {}
+
+    def bind_product(self, product_id: str, generic_id: str, props: dict) -> None:
+        self.products[product_id] = {"generic_id": generic_id, **props}
 
     def load(self, category_id: str, schema: CategorySchema) -> dict[str, NodeView]:
         return {nid: n for nid, n in self.nodes.items() if self.specs[nid].category_id == category_id}
@@ -317,6 +327,22 @@ class Neo4jCatalog:
                 """,
                 parameters={"chid": child_id, "pid": new_parent},
             )
+
+    def bind_product(self, product_id: str, generic_id: str, props: dict) -> None:
+        """Upsert a brand-level :Product (one per offer) and link it
+        VARIANT_OF the item's GenericProduct — the shared node every offer on
+        the item points to (the intra-item invariant, literal in the graph).
+        Price props on the Product are what price-series reads."""
+        self.conn.query(
+            """
+            MERGE (p:Product {id: $pid})
+            SET p += $props
+            WITH p
+            MATCH (g:GenericProduct {id: $gid})
+            MERGE (p)-[:VARIANT_OF]->(g)
+            """,
+            parameters={"pid": product_id, "gid": generic_id, "props": props},
+        )
 
     def persist_resolution(self, source: SourceRef, status: str, target_id: str | None,
                            target_label: str = GENERIC_LABEL, **edge_props) -> None:
