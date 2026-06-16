@@ -98,13 +98,26 @@ register → resolve → price-series
    (`--only <category_id>`). The schema defines the identity attributes that
    `resolve` extracts.
 
-3. **`resolve`** — fit the real source records into those categories. **Dry run
-   first** (`--segment 42 --limit 5000 --show 10`) to inspect quality with no
-   graph writes; then `--persist` once you're happy. This is what actually fills
-   the catalog with generic-product nodes.
+3. **`resolve --kind item`** *(recommended)* — fit the real source records into
+   those categories, one `ItemLicitacion` at a time: pool the buyer line + all
+   its offers (majority consensus) + tender title, link the item to a single
+   generic product, and bind its offers beneath it as priced `:Product` variants.
+   Items no curated family matches link to a coarse UNSPSC bucket (`--fallback`,
+   on by default) → ~100% item coverage. **Dry run first**
+   (`--segment 42 --limit 5000 --show 10`) to inspect quality with no graph
+   writes; then `--persist`. (`--kind tender` is the simpler per-record path,
+   curated families only — useful for comparison.)
 
 4. **`price-series <category_id>`** — read the persisted catalog to build
-   per-product price histories. Empty until you've `--persist`ed that category.
+   per-product price histories from the awarded `:Product` offers. Empty until
+   you've `--kind item --persist`ed that category (the offers carry the prices).
+
+The catalog model:
+
+```
+ItemLicitacion ─resolves to→ 1 GenericProduct   (shared, attribute-deduped across items)
+       └─ its offers ─bind as→ :Product variants (one per offer; the price points)
+```
 
 Everything downstream (`resolve`, `price-series`) depends on the categories and
 schemas `register` creates, so a fresh `register` run is the prerequisite for
@@ -194,9 +207,13 @@ chilecompra-er generate-schemas --only mascarillas --samples 50
 
 ### Resolve source records into the catalog
 
-**`resolve`** — runs each source record through the 7-step pipeline
-(normalize → classify → extract attributes → infer price basis →
-find/create catalog node → persist). **Dry run unless `--persist`.**
+**`resolve`** — runs source records through the pipeline (normalize → classify →
+extract attributes → infer price basis → find/create catalog node → persist).
+**Dry run unless `--persist`.** The unit of work depends on `--kind`: `item`
+resolves a whole `ItemLicitacion` at once (buyer line + its offers + title →
+one generic product, offers bound as priced `:Product` variants); the others
+resolve one record at a time. The run summary leads with **items linked**
+(curated + UNSPSC-fallback) for `--kind item`.
 
 ```powershell
 # item-centric dry run (recommended): resolve each ItemLicitacion ONCE by
@@ -215,7 +232,7 @@ chilecompra-er resolve --kind item --segment 42 --persist --resume
 |---|---|---|
 | `--kind tender\|offer\|oc\|joint\|item` | `tender` | Source of records. `item` (item-centric) resolves each `ItemLicitacion` ONCE, pooling buyer line + ALL its offers (majority consensus) + tender title, so every offer shares the item's one generic product — best coverage, and the metric the catalog targets. `tender` resolves each buyer line with its tender title as context (item wins; title is fallback for terse lines). `joint` resolves each offer with its tender line's buyer text (offer wins; disagreement → review). |
 | `--fallback unspsc\|none` | `unspsc` | **`--kind item` only.** Items no curated family matches link to a coarse `GenericProduct` keyed by their UNSPSC commodity code (`unspsc_NNNNNNNN`) → ~100% link. `none` leaves them unresolved (curated-only). |
-| `--persist` | off | **WRITE** SourceRecord + RESOLVED_TO edges + catalog nodes to the graph. Off = dry run. |
+| `--persist` | off | **WRITE** to the graph: SourceRecords, GenericProduct nodes + RESOLVED_TO edges — and, for `--kind item`, the offers' `:Product` variants (VARIANT_OF). Off = dry run. |
 | `--segment <n>` | none | UNSPSC segment filter, e.g. 42 (tender/offer/joint/item kinds; ignored for oc). |
 | `--contains <str>` | none | Filter on buyer text (e.g. `foley`). |
 | `--limit <n>` | `200` | Max records to process. `all` (or `0`) = no limit — process the whole filtered set. |
@@ -258,15 +275,21 @@ Outputs (prefix from `--out`, e.g. `data\check`):
 ## Notes
 
 - The ingestion source is the graph itself — the transactional layer
-  (Licitacion / ItemLicitacion / Oferta / OrdenCompra / ItemOC). Resolution
-  only adds `:SourceRecord` references and `:RESOLVED_TO` edges.
-- Both `register` and `resolve` read the **item line plus its parent tender's
-  title** (`Licitacion.titulo`): the line item is authoritative, the title is
-  context that rescues terse/boilerplate lines and fills attributes the line
-  omits. The tender-title property name lives in one constant (`TENDER_NAME` in
-  `ingest/neo4j_source.py`); a missing/renamed property degrades to item-only.
-- Unclassified spend is visible debt by design: a description that matches no
-  category is recorded as `unresolved`, never force-fit. Closing that gap is
-  what `register` is for.
+  (Licitacion / ItemLicitacion / Oferta / OrdenCompra / ItemOC). Resolution only
+  *adds* a catalog layer on top: `:SourceRecord` references, `:GenericProduct` /
+  `:Product` nodes, and `:RESOLVED_TO` / `:VARIANT_OF` edges. It never mutates
+  the transactional nodes.
+- `register` and the per-record `resolve` kinds read the **item line plus its
+  parent tender's title** (`Licitacion.titulo`): the line is authoritative, the
+  title rescues terse/boilerplate lines and fills omitted attributes. `--kind
+  item` goes further, also pooling the item's **offer** descriptions (where a
+  rubric-only buyer line often gets its real product name). The tender-title
+  property lives in one constant (`TENDER_NAME` in `ingest/neo4j_source.py`); a
+  missing/renamed property degrades to item-only.
+- A description matching no curated family is never force-fit. With `--kind item`
+  it links to a coarse **UNSPSC commodity bucket** (`unspsc_NNNNNNNN`) — honest,
+  attribute-less coverage; with the per-record kinds (or `--fallback none`) it is
+  recorded as `unresolved` (visible debt). Either way, the biggest residual
+  buckets are the signal for the next `register` pass.
 - Run the test suite after register/schema changes:
   `.\.venv\Scripts\python.exe -m pytest tests -q`.
