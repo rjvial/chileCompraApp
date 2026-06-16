@@ -11,6 +11,7 @@ workstream — it needs the written "branded enough" rule first.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -32,6 +33,29 @@ EXTRACTOR_VERSION = f"chilecompra_er/{__version__}"
 # Joint (tender + offer) resolution outcomes that stop before assignment.
 REASON_CONFLICT = "offer_buyer_conflict"   # the two texts classify differently
 REASON_BOILERPLATE = "boilerplate_rubric"
+
+# Item-centric fallback: an item no curated family matches still links to a
+# coarse GenericProduct keyed by its UNSPSC commodity code (every item has one).
+FALLBACK_SOURCE = "unspsc_fallback"
+
+
+def unspsc_category_id(unspsc: int | str) -> str:
+    return f"unspsc_{unspsc}"
+
+
+def unspsc_fallback_schema(unspsc: int | str) -> CategorySchema:
+    """A minimal, attribute-less schema for the UNSPSC fallback bucket: with no
+    identity attributes, every item of the same code collapses onto one root
+    node (specificity 0) — the honest 'a 42182200 commodity, nothing else
+    known'. Not in the register; built on demand, cached per Resolver."""
+    cid = unspsc_category_id(unspsc)
+    raw = json.dumps({"category_id": cid, "name": f"UNSPSC {unspsc}",
+                      "schema_version": "0.0.0", "status": "fallback",
+                      "base_unit": "unit", "attribute_defs": []},
+                     ensure_ascii=False)
+    return CategorySchema(category_id=cid, name=f"UNSPSC {unspsc}",
+                          schema_version="0.0.0", status="fallback",
+                          base_unit="unit", attribute_defs=(), raw_json=raw)
 
 
 @dataclass
@@ -60,6 +84,13 @@ class Resolver:
         self.register = register or load_register()
         self.classifier = classifier or Tier1Classifier(self.register)
         self._schemas: dict[str, CategorySchema] = {}
+        self._fallback_schemas: dict[str, CategorySchema] = {}
+
+    def _fallback_schema(self, unspsc: int | str) -> CategorySchema:
+        cid = unspsc_category_id(unspsc)
+        if cid not in self._fallback_schemas:
+            self._fallback_schemas[cid] = unspsc_fallback_schema(unspsc)
+        return self._fallback_schemas[cid]
 
     def schema(self, category_id: str) -> CategorySchema:
         if category_id not in self._schemas:
@@ -176,6 +207,7 @@ class Resolver:
     def resolve_item(self, buyer_text: str | None, tender_text: str | None,
                      offers: list[dict] | None, *,
                      unspsc: int | None = None,
+                     fallback: str = "none",
                      source: SourceRef | None = None,
                      price_fields: dict | None = None) -> ResolutionReport:
         """Resolve ONE ItemLicitacion to ONE GenericProduct by pooling every
@@ -185,8 +217,9 @@ class Resolver:
         winning text drives attribute extraction; the buyer line fills the
         attributes it omits. Because the item resolves once, all of its offers
         share this single node (the intra-item invariant) — binding them as
-        :Product variants is a later step. Step 1: no UNSPSC fallback yet, so a
-        zero-signal item is still left unresolved (visible debt)."""
+        :Product variants is a later step. With fallback="unspsc", an item no
+        curated family matches links to a coarse GenericProduct keyed by its
+        UNSPSC commodity code instead of being left unresolved."""
         b_norm, b_cls, b_boiler = self._prepare(buyer_text)
         t_norm, t_cls, _t_boiler = self._prepare(tender_text)
 
@@ -222,6 +255,12 @@ class Resolver:
         }
 
         if chosen_cat is None:
+            # No curated family matched. Link to the UNSPSC commodity bucket so
+            # the item still joins the catalog (coverage), rather than dropping
+            # to visible debt — unless fallback is off or the code is missing.
+            if fallback == "unspsc" and unspsc:
+                return self._resolve_to_fallback(unspsc, buyer_text, b_norm or t_norm,
+                                                 source, base_evidence)
             statuses = {b_cls.status, t_cls.status,
                         *(c.status for _o, _n, c in offer_sig)}
             if AMBIGUOUS in statuses:
@@ -303,6 +342,35 @@ class Resolver:
             parent_id=plan.parent_id,
             is_complete=plan.created.is_complete if created else None,
             schema_version=schema.schema_version,
+            evidence=evidence,
+        )
+
+    def _resolve_to_fallback(self, unspsc: int | str, raw_text: str | None,
+                             normalized: str, source: SourceRef | None,
+                             base_evidence: dict) -> ResolutionReport:
+        """Link an item to its UNSPSC commodity bucket — an attribute-less
+        GenericProduct root, one per code, shared by every item of that code."""
+        schema = self._fallback_schema(unspsc)
+        existing = self.catalog.load(schema.category_id, schema)
+        plan = plan_assignment(schema, {}, existing)
+        self.catalog.apply(plan, schema)
+        evidence = {**base_evidence, "category_source": FALLBACK_SOURCE}
+        if source is not None:
+            self.catalog.persist_resolution(
+                source, STATUS_GENERIC, plan.home_id, evidence=evidence,
+                extractor_version=EXTRACTOR_VERSION,
+                schema_version=f"{schema.category_id}/{schema.schema_version}",
+                normalizer_version=self.normalizer.version)
+        created = plan.created is not None
+        return ResolutionReport(
+            raw_text=raw_text or "",
+            normalized=normalized,
+            classification=Classification(schema.category_id, CLASSIFIED),
+            status=STATUS_GENERIC,
+            extraction=Extraction(),
+            node_id=plan.home_id,
+            identity_key=plan.created.identity_key if created else None,
+            created=created,
             evidence=evidence,
         )
 

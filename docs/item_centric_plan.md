@@ -1,8 +1,14 @@
 # Implementation Plan: Item-Centric Resolution
 
-> Status: proposed (awaiting build). Author handoff doc — review before
-> implementation. Supersedes the per-record resolution model for the coverage
-> goal; the existing `tender|offer|oc|joint` kinds stay for comparison.
+> Status: **steps 1–2 DONE** (dry-run; `--kind item` + UNSPSC fallback —
+> commits `7af99d8` and the step-2 commit). Steps 3–5 (`:Product` branded layer,
+> persist path + migration, price-series) pending. Supersedes the per-record
+> model for the coverage goal; `tender|offer|oc|joint` stay for comparison.
+>
+> Measured (5,000 segment-42 items, dry run): per-record `tender` 34.2% →
+> `item` curated 36.2% → `item` + UNSPSC fallback **100% linked**
+> (1,809 curated + 3,191 fallback). Largest uncurated commodity buckets =
+> next register targets: `42151602` (246), `42171903` (175), `42242003` (118).
 
 ## 1. Goal & the invariant
 

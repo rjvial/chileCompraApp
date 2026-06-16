@@ -23,6 +23,7 @@ class ResolutionStats:
     by_basis: Counter = field(default_factory=Counter)
     by_unresolved_reason: Counter = field(default_factory=Counter)
     resolved_without_attributes: int = 0  # anchored on a category root
+    resolved_via_fallback: int = 0        # linked to a UNSPSC commodity bucket
     nodes_created: int = 0
     illegal_values: int = 0
 
@@ -34,6 +35,7 @@ class ResolutionStats:
             "by_basis": dict(self.by_basis),
             "by_unresolved_reason": dict(self.by_unresolved_reason),
             "resolved_without_attributes": self.resolved_without_attributes,
+            "resolved_via_fallback": self.resolved_via_fallback,
             "nodes_created": self.nodes_created,
             "illegal_values": self.illegal_values,
         }
@@ -47,13 +49,19 @@ class ResolutionStats:
             by_basis=Counter(d.get("by_basis", {})),
             by_unresolved_reason=Counter(d.get("by_unresolved_reason", {})),
             resolved_without_attributes=d.get("resolved_without_attributes", 0),
+            resolved_via_fallback=d.get("resolved_via_fallback", 0),
             nodes_created=d.get("nodes_created", 0),
             illegal_values=d.get("illegal_values", 0),
         )
 
     def summary(self) -> str:
+        resolved = self.by_status.get("resolved_generic", 0)
+        curated = resolved - self.resolved_via_fallback
+        linked_pct = f"{resolved / self.total:.1%}" if self.total else "n/a"
         lines = [
             f"records processed : {self.total}",
+            f"items linked      : {resolved} ({linked_pct})  "
+            f"= curated {curated} + UNSPSC-fallback {self.resolved_via_fallback}",
             f"by status         : {dict(self.by_status)}",
             f"unresolved reasons: {dict(self.by_unresolved_reason)}",
             f"by category       : {dict(self.by_category)}",
@@ -74,7 +82,8 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
                   on_report: Callable[[ResolutionReport], None] | None = None,
                   stats: ResolutionStats | None = None,
                   joint: bool = False,
-                  item_mode: bool = False) -> tuple[ResolutionStats, list[ResolutionReport]]:
+                  item_mode: bool = False,
+                  fallback: str = "none") -> tuple[ResolutionStats, list[ResolutionReport]]:
     """Resolve a stream of source items. With persist=False nothing is
     written (no SourceRecord either) — profiling/dry-run mode.
 
@@ -97,6 +106,7 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
                 tender_text=item.extra.get("tender_text"),
                 offers=item.extra.get("offers"),
                 unspsc=item.unspsc,
+                fallback=fallback,
                 source=src,
                 price_fields=price_fields,
             )
@@ -123,6 +133,8 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
             stats.by_category[report.classification.category_id] += 1
         if report.price_basis is not None:
             stats.by_basis[report.price_basis.basis] += 1
+        if report.evidence.get("category_source") == "unspsc_fallback":
+            stats.resolved_via_fallback += 1
         if report.created:
             stats.nodes_created += 1
         if report.extraction is not None:

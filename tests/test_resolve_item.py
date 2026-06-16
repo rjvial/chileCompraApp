@@ -67,6 +67,50 @@ def test_all_offers_share_the_items_single_node():
     assert rep.evidence["n_offers"] == 2
 
 
+def test_unspsc_fallback_links_unmatched_item():
+    rep = r().resolve_item(RUBRIC, tender_text=None, offers=[],
+                           unspsc=42182200, fallback="unspsc")
+    assert rep.status == "resolved_generic"
+    assert rep.classification.category_id == "unspsc_42182200"
+    assert rep.evidence["category_source"] == "unspsc_fallback"
+    assert rep.node_id is not None
+
+
+def test_fallback_none_leaves_item_unresolved():
+    rep = r().resolve_item(RUBRIC, tender_text=None, offers=[],
+                           unspsc=42182200, fallback="none")
+    assert rep.status == "unresolved"
+
+
+def test_curated_match_beats_fallback():
+    # a classifiable buyer line never falls through to the UNSPSC bucket
+    rep = r().resolve_item("SONDA FOLEY CH16 2 VIAS", tender_text=None, offers=[],
+                           unspsc=42182200, fallback="unspsc")
+    assert rep.classification.category_id == "sondas_foley"
+
+
+def test_same_unspsc_code_shares_one_fallback_node():
+    res = r()
+    a = res.resolve_item(RUBRIC, tender_text=None, offers=[],
+                         unspsc=42182200, fallback="unspsc")
+    b = res.resolve_item("OTRA COSA RARA SIN FAMILIA", tender_text=None, offers=[],
+                         unspsc=42182200, fallback="unspsc")
+    assert a.node_id == b.node_id  # one bucket node per code
+
+
+def test_fallback_counts_in_stats():
+    catalog = InMemoryCatalog()
+    items = [SourceItem(
+        ref=SourceRef("mp_item_licitacion", "L1", "1", RUBRIC),
+        kind="item", raw_text=RUBRIC, unspsc=42182200,
+        extra={"tender_text": None, "offers": []},
+    )]
+    stats, _ = resolve_items(Resolver(catalog), items, persist=False,
+                             item_mode=True, fallback="unspsc")
+    assert stats.by_status["resolved_generic"] == 1
+    assert stats.resolved_via_fallback == 1
+
+
 def test_runner_dispatches_item_mode():
     catalog = InMemoryCatalog()
     items = [SourceItem(

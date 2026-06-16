@@ -278,7 +278,7 @@ def cmd_resolve(args) -> int:
                                      progress=show_progress,
                                      progress_every=args.progress_every,
                                      stats=base_stats, joint=joint,
-                                     item_mode=item_mode)
+                                     item_mode=item_mode, fallback=args.fallback)
         finally:
             writer.flush()
             writer.close()
@@ -588,6 +588,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="CSV output prefix; default data\\resolve — the same "
                         "two files are overwritten on every run")
     p.add_argument("--show", type=int, default=5)
+    p.add_argument("--fallback", choices=["unspsc", "none"], default="unspsc",
+                   help="--kind item only: link items no curated family matches "
+                        "to a coarse GenericProduct keyed by their UNSPSC code "
+                        "(default unspsc); 'none' leaves them unresolved")
     p.add_argument("--progress-every", type=int, default=200,
                    help="emit a progress line + checkpoint every N records (default 200)")
     p.add_argument("--resume", action="store_true",

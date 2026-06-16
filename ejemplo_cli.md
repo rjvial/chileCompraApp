@@ -196,19 +196,24 @@ chilecompra-er generate-schemas --only mascarillas --samples 50
 find/create catalog node → persist). **Dry run unless `--persist`.**
 
 ```powershell
-# dry run: build the catalog in memory, dump CSVs, judge quality
+# item-centric dry run (recommended): resolve each ItemLicitacion ONCE by
+# pooling its offers; UNSPSC fallback links the rest -> ~100% item coverage
+chilecompra-er resolve --kind item --segment 42 --limit 5000 --show 12 --out data\check
+
+# per-record dry run (curated families only)
 chilecompra-er resolve --kind tender --segment 42 --limit 5000 --show 12 --out data\check
 
 # persist to the graph; resumable after a kill
-chilecompra-er resolve --kind tender --segment 42 --persist
-chilecompra-er resolve --kind tender --segment 42 --persist --resume
+chilecompra-er resolve --kind item --segment 42 --persist
+chilecompra-er resolve --kind item --segment 42 --persist --resume
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--kind tender\|offer\|oc\|joint` | `tender` | Source of records. `tender` resolves each buyer line together with its tender title as context (item wins; the title is a fallback for terse/boilerplate lines and fills attributes the line omits). `joint` resolves each offer together with its tender line's buyer text (offer wins; disagreement → review). |
+| `--kind tender\|offer\|oc\|joint\|item` | `tender` | Source of records. `item` (item-centric) resolves each `ItemLicitacion` ONCE, pooling buyer line + ALL its offers (majority consensus) + tender title, so every offer shares the item's one generic product — best coverage, and the metric the catalog targets. `tender` resolves each buyer line with its tender title as context (item wins; title is fallback for terse lines). `joint` resolves each offer with its tender line's buyer text (offer wins; disagreement → review). |
+| `--fallback unspsc\|none` | `unspsc` | **`--kind item` only.** Items no curated family matches link to a coarse `GenericProduct` keyed by their UNSPSC commodity code (`unspsc_NNNNNNNN`) → ~100% link. `none` leaves them unresolved (curated-only). |
 | `--persist` | off | **WRITE** SourceRecord + RESOLVED_TO edges + catalog nodes to the graph. Off = dry run. |
-| `--segment <n>` | none | UNSPSC segment filter, e.g. 42 (tender/offer/joint kinds; ignored for oc). |
+| `--segment <n>` | none | UNSPSC segment filter, e.g. 42 (tender/offer/joint/item kinds; ignored for oc). |
 | `--contains <str>` | none | Filter on buyer text (e.g. `foley`). |
 | `--limit <n>` | `200` | Max records to process. `all` (or `0`) = no limit — process the whole filtered set. |
 | `--skip <n>` | `0` | Skip N records (stable order; for chunked corpus builds). |
