@@ -25,6 +25,19 @@ paths (`data\...`).
   until you pass `--persist`. Every other read-only command is always safe.
 - **Fixed output filenames.** Commands overwrite the same files under `data\`
   on each run; pass the relevant path flag only to keep a snapshot elsewhere.
+- **Where outputs live — by lifecycle, not all in one place:**
+  - **The catalog definition is version-controlled**, under
+    `chilecompra_er\categories\`: `register.json` (the category list) and
+    `schemas\*.json` (one attribute schema per category). These are the actual
+    deliverable — code-reviewed, diffed in PRs, and asserted by the test suite —
+    so `register` writes them here, **not** to `data\`.
+  - **`data\` is gitignored scratch** — reproducible byproducts, safe to delete:
+    `proposals.json` (the preview→apply handoff), `profiling.csv` (the cached
+    spend ranking; rebuild with `--reprofile`), and `resolve`'s
+    `*_resoluciones.csv` / `*_productos_genericos.csv` / `.checkpoint.json`.
+  - **The populated catalog lives in Neo4j**, written only by `resolve --persist`
+    (`GenericProduct` / `SourceRecord` / `RESOLVED_TO`). `register` never touches
+    the graph.
 - **Destructive commands are gated** behind `--yes` (`wipe-category`,
   `wipe-catalog`).
 - Progress + diagnostics go to **stderr**; the actual report/result goes to
@@ -39,27 +52,60 @@ paths (`data\...`).
 chilecompra-er instance start
 chilecompra-er migrate
 
-# 1. Build the register (PREVIEW): profile the corpus, vet candidates,
-#    write data\proposals.json. Nothing is registered yet — review the file.
-#    No --count = every viable family above --min-spend; add --count 10 to cap.
+# 1. Build the register: profile the corpus, vet families, register them, and
+#    draft their schemas — all in one command. (no --count = every family above
+#    --min-spend; add --count 10 to cap.) Use --preview to stop at the proposals
+#    file for review, then `register --apply` to commit the edited file.
 chilecompra-er register --segment 42
 
-# 2. Commit the reviewed proposals: add the categories + draft their schemas
-chilecompra-er register --apply
-
-# 3. Resolve a sample as a DRY RUN and inspect quality (no graph writes)
+# 2. Resolve a sample as a DRY RUN and inspect quality (no graph writes)
 chilecompra-er resolve --kind tender --segment 42 --limit 5000 --show 10 --out data\check
 
-# 4. Happy with the split? Persist for real (resumable)
+# 3. Happy with the split? Persist for real (resumable)
 chilecompra-er resolve --kind tender --segment 42 --persist
 
-# 5. Analyze + verify
+# 4. Analyze + verify
 chilecompra-er price-series sondas_foley
 chilecompra-er status
 
-# 6. Shut down (data persists; IP changes next start)
+# 5. Shut down (data persists; IP changes next start)
 chilecompra-er instance stop
 ```
+
+---
+
+## Pipeline stages
+
+The commands form a dependency chain — each stage produces what the next
+consumes:
+
+```
+register → resolve → price-series
+```
+
+1. **`register`** — profile the corpus, vet candidate families, and in the same
+   run add the survivors to the register **and** draft an attribute schema (the
+   strawman) for each one. This is the step that makes the categories real.
+   - Want a review gap first? `register --preview` stops after writing
+     `data\proposals.json` (registers nothing); review/trim it, then
+     `register --apply` commits the edited file without re-profiling.
+
+2. **`generate-schemas`** *(optional / as needed)* — `register` already drafts a
+   schema per new category; re-run this to refine or regenerate a specific one
+   (`--only <category_id>`). The schema defines the identity attributes that
+   `resolve` extracts.
+
+3. **`resolve`** — fit the real source records into those categories. **Dry run
+   first** (`--segment 42 --limit 5000 --show 10`) to inspect quality with no
+   graph writes; then `--persist` once you're happy. This is what actually fills
+   the catalog with generic-product nodes.
+
+4. **`price-series <category_id>`** — read the persisted catalog to build
+   per-product price histories. Empty until you've `--persist`ed that category.
+
+Everything downstream (`resolve`, `price-series`) depends on the categories and
+schemas `register` creates, so a fresh `register` run is the prerequisite for
+resolving any new family.
 
 ---
 
@@ -75,25 +121,32 @@ chilecompra-er instance stop
 
 ### Build the category register
 
-**`register`** — the M4 expansion loop. Profiles the corpus by head-noun ×
-spend, walks the ranking in vet batches (the LLM judges each token group into a
-coherent product family or rejects it), validates every proposed regex
-mechanically, and writes the survivors to a proposals file. **Preview by default
-(no register writes); `--apply` commits.** By default there is **no count cap** —
-it proposes every viable family down to the `--min-spend` floor; pass `--count N`
-to stop after the top N. Progress (scan position, batches vetted, candidates
+**`register`** — the M4 expansion loop, end to end. Profiles the corpus by
+head-noun × spend, walks the ranking in vet batches (the LLM judges each token
+group into a coherent product family or rejects it), validates every proposed
+regex mechanically, writes the survivors to a proposals file, and **registers
+them + drafts a schema for each one**. By default there is **no count cap** — it
+proposes every viable family down to the `--min-spend` floor; pass `--count N` to
+stop after the top N. Progress (scan position, batches vetted, candidates
 accepted) streams to stderr as it goes.
 
+Two opt-out flags split the run when you want a review gap:
+- **`--preview`** stops after writing the proposals file (registers nothing).
+- **`--apply`** registers an existing / hand-edited proposals file *without*
+  re-profiling — the commit half on its own.
+
 ```powershell
-chilecompra-er register --segment 42                 # PREVIEW (all families) -> data\proposals.json
+chilecompra-er register --segment 42                 # profile → vet → register + schemas
 chilecompra-er register --segment 42 --count 10      # ...or cap at the top 10
-chilecompra-er register --apply                      # commit the reviewed proposals
+chilecompra-er register --segment 42 --preview       # stop at data\proposals.json for review
+chilecompra-er register --apply                      # ...then commit the edited file
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--apply` | off | Commit `--proposals`: add categories to the register + draft their schemas. Without it, the run is a no-write preview. |
-| `--proposals <path>` | `data\proposals.json` | Proposals file — written by the preview, read back by `--apply`. |
+| `--preview` | off | Profile + vet only: write `--proposals` and stop, registering nothing. Mutually exclusive with `--apply`. |
+| `--apply` | off | Register an existing/edited `--proposals` file without re-profiling (the commit half on its own). Mutually exclusive with `--preview`. |
+| `--proposals <path>` | `data\proposals.json` | Proposals file — written by every run, read back by `--apply`. |
 | `--ranking <path>` | `data\profiling.csv` | Cached spend ranking. Reused if present (skips the slow corpus scan); rebuilt otherwise. |
 | `--reprofile` | off | Force a fresh corpus profile, overwriting `--ranking`. |
 | `--segment <n>` | `42` | UNSPSC segment scope when profiling (42 = medical supplies). |
@@ -104,11 +157,11 @@ chilecompra-er register --apply                      # commit the reviewed propo
 | `--min-spend <f>` | `0.0005` | Spend-share floor; the scan stops below it (0.0005 = 0.05%). |
 | `--revisit` | off | Re-evaluate tokens previously cached as junk (`categories\vet_rejections.json`). |
 
-> The first preview run does the slow full-corpus scan and caches the ranking.
+> The first run does the slow full-corpus scan and caches the ranking.
 > Re-running `register` to tune `--count` / `--min-spend` reuses that cache;
 > add `--reprofile` only when the underlying data changed. With no `--count`,
 > `--min-spend` is the real stop — lower it to reach deeper into the long tail,
-> raise it to keep the preview short.
+> raise it to keep the run short.
 
 **`add-category`** — manually append one known family (skips the LLM vet).
 

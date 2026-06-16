@@ -3,18 +3,21 @@
     chilecompra-er status                       # register + instance overview
     chilecompra-er instance start|stop|status   # Neo4j EC2 lifecycle
     chilecompra-er migrate [--dry-run]          # apply graph schema migrations
-    chilecompra-er register [--segment 42] [--reprofile]  # PREVIEW -> data\\proposals.json
-    chilecompra-er register --apply                        # commit the reviewed proposals
+    chilecompra-er register [--segment 42] [--reprofile]  # profile, vet, register + schemas
+    chilecompra-er register --preview                      # stop after data\\proposals.json
+    chilecompra-er register --apply                        # register an edited proposals file
     chilecompra-er resolve [--kind tender|offer|oc] [--contains foley]
                            [--limit 200] [--persist] [--out data\\run1] [--show 5]
     chilecompra-er generate-schemas [--only jeringas] [--samples 50]
     chilecompra-er wipe-category <category_id> --yes
 
-The pipeline is file-driven: `register` profiles the corpus (caching the spend
-ranking to data\\profiling.csv, reused on later runs unless --reprofile), vets
-the candidates, and writes data\\proposals.json — a PREVIEW that changes
-nothing. `register --apply` reads that proposals file and adds the categories
-to the register + drafts the schemas that `resolve` then consumes.
+`register` runs the whole expansion loop in one shot: it profiles the corpus
+(caching the spend ranking to data\\profiling.csv, reused on later runs unless
+--reprofile), vets the candidates into data\\proposals.json, then adds the
+survivors to the register + drafts the schemas that `resolve` consumes. Use
+--preview to stop after writing the proposals file (registering nothing), or
+--apply to register a pre-existing / hand-edited proposals file without
+re-profiling.
 
 `resolve` is a DRY RUN by default (nothing written to the graph) — pass
 --persist explicitly to write SourceRecords/RESOLVED_TO edges and catalog
@@ -265,17 +268,20 @@ def cmd_register(args) -> int:
     def log(msg) -> None:
         print(msg, file=sys.stderr, flush=True)
 
-    # --apply commits a reviewed proposals file; the default is a preview that
-    # profiles + vets and writes that file, touching nothing in the register.
+    # Default: the whole pipeline in one shot — profile + vet, write the
+    # proposals file, then register the survivors + draft their schemas.
+    # --preview stops after writing the proposals file (registers nothing).
+    # --apply registers a pre-existing (possibly hand-edited) proposals file
+    # without re-profiling.
     if args.apply:
         return _register_apply(args, log)
-    return _register_preview(args, log)
+    return _register_build(args, log, register=not args.preview)
 
 
-def _register_preview(args, log) -> int:
+def _register_build(args, log, register: bool) -> int:
     from .graphdb import get_connection
     from .profiling import fetch_item_spend, load_ranking, profile, write_ranking
-    from .register import propose, write_proposals
+    from .register import apply, propose, write_proposals
 
     conn = get_connection()
     try:
@@ -300,27 +306,38 @@ def _register_preview(args, log) -> int:
                                    min_samples=args.min_samples,
                                    min_spend_share=args.min_spend,
                                    revisit=args.revisit, log=log)
+
+        if rejected:
+            print("\nrejected by the vet:")
+            for c in rejected:
+                print(f"  {c.token:<22}{c.reason}")
+        if not chosen:
+            print("\nno viable candidates found")
+            return 1
+
+        print(f"\ncandidates ({len(chosen)}):")
+        for c in chosen:
+            print(f"  {c.category_id:<26}{c.spend_share:>6.1%} spend  include={c.include}"
+                  + (f"  exclude={c.exclude}" if c.exclude else ""))
+            print(f"    {'example':<10}: {c.canonical_example[:90]!r}")
+            print(f"    {'reason':<10}: {c.reason}")
+
+        write_proposals(chosen, args.proposals)
+        print(f"\nwrote {len(chosen)} candidates to {args.proposals}")
+
+        if not register:
+            print("preview only (--preview) — nothing registered. Commit them with: "
+                  f"chilecompra-er register --apply --proposals {args.proposals}")
+            return 0
+
+        log(f"registering {len(chosen)} categories + drafting schemas...")
+        apply(conn, chosen, log=log)
     finally:
         conn.close()
 
-    if rejected:
-        print("\nrejected by the vet:")
-        for c in rejected:
-            print(f"  {c.token:<22}{c.reason}")
-    if not chosen:
-        print("\nno viable candidates found")
-        return 1
-
-    print(f"\ncandidates ({len(chosen)}):")
-    for c in chosen:
-        print(f"  {c.category_id:<26}{c.spend_share:>6.1%} spend  include={c.include}"
-              + (f"  exclude={c.exclude}" if c.exclude else ""))
-        print(f"    {'example':<10}: {c.canonical_example[:90]!r}")
-        print(f"    {'reason':<10}: {c.reason}")
-
-    write_proposals(chosen, args.proposals)
-    print(f"\npreview only — wrote {len(chosen)} candidates to {args.proposals}")
-    print(f"review them, then commit: chilecompra-er register --apply --proposals {args.proposals}")
+    print("\ndone. next: run the test suite and a corpus dry run:")
+    print("  python -m pytest tests -q")
+    print("  chilecompra-er resolve --limit 5000 --show 0 --out data\\corpus_check")
     return 0
 
 
@@ -529,12 +546,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--samples", type=int, default=50)
     p.set_defaults(func=cmd_generate_schemas)
 
-    p = sub.add_parser("register", help="propose categories from the spend ranking (all viable families by default; preview unless --apply)")
-    p.add_argument("--apply", action="store_true",
-                   help="commit the reviewed proposals file: register the categories "
-                        "and draft their schemas (default: preview only, no writes)")
+    p = sub.add_parser("register", help="profile the spend ranking, vet families, and register them + draft schemas (all viable families by default)")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--preview", action="store_true",
+                      help="profile + vet only: write --proposals without registering "
+                           "anything (default: also register the categories + draft schemas)")
+    mode.add_argument("--apply", action="store_true",
+                      help="register an existing/edited --proposals file without "
+                           "re-profiling (skips the profile + vet phase)")
     p.add_argument("--proposals", type=Path, default=Path("data/proposals.json"),
-                   help="proposals file — written by the preview, read back by "
+                   help="proposals file — written by every run, read back by "
                         "--apply (default data\\proposals.json)")
     # preview: corpus profiling phase, cached to --ranking
     p.add_argument("--ranking", type=Path, default=Path("data/profiling.csv"),

@@ -18,16 +18,28 @@ def test_wipe_requires_explicit_yes_flag():
     assert args.yes is False  # cmd refuses without it
 
 
-def test_register_previews_by_default():
+def test_register_registers_by_default():
     args = parse(["register", "--segment", "42", "--count", "10", "--reprofile"])
-    assert args.apply is False  # default is a no-write preview
+    # default runs the whole loop and registers — neither opt-out flag set
+    assert args.apply is False and args.preview is False
     assert args.segment == 42 and args.count == 10 and args.reprofile is True
     assert args.proposals == Path("data/proposals.json")
+
+
+def test_register_preview_flag_skips_registering():
+    args = parse(["register", "--preview"])
+    assert args.preview is True and args.apply is False
 
 
 def test_register_apply_reads_the_proposals_file():
     args = parse(["register", "--apply", "--proposals", "data/p.json"])
     assert args.apply is True and args.proposals == Path("data/p.json")
+
+
+def test_register_preview_and_apply_are_mutually_exclusive():
+    import pytest
+    with pytest.raises(SystemExit):
+        parse(["register", "--preview", "--apply"])
 
 
 def test_instance_actions():
