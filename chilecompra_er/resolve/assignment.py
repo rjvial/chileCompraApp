@@ -147,19 +147,16 @@ def plan_assignment(
 
 @dataclass(frozen=True)
 class SourceRef:
-    """Thin reference to an original record — identifiers only, never payload."""
+    """Reference to an original record: identifiers plus the raw text, which is
+    stored verbatim on the :SourceRecord node."""
     source: str          # e.g. "mercado_publico"
     tender_id: str
     line_no: str
-    raw_text: str        # hashed for the node; payload stays in the source store
+    raw_text: str        # stored verbatim on the SourceRecord node
 
     @property
     def record_key(self) -> str:
         return f"{self.source}|{self.tender_id}|{self.line_no}"
-
-    @property
-    def raw_text_hash(self) -> str:
-        return hashlib.sha256(self.raw_text.encode("utf-8")).hexdigest()
 
 
 STATUS_GENERIC = "resolved_generic"
@@ -357,14 +354,14 @@ class Neo4jCatalog:
             """
             MERGE (s:SourceRecord {record_key: $rk})
             ON CREATE SET s.source = $src, s.tender_id = $tid, s.line_no = $line
-            SET s.raw_text_hash = $hash, s.resolution_status = $status
+            SET s.raw_text = $text, s.resolution_status = $status
             """,
             parameters={
                 "rk": source.record_key,
                 "src": source.source,
                 "tid": source.tender_id,
                 "line": source.line_no,
-                "hash": source.raw_text_hash,
+                "text": source.raw_text,
                 "status": status,
             },
         )
@@ -474,7 +471,7 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
             raise ValueError(f"invalid resolution target label {target_label!r}")
         self._res_buf.append({
             "rk": source.record_key, "src": source.source, "tid": source.tender_id,
-            "line": source.line_no, "hash": source.raw_text_hash, "status": status,
+            "line": source.line_no, "text": source.raw_text, "status": status,
             "target": target_id, "label": target_label,
             "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
             "extractor": edge_props.get("extractor_version", ""),
@@ -548,7 +545,7 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
             UNWIND $rows AS row
             MERGE (s:SourceRecord {record_key: row.rk})
               ON CREATE SET s.source = row.src, s.tender_id = row.tid, s.line_no = row.line
-            SET s.raw_text_hash = row.hash, s.resolution_status = row.status
+            SET s.raw_text = row.text, s.resolution_status = row.status
             """, parameters={"rows": rows})
         for label in (GENERIC_LABEL, PRODUCT_LABEL):
             targeted = [r for r in rows if r["target"] is not None and r["label"] == label]

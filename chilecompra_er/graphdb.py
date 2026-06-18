@@ -5,11 +5,15 @@ Resolution order for the bolt URI:
   2. lookup of the EC2 instance tagged NEO4J_EC2_NAME (default "Neo4j-EC2")
      via boto3, requiring it to be running.
 
-start_neo4j_instance() starts the instance and waits until Neo4j answers.
+start_neo4j_instance() brings the box up in three steps: (1) check whether the
+instance is already running; (2) if not, start it and read its new public IP,
+registering that IP into .mcp.json for the Neo4j MCP server; (3) wait until
+Neo4j answers on the bolt port (it auto-starts on boot).
 """
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -25,6 +29,9 @@ from .config import env  # noqa: E402
 
 DEFAULT_INSTANCE_NAME = "Neo4j-EC2"
 BOLT_PORT = 7687
+MCP_CONFIG_PATH = REPO_ROOT / ".mcp.json"
+# NEO4J_URI value inside .mcp.json — captured so only the host:port is rewritten.
+_MCP_BOLT_RE = re.compile(r'("NEO4J_URI"\s*:\s*")bolt://[^"]*(")')
 
 
 def _ec2_client():
@@ -71,16 +78,46 @@ def stop_neo4j_instance() -> str:
     return "stopping"
 
 
+def _update_mcp_bolt_ip(public_ip: str | None,
+                        path: Path = MCP_CONFIG_PATH) -> str | None:
+    """Point the Neo4j MCP server at `public_ip` by rewriting NEO4J_URI in
+    .mcp.json (the instance's public IP changes on every start). A targeted
+    text substitution, so the rest of the file's formatting is untouched.
+    Returns the new bolt URI, or None if there was nothing to update (IP
+    unknown, file missing, or no NEO4J_URI present)."""
+    if not public_ip or not path.exists():
+        return None
+    new_uri = f"bolt://{public_ip}:{BOLT_PORT}"
+    text = path.read_text(encoding="utf-8")
+    new_text, n = _MCP_BOLT_RE.subn(rf"\g<1>{new_uri}\g<2>", text)
+    if n == 0:
+        return None
+    if new_text != text:
+        path.write_text(new_text, encoding="utf-8")
+    return new_uri
+
+
 def start_neo4j_instance(wait_for_bolt: int = 300) -> str:
-    """Start the Neo4j EC2 instance, wait for it, return its public IP."""
+    """Bring the Neo4j EC2 box up and return its public IP (see module docstring
+    for the three steps)."""
     ec2 = _ec2_client()
     name = env("NEO4J_EC2_NAME", DEFAULT_INSTANCE_NAME)
+
+    # 1) is the instance already running?
     instance_id, public_ip, state = fne.find_instance_by_name(ec2, name)
+
+    # 2) if not, start it and read its (new) public IP
     if state != "running":
         fne.start_instance(ec2, instance_id)
         ec2.get_waiter("instance_running").wait(InstanceIds=[instance_id])
         _, public_ip, _ = fne.find_instance_by_name(ec2, name)
 
+    # register the IP so the Neo4j MCP server points at the right box
+    new_uri = _update_mcp_bolt_ip(public_ip)
+    if new_uri:
+        print(f"registered {new_uri} in {MCP_CONFIG_PATH.name}")
+
+    # 3) Neo4j auto-starts on boot — wait until it answers on bolt
     deadline = time.time() + wait_for_bolt
     import socket
 

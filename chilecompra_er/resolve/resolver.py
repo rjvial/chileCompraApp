@@ -37,10 +37,20 @@ REASON_BOILERPLATE = "boilerplate_rubric"
 # Item-centric fallback: an item no curated family matches still links to a
 # coarse GenericProduct keyed by its UNSPSC commodity code (every item has one).
 FALLBACK_SOURCE = "unspsc_fallback"
+# GenericProduct.category_id prefix for UNSPSC fallback buckets (unspsc_<code>).
+UNSPSC_PREFIX = "unspsc_"
 
 
 def unspsc_category_id(unspsc: int | str) -> str:
-    return f"unspsc_{unspsc}"
+    return f"{UNSPSC_PREFIX}{unspsc}"
+
+
+def is_rubric(text: str | None) -> bool:
+    """True for a UNSPSC rubric path ("Equipamiento ... / ... / Vendas..."), a
+    taxonomy string rather than a real product description — flagged by >= 2
+    ' / ' separators. Single source of this rule on the Python side (mirrored in
+    Cypher by ingest.neo4j_source.NOT_RUBRIC)."""
+    return bool(text) and text.count(" / ") >= 2
 
 
 def unspsc_fallback_schema(unspsc: int | str) -> CategorySchema:
@@ -118,7 +128,7 @@ class Resolver:
         # family word in them is the taxonomy's, not the buyer's. Routing
         # them into a category root would inflate it with zero-information
         # records — explicit unresolved instead (visible debt, design §8).
-        if raw_text.count(" / ") >= 2:
+        if is_rubric(raw_text):
             normalized = self.normalizer(raw_text)
             report = ResolutionReport(
                 raw_text=raw_text,
@@ -379,7 +389,7 @@ class Resolver:
     def _prepare(self, raw_text: str | None) -> tuple[str, Classification, bool]:
         """Normalize + classify one text, flagging UNSPSC-rubric boilerplate."""
         normalized = self.normalizer(raw_text) if raw_text else ""
-        boilerplate = bool(raw_text) and raw_text.count(" / ") >= 2
+        boilerplate = is_rubric(raw_text)
         if boilerplate or not normalized:
             return normalized, Classification(None, UNCLASSIFIED), boilerplate
         return normalized, self.classifier.classify(normalized), False

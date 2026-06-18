@@ -188,7 +188,10 @@ def _bind_offers(catalog, item_ref: SourceRef, offers: list[dict],
             "unit_price": o.get("unit_price"), "total_clp": o.get("total_clp"),
             "quantity": o.get("quantity"), "awarded": bool(o.get("awarded")),
             "currency": o.get("currency"), "date": o.get("date"),
-            "supplier_text_hash": offer_ref.raw_text_hash,
+            # The Product is the price-point node, so it carries the supplier's
+            # actual description (readable) — not the hash (that's the
+            # SourceRecord's thin-reference job).
+            "supplier_text": o.get("text"),
         }.items() if v is not None}
         catalog.bind_product(pid, generic_id, props)
         catalog.persist_resolution(offer_ref, STATUS_PRODUCT, pid,

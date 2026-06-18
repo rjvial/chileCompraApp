@@ -1,0 +1,4 @@
+{
+  "_format": "<brand token, normalized: lowercase, unaccented> -> <existing category_id>. Consulted as a classification tier after Tier-1 regex. Curator-maintained; entries whose category_id is absent from the register are ignored.",
+  "brands": {}
+}

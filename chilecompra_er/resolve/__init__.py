@@ -12,10 +12,16 @@ from .assignment import (
     subsumes,
 )
 from .resolver import ResolutionReport, Resolver
+from .brand_lexicon import BrandLexicon
+from .tier2 import Tier2Classifier
+from .layered import LayeredClassifier
 
 __all__ = [
     "Classification",
     "Tier1Classifier",
+    "BrandLexicon",
+    "Tier2Classifier",
+    "LayeredClassifier",
     "Extraction",
     "extract",
     "AssignmentPlan",

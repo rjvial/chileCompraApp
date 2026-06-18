@@ -3,25 +3,36 @@
     chilecompra-er status                       # register + instance overview
     chilecompra-er instance start|stop|status   # Neo4j EC2 lifecycle
     chilecompra-er migrate [--dry-run]          # apply graph schema migrations
-    chilecompra-er register [--segment 42] [--reprofile]  # profile, vet, register + schemas
+    chilecompra-er register [--segment 42] [--reprofile] [--from-fallback]  # profile, vet, register + schemas
     chilecompra-er register --preview                      # stop after data\\proposals.json
     chilecompra-er register --apply                        # register an edited proposals file
-    chilecompra-er resolve [--kind tender|offer|oc] [--contains foley]
+    chilecompra-er resolve [--kind item|tender|offer|oc|joint] [--contains foley]
                            [--limit 200] [--persist] [--out data\\run1] [--show 5]
+                           [--brands] [--tier2]            # extra classifier tiers
+    chilecompra-er fallback-report                # rank UNSPSC fallback + candidate categories
     chilecompra-er generate-schemas [--only jeringas] [--samples 50]
+    chilecompra-er build-brand-lexicon [--only jeringas] [--dry-run]  # LLM brand tokens per category
+    chilecompra-er train-tier2 [--eval]          # train the Tier-2 statistical classifier
     chilecompra-er wipe-category <category_id> --yes
 
 `register` runs the whole expansion loop in one shot: it profiles the corpus
 (caching the spend ranking to data\\profiling.csv, reused on later runs unless
 --reprofile), vets the candidates into data\\proposals.json, then adds the
 survivors to the register + drafts the schemas that `resolve` consumes. Use
---preview to stop after writing the proposals file (registering nothing), or
+--preview to stop after writing the proposals file (registering nothing),
 --apply to register a pre-existing / hand-edited proposals file without
-re-profiling.
+re-profiling, or --from-fallback to rank candidates from the UNSPSC fallback
+residue in the graph instead of the whole-corpus profile.
 
 `resolve` is a DRY RUN by default (nothing written to the graph) — pass
 --persist explicitly to write SourceRecords/RESOLVED_TO edges and catalog
 nodes. Destructive commands require --yes.
+
+Coverage-improvement loop (cut items that land on UNSPSC fallback):
+`resolve --kind item --persist` -> `fallback-report` (what's missing) ->
+`register --from-fallback` (register the missing families) and/or
+`train-tier2` + `build-brand-lexicon` -> `resolve --kind item --tier2 --brands`
+(the layered Tier-1 regex -> brand lexicon -> Tier-2 classifier).
 """
 
 from __future__ import annotations
@@ -97,7 +108,7 @@ def cmd_instance(args) -> int:
     elif args.action == "start":
         ip = graphdb.start_neo4j_instance()
         print(f"running, bolt ready @ {ip}")
-        print("note: the public IP changes on each start — update .mcp.json if you use the MCP server")
+        print("note: the public IP changes on each start — .mcp.json was updated to it automatically")
     elif args.action == "stop":
         print(graphdb.stop_neo4j_instance())
     return 0
@@ -117,6 +128,109 @@ def cmd_migrate(args) -> int:
         finally:
             conn.close()
     print(f"migrations {'printed' if args.dry_run else 'applied'}: {ran or 'none (up to date)'}")
+    return 0
+
+
+def _build_classifier(args):
+    """Default None (Resolver uses plain Tier-1). With --brands/--tier2, wrap
+    Tier-1 in a LayeredClassifier adding the brand lexicon and/or the trained
+    Tier-2 model so more items classify instead of falling back."""
+    if not getattr(args, "brands", False) and not getattr(args, "tier2", False):
+        return None
+    from .resolve.classifier import Tier1Classifier
+    from .resolve.layered import LayeredClassifier
+
+    brand = tier2 = None
+    if args.brands:
+        from .resolve.brand_lexicon import BrandLexicon
+        brand = BrandLexicon.load()
+        print(f"brand lexicon: {len(brand.brands)} brands", file=sys.stderr)
+    if args.tier2:
+        from .resolve.tier2 import TIER2_MODEL_PATH, Tier2Classifier
+        path = args.tier2_model or TIER2_MODEL_PATH
+        if path.exists():
+            tier2 = Tier2Classifier.load(path, threshold=args.tier2_threshold)
+            print(f"tier-2 model: {path} (threshold {tier2.threshold})", file=sys.stderr)
+        else:
+            print(f"warning: --tier2 set but no model at {path} "
+                  "(run `train-tier2`) — skipping Tier-2", file=sys.stderr)
+    return LayeredClassifier(Tier1Classifier(), brand=brand, tier2=tier2)
+
+
+def cmd_build_brand_lexicon(args) -> int:
+    """LLM-propose brand/trade-name tokens per curated category, validate them,
+    drop cross-category collisions, and merge into categories/brand_lexicon.json."""
+    from .brands import build, merge_brand_maps, save_brand_map
+    from .graphdb import get_connection
+    from .resolve.brand_lexicon import BRAND_LEXICON_PATH, load_brand_map
+
+    def log(msg) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
+    conn = get_connection()
+    try:
+        generated, dropped = build(conn, only=args.only, samples=args.samples,
+                                   max_per_category=args.max_per_category, log=log)
+    finally:
+        conn.close()
+
+    for brand, cats in sorted(dropped.items()):
+        print(f"  dropped ambiguous brand {brand!r}: claimed by {cats}")
+    print(f"\n{len(generated)} brand(s) proposed (1 category each), "
+          f"{len(dropped)} dropped as ambiguous")
+
+    if args.dry_run:
+        for brand, cat in sorted(generated.items()):
+            print(f"  {brand:<22} -> {cat}")
+        print("\ndry run — categories/brand_lexicon.json not written")
+        return 0
+
+    existing = load_brand_map()
+    merged, added, conflicts = merge_brand_maps(existing, generated,
+                                                overwrite=args.overwrite)
+    save_brand_map(merged)
+    print(f"wrote {len(merged)} brands to {BRAND_LEXICON_PATH} "
+          f"(+{added} new, {conflicts} kept existing on conflict)")
+    print("use it: chilecompra-er resolve --kind item --brands [--tier2] ...")
+    return 0
+
+
+def cmd_train_tier2(args) -> int:
+    """Train the Tier-2 statistical classifier on the curated resolutions in the
+    graph (items linked to non-fallback families) and save the model."""
+    from .graphdb import get_connection
+    from .normalize import Normalizer
+    from .resolve.tier2 import TIER2_MODEL_PATH, fetch_training_rows, train
+
+    conn = get_connection()
+    try:
+        rows = fetch_training_rows(conn)
+    finally:
+        conn.close()
+    if len(rows) < args.min_rows:
+        print(f"only {len(rows)} curated-resolution rows (need >= {args.min_rows}) "
+              "— run a `resolve --kind item --persist` run with curated categories first")
+        return 1
+
+    norm = Normalizer()
+    texts = [norm(t) for t, _ in rows]
+    labels = [lab for _, lab in rows]
+    n_classes = len(set(labels))
+    print(f"training Tier-2 on {len(texts):,} examples across {n_classes} categories...")
+
+    if args.eval:
+        from sklearn.model_selection import train_test_split
+        from .resolve.tier2 import train_pipeline
+        xtr, xte, ytr, yte = train_test_split(texts, labels, test_size=0.1,
+                                              random_state=0)
+        acc = train_pipeline(xtr, ytr).score(xte, yte)
+        print(f"  held-out accuracy (10% split): {acc:.1%}")
+
+    clf = train(texts, labels, threshold=args.threshold)
+    out = args.out or TIER2_MODEL_PATH
+    clf.save(out)
+    print(f"saved Tier-2 model to {out} (threshold {args.threshold})")
+    print("use it: chilecompra-er resolve --kind item --tier2 [--brands] ...")
     return 0
 
 
@@ -201,7 +315,7 @@ def cmd_resolve(args) -> int:
         if args.resume and not args.persist:
             seeded = seed_inmemory_catalog(catalog, prod_csv)
             print(f"reseeded {seeded} existing products from {prod_csv.name}")
-        resolver = Resolver(catalog)
+        resolver = Resolver(catalog, classifier=_build_classifier(args))
 
         mode = "PERSIST (writing to graph)" if args.persist else "dry run (no writes)"
         print(f"mode: {mode}")
@@ -304,6 +418,56 @@ def cmd_resolve(args) -> int:
     return 0
 
 
+def cmd_fallback_report(args) -> int:
+    """Rank the UNSPSC fallback residue from the graph: which commodity codes
+    carry the most un-categorized items, and which head-noun families recur
+    across the residue (the categories worth registering next). Reads the
+    persisted resolution — run a `--kind item --persist` run first."""
+    from .fallback import bucket_ranking, fetch_fallback_items, residue_ranking
+    from .graphdb import get_connection
+    from .profiling import RESIDUE, write_ranking
+
+    conn = get_connection()
+    try:
+        rows = fetch_fallback_items(conn)
+    finally:
+        conn.close()
+    if not rows:
+        print("no UNSPSC fallback nodes in the graph — run a "
+              "`resolve --kind item --persist` run first")
+        return 1
+
+    total_items = len(rows)
+    total_spend = sum(float(r.get("spend_clp") or 0) for r in rows)
+    buckets = bucket_ranking(rows, min_count=args.min_count)
+    families = residue_ranking(rows, min_count=args.min_count)
+    rubric_total = sum(b.rubric_items for b in buckets)
+
+    print(f"fallback residue: {total_items:,} items across {len(buckets):,} "
+          f"UNSPSC buckets, {total_spend/1e6:,.0f}M CLP awarded")
+    print(f"  rubric-only buyer lines: {rubric_total:,} "
+          f"({rubric_total/total_items:.0%}) — genuinely uninformative, fallback is correct\n")
+
+    print(f"top {args.top} commodity codes by fallback items:")
+    print(f"  {'code':<18}{'items':>9}{'spend(M)':>11}{'rubric%':>9}  top families")
+    for b in buckets[:args.top]:
+        fams = ", ".join(f"{f}({n})" for f, n in b.top_families) or "-"
+        print(f"  {b.code:<18}{b.items:>9,}{b.spend_clp/1e6:>11,.0f}"
+              f"{b.rubric_items/b.items:>9.0%}  {fams}")
+
+    print(f"\ntop {args.top} residue head-noun families (candidate categories):")
+    print(f"  {'family':<22}{'items':>9}{'distinct':>10}{'spend(M)':>11}")
+    shown = [s for s in families if s.group != RESIDUE][:args.top]
+    for s in shown:
+        print(f"  {s.group:<22}{s.records:>9,}{s.distinct_texts:>10,}"
+              f"{s.spend_clp/1e6:>11,.0f}")
+
+    write_ranking(families, args.out)
+    print(f"\nwrote residue family ranking to {args.out} "
+          f"(feed it: chilecompra-er register --from-fallback)")
+    return 0
+
+
 def cmd_generate_schemas(args) -> int:
     from .graphdb import get_connection
     from .strawman import generate
@@ -338,9 +502,26 @@ def _register_build(args, log, register: bool) -> int:
 
     conn = get_connection()
     try:
+        # Source of the candidate ranking: either the UNSPSC fallback residue in
+        # the graph (--from-fallback: target exactly what failed to resolve) or
+        # the whole-corpus head-noun x spend profile (the default M0 scan).
+        if args.from_fallback:
+            from .fallback import fetch_fallback_items, residue_ranking
+
+            log("profiling the UNSPSC fallback residue from the graph...")
+            rows = fetch_fallback_items(conn)
+            if not rows:
+                print("no UNSPSC fallback nodes in the graph — run a "
+                      "`resolve --kind item --persist` run first")
+                return 1
+            stats = residue_ranking(rows)
+            residue_csv = Path("data/fallback_ranking.csv")  # never clobber the corpus profile cache
+            write_ranking(stats, residue_csv)
+            log(f"  {len(rows):,} residue items -> {len(stats)} head-noun "
+                f"families (ranking written to {residue_csv})")
         # Profiling the corpus is the slow phase, so the ranking is cached to a
         # file: reuse it unless it's missing or --reprofile forces a fresh scan.
-        if args.ranking.exists() and not args.reprofile:
+        elif args.ranking.exists() and not args.reprofile:
             stats = load_ranking(args.ranking)
             log(f"reusing ranking from {args.ranking} ({len(stats)} groups; "
                 "--reprofile to rebuild)")
@@ -552,7 +733,7 @@ def cmd_wipe_category(args) -> int:
 # Files under data\ that are inputs reused across runs, not throwaway output:
 # the cached spend ranking and the register preview->apply handoff. `clean`
 # keeps these unless --all.
-_DATA_KEEP = {"profiling.csv", "proposals.json"}
+_DATA_KEEP = {"profiling.csv", "proposals.json", "fallback_ranking.csv"}
 # Regenerable run artifacts `clean` removes: the resolve output triplets plus
 # loose run logs/redirects.
 _DATA_TEMP_GLOBS = ("*_resoluciones.csv", "*_productos_genericos.csv",
@@ -640,12 +821,60 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--resume", action="store_true",
                    help="continue the run recorded in <out>.checkpoint.json "
                         "(must match kind/segment/contains/persist/limit)")
+    p.add_argument("--brands", action="store_true",
+                   help="add the brand-lexicon tier (categories/brand_lexicon.json) "
+                        "after Tier-1 to catch brand-only lines")
+    p.add_argument("--tier2", action="store_true",
+                   help="add the trained Tier-2 statistical classifier after Tier-1 "
+                        "(needs a model from `train-tier2`)")
+    p.add_argument("--tier2-model", type=Path, default=None,
+                   help="Tier-2 model path (default data\\tier2_model.joblib)")
+    p.add_argument("--tier2-threshold", type=float, default=None,
+                   help="override the Tier-2 confidence threshold for this run")
     p.set_defaults(func=cmd_resolve)
+
+    p = sub.add_parser("fallback-report",
+                       help="rank the UNSPSC fallback residue (graph): commodity "
+                            "codes + candidate categories to register next")
+    p.add_argument("--top", type=int, default=20, help="rows to show per ranking (default 20)")
+    p.add_argument("--min-count", type=int, default=5,
+                   help="min distinct residue descriptions for a head-noun to count as a family")
+    p.add_argument("--out", type=Path, default=Path("data/fallback_ranking.csv"),
+                   help="residue family ranking CSV (feeds register --from-fallback)")
+    p.set_defaults(func=cmd_fallback_report)
 
     p = sub.add_parser("generate-schemas", help="LLM strawman drafts from corpus samples")
     p.add_argument("--only", default=None, help="single category_id")
     p.add_argument("--samples", type=int, default=50)
     p.set_defaults(func=cmd_generate_schemas)
+
+    p = sub.add_parser("build-brand-lexicon",
+                       help="LLM-propose brand/trade-name tokens per category and "
+                            "merge them into categories/brand_lexicon.json")
+    p.add_argument("--only", default=None, help="single category_id")
+    p.add_argument("--samples", type=int, default=50,
+                   help="corpus descriptions sampled per category (default 50)")
+    p.add_argument("--max-per-category", type=int, default=15,
+                   help="cap on brand proposals considered per category (default 15)")
+    p.add_argument("--overwrite", action="store_true",
+                   help="replace the lexicon with the generated brands (default: "
+                        "merge, keeping existing curated entries on conflict)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print proposed brands without writing the file")
+    p.set_defaults(func=cmd_build_brand_lexicon)
+
+    p = sub.add_parser("train-tier2",
+                       help="train the Tier-2 statistical classifier from the "
+                            "curated resolutions in the graph")
+    p.add_argument("--threshold", type=float, default=0.60,
+                   help="confidence below which Tier-2 abstains (default 0.60)")
+    p.add_argument("--min-rows", type=int, default=500,
+                   help="minimum curated training rows required (default 500)")
+    p.add_argument("--eval", action="store_true",
+                   help="also report held-out accuracy on a 10%% split")
+    p.add_argument("--out", type=Path, default=None,
+                   help="model output path (default data\\tier2_model.joblib)")
+    p.set_defaults(func=cmd_train_tier2)
 
     p = sub.add_parser("register", help="profile the spend ranking, vet families, and register them + draft schemas (all viable families by default)")
     mode = p.add_mutually_exclusive_group()
@@ -664,6 +893,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "profiling the corpus (default data\\profiling.csv)")
     p.add_argument("--reprofile", action="store_true",
                    help="force a fresh corpus profile, overwriting --ranking")
+    p.add_argument("--from-fallback", action="store_true",
+                   help="rank candidates from the UNSPSC fallback residue in the "
+                        "graph (target what failed to resolve) instead of the "
+                        "whole-corpus profile; needs a prior --persist item run")
     p.add_argument("--segment", type=int, default=42,
                    help="UNSPSC segment scope when profiling (default 42 = medical supplies)")
     p.add_argument("--all-segments", action="store_true",
