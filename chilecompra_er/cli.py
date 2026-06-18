@@ -544,7 +544,7 @@ def cmd_pipeline(args) -> int:
         if rc != 0:
             print(f"\nstep {step!r} failed (rc={rc}) — pipeline halted. "
                   f"Fix the cause then `chilecompra-er pipeline --resume`, or skip "
-                  f"it with `--from <next-step>`.", file=sys.stderr)
+                  f"it with `--from-step <next-step>`.", file=sys.stderr)
             return rc
         # Mark done + persist immediately so an interrupt after this point
         # never re-runs a completed step.
@@ -810,7 +810,7 @@ def cmd_price_series(args) -> int:
         conn.close()
     if not rows:
         print(f"no price observations for '{args.category_id}' — is the "
-              "category persisted? (resolve --contains ... --persist)")
+              "category persisted? (resolve --kind item --persist binds offer prices)")
         return 1
     out = args.csv or Path(f"data/price_series_{args.category_id}.csv")
     write_series_csv(rows, out)

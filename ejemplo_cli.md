@@ -97,7 +97,9 @@ cross-tender price comparison possible), and coarser nodes parent finer ones via
 ### How one line resolves
 
 `resolve` runs each description through an ordered, **fully deterministic**
-pipeline:
+pipeline. These six steps are the **per-text core every `--kind` shares**; the
+item-centric mode below wraps step 2 with its buyer → offer-consensus → title
+priority and then runs steps 3–6 once for the chosen text:
 
 1. **Normalize** — lowercase, strip accents, split digit/letter runs, expand a
    versioned abbreviation table. ("SONDA FOLEY 2VÍAS" → "sonda foley 2 vias").
@@ -108,15 +110,18 @@ pipeline:
    descriptive values (`calibre=16fr`, `material=latex`). The schema is loaded
    from its frozen file in git (see §3 Step 1); out-of-domain values are dropped
    and counted (the "illegal values" metric).
-4. **Infer price basis** — per-unit vs per-pack, cross-checked against
-   total ≈ quantity × unit price.
+4. **Infer price basis** — `per_pack` when the text carries pack evidence,
+   otherwise `unknown`; the arithmetic cross-check (total ≈ quantity × unit
+   price) can additionally confirm a `per_base_unit` price. Unknown is reported,
+   never assumed.
 5. **Find or create the generic product** — the node whose *present identity
    values* exactly match (same values, same absences). A line with no extracted
    identity attributes anchors honestly on the **category root** (specificity 0);
    more-specific nodes hang under coarser ones via `PARENT_OF` (strict-subset
    hierarchy), so "Foley" parents "Foley 16Fr".
 6. **Persist** — upsert the `SourceRecord` and a **versioned** `RESOLVED_TO` edge
-   (re-resolving adds a version, never overwrites).
+   (re-resolving adds a new version and retires the prior one — history is kept,
+   see §7).
 
 ### The item-centric model (`--kind item`) — the recommended way
 
@@ -192,11 +197,11 @@ what the step before it produced.
 | Step | Command | Reads (its input) | LLM? | Writes | Result |
 |---|---|---|---|---|---|
 | 0 | `instance start` + `migrate` | — | no | graph constraints/indexes | Neo4j up; IP refreshed |
-| 1 | `register` **(1st run)** | the **raw source corpus** | **yes** | `register.json` + schema files (git) | families defined from scratch |
+| 1 | `register` **(1st run)** | the **raw source corpus** | **yes** | `register.json` + schema files (git); `profiling.csv` cache | families defined from scratch |
 | 2 | `resolve … ` *(dry run)* | source items **+ the register** | no | nothing | preview the curated/fallback split |
 | 3 | `resolve … --persist` | source items **+ the register** | no | **the catalog** (graph) | items linked; **fallback residue created** |
 | 4 | `fallback-report` | the **fallback residue** (graph) | no | `fallback_ranking.csv` | residue ranked |
-| 5 | `register --from-fallback` **(2nd run)** | the **fallback residue ranking** | **yes** | `register.json` + schema files (git) | **more** families defined |
+| 5 | `register --from-fallback` **(2nd run)** | the **fallback residue** (graph) | **yes** | `register.json` + schema files (git); `fallback_ranking.csv` | **more** families defined |
 | 5a | `train-tier2` *(optional)* | curated resolutions (graph) | no *(scikit-learn)* | `tier2_model.joblib` | wording classifier |
 | 5b | `build-brand-lexicon` *(optional)* | corpus samples per family | **yes** | `brand_lexicon.json` | brand tokens |
 | 6 | `resolve … --tier2 --brands --persist` **(2nd run)** | source items **+ the now-richer register** (+ model + lexicon) | no | **the catalog** (re-linked) | **lower fallback %** |
@@ -252,8 +257,10 @@ products and surfacing the recurring head-noun **families** in the tail.
 
 **Step 5 — `register --from-fallback` (2nd run): curate the tail.** The *same*
 `register` machinery as Step 1, but candidates come from the **graph residue**
-(Step 4's ranking) instead of the whole-corpus profile — so the LLM vets exactly
-the families that failed to resolve. Adds **more** families + schemas to git.
+instead of the whole-corpus profile — so the LLM vets exactly the families that
+failed to resolve. It re-queries the fallback nodes from the graph itself (and
+rewrites `fallback_ranking.csv`), so Step 4 is a useful preview but not a strict
+prerequisite. Adds **more** families + schemas to git.
 
 **Steps 5a / 5b — close the phrasing & brand gaps (optional).** Some residue
 isn't a *missing family* — it's a known family phrased so regex misses it, or a
@@ -288,7 +295,7 @@ chilecompra-er resolve --kind item --segment 42 --persist                       
 
 # Phase 2 — shrink the fallback residue (repeat this block)
 chilecompra-er fallback-report --top 20         # 4. rank the residue
-chilecompra-er register --from-fallback --apply # 5. register (2nd run): curate the residue
+chilecompra-er register --from-fallback         # 5. register (2nd run): curate the residue
 chilecompra-er train-tier2 --eval               # 5a. (opt) statistical tier
 chilecompra-er build-brand-lexicon              # 5b. (opt) LLM: brand tokens
 chilecompra-er resolve --kind item --segment 42 --tier2 --brands --persist   # 6. resolve (2nd run): re-link
@@ -318,22 +325,25 @@ chilecompra-er instance stop
 
 ### Run the whole sequence as one resumable command
 
-Everything above — Steps 0 through 6, one full Phase-2 pass — is automated by a
-single orchestrator:
+Everything above is automated by a single orchestrator. It runs Steps 0, 1, and
+3–6 in order (one full Phase-2 pass) — going straight to the persisting build and
+**skipping the Step 2 dry-run preview**, so use the manual sequence above first
+when you want that quality gate:
 
 ```powershell
 chilecompra-er pipeline --segment 42      # run the whole build end-to-end
 chilecompra-er pipeline --resume          # continue after an interruption
 ```
 
-It runs the steps in order and records each completed step in
-`data\pipeline.checkpoint.json`. If any step is interrupted — a kill, a crash, a
-dropped Neo4j connection — re-run with `--resume`: completed steps are skipped
-and the run picks up at the interrupted one. The two long `resolve` steps *also*
-resume **within** themselves (their own per-run checkpoints), so a kill
-mid-resolve continues from the exact record — no work lost, no rows duplicated.
-After it completes, keep iterating manually with the ↺ loop (Steps 4 → 6) until
-the fallback share stops shrinking. See §4.2 for every flag.
+It runs them as ordered **stages**, recording each completed stage in
+`data\pipeline.checkpoint.json`. If a stage is interrupted — a kill, a crash, a
+dropped Neo4j connection — re-run with `--resume`: completed stages are skipped
+and the run picks up at the interrupted one. The two long `resolve` stages
+(`build` and `final-resolve`) *also* resume **within** themselves (their own
+per-run checkpoints), so a kill mid-resolve continues from the exact record —
+no work lost, no rows duplicated. After it completes, keep iterating manually
+with the ↺ loop (Steps 4 → 6) until the fallback share stops shrinking. See §4.2
+for the nine stages and every flag.
 
 ---
 
@@ -366,34 +376,58 @@ prints pending Cypher without running it.
 
 ### 4.2 `pipeline` — run the whole build end-to-end (resumable)
 
-Orchestrates the entire §3 sequence as one ordered, checkpointed command:
-**instance → migrate → register → resolve (build) → fallback-report → register
-`--from-fallback` → train-tier2 → build-brand-lexicon → resolve (`--tier2
---brands`)**. Each step reuses the corresponding command; completed steps are
-recorded in `data\pipeline.checkpoint.json`.
+Orchestrates the entire §3 sequence as one ordered, checkpointed command. The
+nine stages run in this order — the **bold token** is the exact name you pass to
+`--from-step` / `--only`:
+
+1. **`instance`** — boot Neo4j (`instance start`)
+2. **`migrate`** — apply constraints + indexes
+3. **`register`** — invent families from the raw corpus (1st `register` run)
+4. **`build`** — `resolve --kind item --persist` (the catalog build)
+5. **`fallback-report`** — rank the fallback residue
+6. **`register-fallback`** — `register --from-fallback` (curate the residue)
+7. **`train-tier2`** — train the Tier-2 classifier
+8. **`build-brand-lexicon`** — LLM brand tokens
+9. **`final-resolve`** — `resolve --kind item --persist --tier2 --brands` (re-link)
+
+Each stage reuses the corresponding command; completed stages are recorded in
+`data\pipeline.checkpoint.json`.
 
 ```powershell
-chilecompra-er pipeline --segment 42        # fresh full run (one Phase-2 pass)
-chilecompra-er pipeline --resume            # continue at the interrupted step
-chilecompra-er pipeline --restart           # discard the checkpoint and start over
-chilecompra-er pipeline --from-step build   # force-run a step + everything after it
-chilecompra-er pipeline --only train-tier2  # run a single step
+chilecompra-er pipeline --segment 42                 # fresh full run (one Phase-2 pass)
+chilecompra-er pipeline --resume                     # continue at the interrupted stage
+chilecompra-er pipeline --restart                    # discard the checkpoint and start over
+chilecompra-er pipeline --from-step register-fallback  # resume at a CHOSEN stage + run the rest
+chilecompra-er pipeline --only train-tier2           # run a single stage in isolation
 ```
 
-Two layers of resume: **step level** (skip completed steps) and **within a step**
-(the two `resolve` steps continue from their own per-run checkpoints, §4.4). A
-step's non-zero exit halts the run with the prior steps still marked done — fix
-the cause and `--resume`, or `--from-step <next>` to skip past a benign failure.
+**Resuming from any stage — the two ways.**
+- **Automatic** (`--resume`): re-run after any interruption (a kill, a crash, a
+  dropped Neo4j connection) and the pipeline skips every stage already marked
+  done in the checkpoint and picks up at the one that was interrupted. This is
+  the normal recovery path — you don't need to know which stage stopped.
+- **Manual** (`--from-step <stage>`): force the run to begin at *any* stage you
+  name (from the list above) and continue through the end, **ignoring** the done
+  list. Use it to redo a stage you've changed your mind about, or to step over a
+  stage that keeps failing for a reason you've decided to accept. `--only
+  <stage>` runs exactly one stage and stops.
+
+Two layers of resume compose: **stage level** (the above) and **within a stage**
+(the `build` and `final-resolve` stages continue from their *own* per-run
+checkpoints, §4.4) — so a kill in the middle of the multi-hour `build` resumes
+from the exact record, not the top of the stage. A stage's non-zero exit halts
+the run with the prior stages still marked done — fix the cause and `--resume`,
+or `--from-step <next-stage>` to skip past it.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--resume` | off | Continue `data\pipeline.checkpoint.json`, skipping completed steps. |
-| `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints; start at step 0. |
-| `--from-step <step>` | none | Force-run this step and everything after it (ignores the done list). |
-| `--only <step>` | none | Run just this one step. |
+| `--resume` | off | Continue `data\pipeline.checkpoint.json`, skipping completed stages. |
+| `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints; start from the first stage. |
+| `--from-step <stage>` | none | Force-run this stage and everything after it (ignores the done list). |
+| `--only <stage>` | none | Run just this one stage. |
 | `--segment <n>` | `42` | UNSPSC segment scope for `register` + `resolve`. |
 | `--all-segments` | off | Run over the WHOLE marketplace (overrides `--segment`). |
-| `--limit <n>` | all | Cap records per resolve step; `all`/`0` = no cap. |
+| `--limit <n>` | all | Cap records per resolve stage; `all`/`0` = no cap. |
 | `--progress-every <n>` | `200` | Resolve progress/checkpoint cadence. |
 | `--data-dir <path>` | `data\` | Directory for the checkpoint + resolve outputs. |
 
@@ -503,14 +537,21 @@ Sample `--kind item` summary:
 mode: dry run (no writes)
 records processed : 5000
 items linked      : 5000 (100.0%)  = curated 1809 + UNSPSC-fallback 3191
+by status         : {'resolved_generic': 5000}
+unresolved reasons: {}
 by category       : {'agujas': 138, 'canulas': 85, ... 'unspsc_42151602': 246, ...}
 price basis mix   : {'unknown': 1730, 'per_pack': 79}
+resolved w/o attrs: 412 (anchored on category roots — honest partials, no product info)
 offers bound      : 75 (as :Product variants under their item's node)
 nodes created     : 847
 illegal values    : 452 (dropped, counted — schema dry-run metric)
-written: data\check_resoluciones.csv / data\check_productos_genericos.csv
+written: data\check_resoluciones.csv
+written: data\check_productos_genericos.csv
 checkpoint: data\check.checkpoint.json
 ```
+
+(With `--fallback unspsc`, every item links, so `unresolved reasons` is empty and
+`by status` is all `resolved_generic`; `--fallback none` is where those fill in.)
 
 > **Resumable long runs:** a killed `--persist` run leaves a checkpoint; re-run
 > the *identical* command with `--resume`. The resolutions CSV is trimmed to the
@@ -549,7 +590,8 @@ category was `resolve --kind item --persist`ed (offers carry the prices).
 ```
 11 price observations across 7 generic products -> data\price_series_sondas_foley.csv
 products with the deepest price history:
-  gp_ffaf1899ba78  n=4  median=7,480 CLP  range=[330 .. 21,510]   {"calibre": "16fr", "material": "latex"}
+  gp_ffaf1899ba78  n=  4  median=       7,480 CLP  range=[330 .. 21,510]
+    {"calibre": "16fr", "material": "latex"}
 ```
 
 (Wide ranges usually reflect price-**basis** mixing — unit vs box — which
@@ -558,10 +600,11 @@ normalization will address; unknown basis is reported, never assumed.)
 ### 4.7 Housekeeping & diagnostics
 
 **`clean [--all] [--dry-run] [--dir <path>]`** — delete **regenerable** `data\`
-artifacts (resolve output triplets, `price_series_*`, loose `*.log`/`*.out`).
-Keeps the cached ranking (`profiling.csv`) and proposals handoff
-(`proposals.json`) unless `--all`. Never touches the graph (that's
-`wipe-catalog`).
+artifacts (resolve output triplets incl. `pipeline.checkpoint.json`,
+`price_series_*`, loose `*.log`/`*.out`). Keeps the cached inputs
+`profiling.csv`, `proposals.json`, and `fallback_ranking.csv` unless `--all`.
+Does **not** remove `tier2_model.joblib` (regenerate it with `train-tier2`).
+Never touches the graph (that's `wipe-catalog`).
 
 | Command | What it does |
 |---|---|
@@ -587,17 +630,21 @@ Outputs are split by **lifecycle**:
   `schemas\*.json` (one attribute schema per category). This is the real
   deliverable — code-reviewed, diffed in PRs, asserted by tests — so `register`
   writes it here, **not** to `data\`.
-- **`data\` is gitignored scratch** — reproducible byproducts, safe to `clean`:
-  `profiling.csv` (cached ranking), `proposals.json` (preview→apply handoff),
-  `<prefix>_resoluciones.csv` (every record + its resolution),
-  `<prefix>_productos_genericos.csv` (the generic-product nodes),
-  `<prefix>.checkpoint.json` (per-run resolve resume marker),
-  `pipeline.checkpoint.json` (step-level `pipeline` resume marker),
-  `fallback_ranking.csv`, `tier2_model.joblib`, `price_series_<cat>.csv`.
+- **`data\` is gitignored scratch** — all reproducible. Two sub-groups:
+  - *Cached inputs `clean` keeps* (removed only with `--all`): `profiling.csv`
+    (spend ranking), `proposals.json` (preview→apply handoff),
+    `fallback_ranking.csv` (residue ranking).
+  - *Run outputs `clean` always removes*: `<prefix>_resoluciones.csv` (every
+    record + its resolution), `<prefix>_productos_genericos.csv` (the
+    generic-product nodes, dry runs only), `<prefix>.checkpoint.json` (per-run
+    resolve resume marker), `pipeline.checkpoint.json` (stage-level `pipeline`
+    resume marker), `price_series_<cat>.csv`.
+  - `tier2_model.joblib` (the trained classifier) also lives here but `clean`
+    leaves it — regenerate it with `train-tier2`.
 - **The populated catalog lives in Neo4j**, written only by `resolve --persist`:
   `Category` / `GenericProduct` / `Product` / `SourceRecord` nodes and
-  `RESOLVED_TO` / `VARIANT_OF` / `PARENT_OF` edges. `register` never touches the
-  graph.
+  `IN_CATEGORY` / `RESOLVED_TO` / `VARIANT_OF` / `PARENT_OF` edges. `register`
+  never touches the graph.
 
 ---
 
@@ -628,7 +675,7 @@ Outputs are split by **lifecycle**:
 | A `--segment` run scans forever | The UNSPSC index is missing — run `migrate`. |
 | `price-series` prints "no price observations" | That category isn't persisted yet, or was resolved with a kind other than `item` (only `--kind item --persist` binds `:Product` prices). |
 | `resolve --resume` refuses | The invocation must match the checkpoint (kind/segment/contains/persist/limit). |
-| `data\` filling up | `chilecompra-er clean` (keeps the cached ranking + proposals). |
+| `data\` filling up | `chilecompra-er clean` (keeps the cached rankings + proposals; `--all` removes those too). |
 
 ---
 
@@ -643,8 +690,9 @@ Outputs are split by **lifecycle**:
   values** (same values, same absences), embedded in `identity_key` — the
   uniqueness key that dedups a product across tenders. `PARENT_OF` builds the
   coarse→specific hierarchy by strict-subset subsumption.
-- `RESOLVED_TO` edges are **versioned** — re-resolving adds a new version rather
-  than overwriting, so resolution history is auditable.
+- `RESOLVED_TO` edges are **versioned** — re-resolving adds a new version and
+  retires the prior one (sets `current=false`) rather than deleting it, so the
+  resolution history stays auditable.
 - Known follow-ups: `:Product` cross-offer brand dedup (currently one Product per
   offer), price-**basis** normalization (unit vs box), and registering the
   largest UNSPSC-fallback buckets as curated families.
