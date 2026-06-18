@@ -64,17 +64,35 @@ number (segment 42 = medical/lab supplies).
 | `Product` | A brand-level variant — **one per offer** — carrying the offer's price. Linked `VARIANT_OF` a GenericProduct. |
 | `SourceRecord` | A thin reference back to a source line/offer, with a versioned `RESOLVED_TO` edge to its catalog node. |
 
-The shape:
+The shape — two graphs (the read-only **source** and the **catalog** the
+resolver builds), bridged by the nodes `resolve` creates: one `SourceRecord`
+per item, one `Product` per offer. `GenericProduct` is the hub everything
+converges on.
 
 ```
-Category ──┐
-           ▼
-ItemLicitacion ─resolves to→ GenericProduct      (shared, deduped by attributes)
-                  ▲                  ▲
-   SourceRecord ──┘ RESOLVED_TO      │ VARIANT_OF
-                                     │
-          Oferta ─bound as→ Product ─┘            (one per offer = a price point)
+  SOURCE GRAPH (read-only input)            CATALOG (written by `resolve`)
+  ──────────────────────────────           ───────────────────────────────
+
+   Licitacion
+      │ :TIENE_ITEM
+      ▼
+   ItemLicitacion  ┄┄1 per item┄┄▶  SourceRecord ──:RESOLVED_TO──┐  (versioned)
+      ▲  buyer text + UNSPSC                                      │
+      │ :PARA_ITEM                                                ▼
+   Oferta  ┄┄┄┄┄┄1 per offer┄┄┄▶  Product ──:VARIANT_OF──▶  GenericProduct ──:IN_CATEGORY──▶ Category
+      supplier text + price                                  │   ▲   shared node, deduped
+                                                             └───┘   by identity attributes
+                                                          :PARENT_OF  (coarse → fine hierarchy)
+
+  ──▶  stored edge        ┄┄▶  created by the resolver (a node, not a stored edge)
 ```
+
+Read it as: each `ItemLicitacion` becomes one `SourceRecord` that `RESOLVED_TO`
+a `GenericProduct`; each `Oferta` on that item becomes one `Product` that is
+`VARIANT_OF` the **same** `GenericProduct` — so every offer on an item shares
+one canonical node (the intra-item invariant). Identical products across
+different tenders collapse onto the same `GenericProduct`, and coarser nodes
+parent finer ones via `:PARENT_OF`.
 
 ### How a description becomes a catalog node
 
@@ -147,8 +165,10 @@ python -m venv .venv
 Before running graph/LLM commands:
 
 - **Neo4j up** — `chilecompra-er instance start` boots the EC2 box and prints
-  the new bolt IP. The public IP **changes on every start**; update `.mcp.json`
-  if you use the Neo4j MCP server.
+  the new bolt IP. The public IP **changes on every start**, but `instance
+  start` rewrites `.mcp.json` to it automatically. (A bolt *timeout* right after
+  a clean start usually means the `neo4j-sg` security group doesn't allow your
+  current client IP — not that Neo4j is down.)
 - **LLM auth** (only for `register` / `generate-schemas`, which call Claude) —
   run `ant auth login` once. Calls go through the Claude Max subscription.
 - Run **`chilecompra-er status`** any time for a register + instance + graph
@@ -198,7 +218,10 @@ register  →  resolve  →  price-series
  + schemas)     catalog)         :Product offers)
 ```
 
-A fresh `register` run is the prerequisite for resolving any new family.
+A fresh `register` run is the prerequisite for resolving any new family. To cut
+the items that land on UNSPSC fallback after resolving, see §5.4 (`fallback-report`
+→ `register --from-fallback` and/or `train-tier2` / `build-brand-lexicon` →
+`resolve --kind item --tier2 --brands`).
 
 ---
 
@@ -273,6 +296,7 @@ Two opt-out flags split the run when you want a human review gap
 | `--proposals <path>` | `data\proposals.json` | Proposals file — written by every run, read back by `--apply`. |
 | `--ranking <path>` | `data\profiling.csv` | Cached spend ranking. Reused if present (skips the slow corpus scan); rebuilt otherwise. |
 | `--reprofile` | off | Force a fresh corpus profile, overwriting `--ranking`. |
+| `--from-fallback` | off | Rank candidates from the UNSPSC fallback residue in the graph (target what failed to resolve) instead of the whole-corpus profile; needs a prior `--persist` item run. See §5.4. |
 | `--segment <n>` | `42` | UNSPSC segment scope when profiling (42 = medical supplies). |
 | `--all-segments` | off | Profile the WHOLE marketplace (overrides `--segment`). |
 | `--limit <n>` | all | Profile only the first N tender items — for fast dev runs. |
@@ -370,6 +394,10 @@ chilecompra-er resolve --kind tender --segment 42 --limit 5000 --show 10 --out d
 | `--out <prefix>` | `data\resolve` | Output prefix (see Outputs). |
 | `--progress-every <n>` | `200` | Emit a progress line every N records (durable checkpoint every ~20k). |
 | `--resume` | off | Continue the run in `<out>.checkpoint.json` (invocation must match kind/segment/contains/persist/limit). |
+| `--brands` | off | Add the brand-lexicon tier (`categories\brand_lexicon.json`) after Tier-1 — catches brand-only lines. See §5.4. |
+| `--tier2` | off | Add the trained Tier-2 statistical classifier after Tier-1 (needs `train-tier2`). See §5.4. |
+| `--tier2-model <path>` | `data\tier2_model.joblib` | Tier-2 model file to load when `--tier2` is set. |
+| `--tier2-threshold <f>` | model default (`0.6`) | Override the Tier-2 confidence threshold for this run. |
 
 **The `--kind` values:**
 
@@ -409,7 +437,65 @@ checkpoint: data\check.checkpoint.json
 
 ---
 
-### 5.4 Analyze
+### 5.4 Improve coverage (cut UNSPSC fallback)
+
+A `--kind item` run links ~100% of items, but the ones no curated family matched
+land on coarse `unspsc_<code>` fallback buckets. These commands turn that residue
+into a backlog and add coverage. The loop:
+
+```
+resolve --kind item --persist  →  fallback-report  →  register --from-fallback
+                                                   ↘  build-brand-lexicon / train-tier2
+                                   →  resolve --kind item --tier2 --brands
+```
+
+#### `fallback-report [--top 20] [--min-count 5] [--out <path>]`
+Reads the UNSPSC fallback nodes from the graph and ranks them: the commodity
+codes carrying the most fallback *items* (with awarded spend and the rubric-only
+share), and the head-noun **families** recurring across the residue — the
+categories worth registering next. Writes the family ranking to
+`data\fallback_ranking.csv`. Needs a prior `resolve --kind item --persist`.
+
+```powershell
+chilecompra-er fallback-report --top 20
+chilecompra-er register --from-fallback --preview    # vet the residue families
+chilecompra-er register --from-fallback --apply      # ...and commit them
+```
+
+#### `build-brand-lexicon [--only <id>] [--samples 50] [--max-per-category 15] [--overwrite] [--dry-run]`
+For each curated category, samples the corpus and asks the LLM for brand /
+trade-name tokens (`relyx`, `panamax`) — the ones no head-noun regex can match.
+Each proposal is validated (single normalized token, present in real samples,
+not generic filler, not already regex-covered) and cross-category collisions are
+dropped, then survivors merge into `categories\brand_lexicon.json` (existing
+curated entries win on conflict; `--overwrite` replaces). `--dry-run` prints
+without writing.
+
+```powershell
+chilecompra-er build-brand-lexicon --only suturas --dry-run
+chilecompra-er build-brand-lexicon                   # all categories
+```
+
+#### `train-tier2 [--threshold 0.6] [--min-rows 500] [--eval] [--out <path>]`
+Trains the Tier-2 statistical classifier (TF-IDF word+char n-grams + logistic
+regression) on the curated resolutions already in the graph, saving the model to
+`data\tier2_model.joblib`. It generalizes to wording the Tier-1 regex misses and
+abstains below `--threshold`, so it only ever adds coverage. `--eval` reports
+held-out accuracy on a 10% split.
+
+```powershell
+chilecompra-er train-tier2 --eval
+```
+
+**Using the extra tiers.** Pass `--brands` / `--tier2` on a resolve run (§5.3):
+the classifier becomes **Tier-1 regex → brand lexicon → Tier-2**, each only
+turning an otherwise-unresolved item into a curated match (Tier-1 `CLASSIFIED`
+or `AMBIGUOUS` always wins). Re-run `resolve --kind item --tier2 --brands` and
+compare the curated-vs-fallback split in the summary.
+
+---
+
+### 5.5 Analyze
 
 #### `price-series <category_id> [--csv <path>]`
 Per-product price history for a **persisted** category, read from the awarded
@@ -434,7 +520,7 @@ normalization will address; unknown basis is reported, never assumed.)
 
 ---
 
-### 5.5 Housekeeping
+### 5.6 Housekeeping
 
 #### `clean [--all] [--dry-run] [--dir <path>]`
 Delete **regenerable** run artifacts from `data\` — the resolve output triplets
@@ -451,7 +537,7 @@ chilecompra-er clean --all       # also remove profiling.csv + proposals.json
 
 ---
 
-### 5.6 Diagnostics
+### 5.7 Diagnostics
 
 | Command | What it does |
 |---|---|
@@ -461,7 +547,7 @@ chilecompra-er clean --all       # also remove profiling.csv + proposals.json
 
 ---
 
-### 5.7 Destructive (gated by `--yes`)
+### 5.8 Destructive (gated by `--yes`)
 
 | Command | What it does |
 |---|---|
@@ -520,12 +606,12 @@ Outputs are split by **lifecycle**, deliberately not all in one place:
 
 | Symptom | Cause / fix |
 |---|---|
-| `graph: unreachable` in `status` | Neo4j is stopped or the IP changed. `instance start`, then update `.mcp.json`. |
+| `graph: unreachable` in `status` | Neo4j is stopped (`instance start` — it also rewrites `.mcp.json`). If it's *running* but bolt **times out**, the `neo4j-sg` security group doesn't allow your current client IP — add it. |
+| Lots of `unspsc_*` categories after `resolve` | Expected — UNSPSC fallback buckets for items with no curated family. Run `fallback-report` to rank them, then `register --from-fallback` / `train-tier2` / `build-brand-lexicon` to convert coarse coverage into rich coverage (§5.4). |
 | `register` / `generate-schemas` errors about auth | Run `ant auth login` once (Claude Max). |
 | A `--segment` run scans forever | The UNSPSC index is missing — run `migrate`. |
 | `price-series` prints "no price observations" | That category isn't persisted yet, or it was resolved with a kind other than `item` (only `--kind item --persist` binds the `:Product` price points). |
 | `resolve --resume` refuses | The invocation must match the checkpoint (kind/segment/contains/persist/limit). Re-run with the same flags. |
-| Lots of `unspsc_*` categories after `resolve` | Expected — those are UNSPSC fallback buckets for items with no curated family. Register the biggest ones to convert coarse coverage into rich, attribute-typed coverage. |
 | `data\` filling up with run files | `chilecompra-er clean` (keeps the cached ranking + proposals). |
 
 ---
