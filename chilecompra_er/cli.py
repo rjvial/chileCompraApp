@@ -1,6 +1,8 @@
 """Command-line interface for the entity-resolution pipeline.
 
     chilecompra-er status                       # register + instance overview
+    chilecompra-er pipeline [--resume]          # run the whole build end-to-end,
+                                                # resumable at any interrupted step
     chilecompra-er instance start|stop|status   # Neo4j EC2 lifecycle
     chilecompra-er migrate [--dry-run]          # apply graph schema migrations
     chilecompra-er register [--segment 42] [--reprofile] [--from-fallback]  # profile, vet, register + schemas
@@ -418,6 +420,148 @@ def cmd_resolve(args) -> int:
     return 0
 
 
+def _ns(**kw):
+    import argparse
+    return argparse.Namespace(**kw)
+
+
+def cmd_pipeline(args) -> int:
+    """Run the whole end-to-end build as an ordered, step-level-resumable
+    sequence (see chilecompra_er/pipeline.py). Each step reuses the existing
+    cmd_* handler; the checkpoint records completed steps so --resume continues
+    at the interrupted one. The two resolve steps additionally resume WITHIN
+    themselves via their own per-run checkpoints (ingest/resume.py)."""
+    from .ingest.resume import checkpoint_path as sub_checkpoint_path
+    from .ingest.resume import load_checkpoint as load_sub_checkpoint
+    from .pipeline import (
+        BUILD_PREFIX_NAME,
+        FINAL_PREFIX_NAME,
+        PIPELINE_STEPS,
+        STEP_BRANDS,
+        STEP_BUILD,
+        STEP_FALLBACK_REPORT,
+        STEP_FINAL,
+        STEP_INSTANCE,
+        STEP_MIGRATE,
+        STEP_REGISTER,
+        STEP_REGISTER_FALLBACK,
+        STEP_TRAIN_TIER2,
+        PipelineCheckpoint,
+        load_pipeline_checkpoint,
+        pipeline_checkpoint_path,
+        remaining_steps,
+        save_pipeline_checkpoint,
+    )
+
+    def log(msg) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
+    data = args.data_dir
+    segment = None if args.all_segments else args.segment
+    limit = args.limit
+    cp_path = pipeline_checkpoint_path(data)
+    build_prefix = data / BUILD_PREFIX_NAME
+    final_prefix = data / FINAL_PREFIX_NAME
+
+    # --- resume / restart bookkeeping -----------------------------------------
+    if args.restart:
+        for p in (cp_path, sub_checkpoint_path(build_prefix),
+                  sub_checkpoint_path(final_prefix)):
+            if p.exists():
+                p.unlink()
+        log(f"--restart: cleared {cp_path.name} and the resolve sub-checkpoints")
+
+    cp = load_pipeline_checkpoint(cp_path)
+    if cp is not None and not (args.resume or args.restart or args.from_step or args.only):
+        print(f"a pipeline checkpoint already exists at {cp_path} "
+              f"(done: {cp.done or 'nothing yet'}).\n"
+              "  resume it:  chilecompra-er pipeline --resume\n"
+              "  start over: chilecompra-er pipeline --restart")
+        return 1
+    if cp is None:
+        cp = PipelineCheckpoint(segment=segment, limit=limit)
+    else:
+        bad = cp.mismatches(segment=segment, limit=limit)
+        if bad and not args.restart:
+            print("refusing to resume: scope differs from the checkpoint "
+                  "(would mix two builds):")
+            for m in bad:
+                print(f"  {m}")
+            print("  re-run with the same --segment/--limit, or --restart to begin anew")
+            return 1
+
+    todo = remaining_steps(cp.done, from_step=args.from_step, only=args.only)
+    if not todo:
+        print(f"pipeline already complete ({len(cp.done)} steps done) — nothing to do")
+        return 0
+
+    # --- step implementations -------------------------------------------------
+    def run_resolve(prefix, *, brands: bool, tier2: bool) -> int:
+        sub = load_sub_checkpoint(sub_checkpoint_path(prefix))
+        if sub is not None and sub.done:
+            log(f"    {prefix.name}: already complete ({sub.processed} records) "
+                "— skipping the resolve")
+            return 0
+        resume = sub is not None and not sub.done
+        if resume:
+            log(f"    {prefix.name}: continuing within-run checkpoint "
+                f"({sub.processed} records done)")
+        return cmd_resolve(_ns(
+            kind="item", contains=None, segment=segment, persist=True,
+            limit=limit, skip=0, out=prefix, show=0, fallback="unspsc",
+            progress_every=args.progress_every, resume=resume,
+            brands=brands, tier2=tier2, tier2_model=None, tier2_threshold=None))
+
+    def run_register(*, from_fallback: bool) -> int:
+        return cmd_register(_ns(
+            apply=False, preview=False, from_fallback=from_fallback,
+            proposals=data / "proposals.json", ranking=data / "profiling.csv",
+            reprofile=False, all_segments=args.all_segments, segment=args.segment,
+            limit=None, count=None, min_samples=15, min_spend=0.0005, revisit=False))
+
+    steps = {
+        STEP_INSTANCE: lambda: cmd_instance(_ns(action="start")),
+        STEP_MIGRATE: lambda: cmd_migrate(_ns(dry_run=False)),
+        STEP_REGISTER: lambda: run_register(from_fallback=False),
+        STEP_BUILD: lambda: run_resolve(build_prefix, brands=False, tier2=False),
+        STEP_FALLBACK_REPORT: lambda: cmd_fallback_report(_ns(
+            top=20, min_count=5, out=data / "fallback_ranking.csv")),
+        STEP_REGISTER_FALLBACK: lambda: run_register(from_fallback=True),
+        STEP_TRAIN_TIER2: lambda: cmd_train_tier2(_ns(
+            threshold=0.60, min_rows=500, eval=False, out=None)),
+        STEP_BRANDS: lambda: cmd_build_brand_lexicon(_ns(
+            only=None, samples=50, max_per_category=15, overwrite=False,
+            dry_run=False)),
+        STEP_FINAL: lambda: run_resolve(final_prefix, brands=True, tier2=True),
+    }
+
+    log(f"pipeline: {len(cp.done)}/{len(PIPELINE_STEPS)} steps done; "
+        f"running {len(todo)} -> {todo}")
+    for i, step in enumerate(todo, 1):
+        log(f"\n=== step {i}/{len(todo)}: {step} "
+            f"({PIPELINE_STEPS.index(step) + 1}/{len(PIPELINE_STEPS)} overall) ===")
+        rc = steps[step]()
+        if rc != 0:
+            print(f"\nstep {step!r} failed (rc={rc}) — pipeline halted. "
+                  f"Fix the cause then `chilecompra-er pipeline --resume`, or skip "
+                  f"it with `--from <next-step>`.", file=sys.stderr)
+            return rc
+        # Mark done + persist immediately so an interrupt after this point
+        # never re-runs a completed step.
+        cp.mark_done(step)
+        save_pipeline_checkpoint(cp_path, cp)
+        log(f"=== step {step!r} done (checkpoint saved) ===")
+
+    if args.only or args.from_step:
+        print(f"\nran {todo} (manual selection). Checkpoint: {cp_path}")
+    elif cp.is_complete():
+        print(f"\npipeline COMPLETE — all {len(PIPELINE_STEPS)} steps done.")
+        print(f"  build resolutions : {build_prefix}_resoluciones.csv")
+        print(f"  final resolutions : {final_prefix}_resoluciones.csv")
+        print(f"  checkpoint        : {cp_path}")
+    return 0
+
+
 def cmd_fallback_report(args) -> int:
     """Rank the UNSPSC fallback residue from the graph: which commodity codes
     carry the most un-categorized items, and which head-noun families recur
@@ -772,6 +916,8 @@ def cmd_clean(args) -> int:
 # --- parser --------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
+    from .pipeline import PIPELINE_STEPS
+
     parser = argparse.ArgumentParser(
         prog="chilecompra-er",
         description="Entity resolution pipeline for ChileCompra medical devices.",
@@ -832,6 +978,34 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tier2-threshold", type=float, default=None,
                    help="override the Tier-2 confidence threshold for this run")
     p.set_defaults(func=cmd_resolve)
+
+    p = sub.add_parser("pipeline",
+                       help="run the whole end-to-end build (instance -> migrate "
+                            "-> register -> resolve -> fallback loop -> re-resolve) "
+                            "with step-level resume")
+    p.add_argument("--resume", action="store_true",
+                   help="continue the run in data\\pipeline.checkpoint.json, "
+                        "skipping completed steps")
+    p.add_argument("--restart", action="store_true",
+                   help="discard the pipeline checkpoint + resolve sub-checkpoints "
+                        "and start from the first step")
+    p.add_argument("--from-step", default=None, dest="from_step",
+                   choices=PIPELINE_STEPS,
+                   help="force-run this step and everything after it (ignores the "
+                        "done list — use to skip past a benign failure)")
+    p.add_argument("--only", default=None, choices=PIPELINE_STEPS,
+                   help="run just this one step")
+    p.add_argument("--segment", type=int, default=42,
+                   help="UNSPSC segment scope for register + resolve (default 42)")
+    p.add_argument("--all-segments", action="store_true",
+                   help="run over the whole marketplace (overrides --segment)")
+    p.add_argument("--limit", type=_opt_limit, default=None,
+                   help="cap records per resolve step; 'all'/0 = no cap (default all)")
+    p.add_argument("--progress-every", type=int, default=200,
+                   help="resolve progress/checkpoint cadence (default 200)")
+    p.add_argument("--data-dir", type=Path, default=Path("data"), dest="data_dir",
+                   help="directory for the checkpoint + resolve outputs (default data\\)")
+    p.set_defaults(func=cmd_pipeline)
 
     p = sub.add_parser("fallback-report",
                        help="rank the UNSPSC fallback residue (graph): commodity "
