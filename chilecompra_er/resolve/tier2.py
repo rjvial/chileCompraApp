@@ -32,24 +32,28 @@ def train_pipeline(texts: list[str], labels: list[str]):
     The vectorizers are CAPPED (max_features): uncapped, char 3-5 grams over a
     large corpus (300k+ rows) explode to millions of features, and the per-class
     coefficient matrix then blows past available RAM (one untuned run hit ~9 GB
-    and swapped for an hour). The caps bound memory and training time and reduce
-    overfit, with negligible accuracy cost since dropped grams are rare. min_df=2
-    stays (small training sets must keep a non-empty vocabulary). saga handles the
-    large sparse multi-class fit and honours max_iter as a real time bound."""
+    and swapped for an hour). The caps bound memory and per-iteration cost and
+    reduce overfit, with negligible accuracy cost since dropped grams are rare.
+    min_df=2 stays (small training sets must keep a non-empty vocabulary).
+
+    The fit is HARD-bounded for time, not just memory: saga with max_iter=200 and
+    a loose tol stops in known time even if not fully converged — fine for a
+    fallback classifier that only fires above a confidence threshold. verbose=1
+    logs per-epoch convergence so a long fit is observable, not a black box."""
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import FeatureUnion, Pipeline
 
     features = FeatureUnion([
         ("word", TfidfVectorizer(ngram_range=(1, 2), min_df=2,
-                                 max_features=50_000, sublinear_tf=True)),
+                                 max_features=30_000, sublinear_tf=True)),
         ("char", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5),
-                                 min_df=2, max_features=100_000, sublinear_tf=True)),
+                                 min_df=2, max_features=50_000, sublinear_tf=True)),
     ])
     pipe = Pipeline([
         ("features", features),
-        ("clf", LogisticRegression(max_iter=1000, C=10.0, class_weight="balanced",
-                                   solver="saga")),
+        ("clf", LogisticRegression(max_iter=200, C=10.0, class_weight="balanced",
+                                   solver="saga", tol=1e-3, verbose=1)),
     ])
     pipe.fit(texts, labels)
     return pipe

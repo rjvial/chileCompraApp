@@ -217,6 +217,16 @@ def cmd_train_tier2(args) -> int:
     norm = Normalizer()
     texts = [norm(t) for t, _ in rows]
     labels = [lab for _, lab in rows]
+    # Cap the training set: a saga fit over the full ~300k+ curated rows takes
+    # ~20 min, and 80k rows is already ample signal for a fallback classifier
+    # that only fires above a confidence threshold. Seeded for reproducibility.
+    _CAP = 80_000
+    if len(texts) > _CAP:
+        import random
+        idx = random.Random(0).sample(range(len(texts)), _CAP)
+        texts = [texts[i] for i in idx]
+        labels = [labels[i] for i in idx]
+        print(f"subsampled to {_CAP:,} training rows (from {len(rows):,})")
     n_classes = len(set(labels))
     print(f"training Tier-2 on {len(texts):,} examples across {n_classes} categories...")
 
