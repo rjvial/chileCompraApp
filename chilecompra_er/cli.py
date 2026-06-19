@@ -513,11 +513,17 @@ def cmd_pipeline(args) -> int:
             brands=brands, tier2=tier2, tier2_model=None, tier2_threshold=None))
 
     def run_register(*, from_fallback: bool) -> int:
+        # Within-step resume: a kill mid-vet leaves this checkpoint, and the next
+        # `pipeline --resume` (which re-enters the unfinished register step)
+        # continues the scan instead of re-vetting from the top.
+        ckpt = data / ("register_fallback.checkpoint.json" if from_fallback
+                       else "register.checkpoint.json")
         return cmd_register(_ns(
             apply=False, preview=False, from_fallback=from_fallback,
             proposals=data / "proposals.json", ranking=data / "profiling.csv",
             reprofile=False, all_segments=args.all_segments, segment=args.segment,
-            limit=None, count=None, min_samples=15, min_spend=0.0005, revisit=False))
+            limit=None, count=None, min_samples=15, min_spend=0.0005, revisit=False,
+            checkpoint=ckpt, resume=True))
 
     steps = {
         STEP_INSTANCE: lambda: cmd_instance(_ns(action="start")),
@@ -644,6 +650,17 @@ def _register_build(args, log, register: bool) -> int:
     from .profiling import fetch_item_spend, load_ranking, profile, write_ranking
     from .register import apply, propose, write_proposals
 
+    # Within-step resume for the (long, LLM-heavy) vet scan. The fallback scan
+    # gets its own checkpoint file so the two never collide.
+    ckpt = getattr(args, "checkpoint", None) or (
+        Path("data/register_fallback.checkpoint.json") if args.from_fallback
+        else Path("data/register.checkpoint.json"))
+    resume = getattr(args, "resume", False)
+
+    def clear_checkpoint() -> None:
+        if ckpt.exists():
+            ckpt.unlink()
+
     conn = get_connection()
     try:
         # Source of the candidate ranking: either the UNSPSC fallback residue in
@@ -683,7 +700,8 @@ def _register_build(args, log, register: bool) -> int:
         chosen, rejected = propose(conn, stats, count=count,
                                    min_samples=args.min_samples,
                                    min_spend_share=args.min_spend,
-                                   revisit=args.revisit, log=log)
+                                   revisit=args.revisit,
+                                   checkpoint_path=ckpt, resume=resume, log=log)
 
         if rejected:
             print("\nrejected by the vet:")
@@ -691,6 +709,7 @@ def _register_build(args, log, register: bool) -> int:
                 print(f"  {c.token:<22}{c.reason}")
         if not chosen:
             print("\nno viable candidates found")
+            clear_checkpoint()  # scan completed (just barren) — no resume value
             return 1
 
         print(f"\ncandidates ({len(chosen)}):")
@@ -704,12 +723,15 @@ def _register_build(args, log, register: bool) -> int:
         print(f"\nwrote {len(chosen)} candidates to {args.proposals}")
 
         if not register:
+            # Proposals are durably saved; the scan need not be resumed again.
+            clear_checkpoint()
             print("preview only (--preview) — nothing registered. Commit them with: "
                   f"chilecompra-er register --apply --proposals {args.proposals}")
             return 0
 
         log(f"registering {len(chosen)} categories + drafting schemas...")
         apply(conn, chosen, log=log)
+        clear_checkpoint()  # registered — drop the now-complete vet checkpoint
     finally:
         conn.close()
 
@@ -1086,6 +1108,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="spend-share floor; scan stops below it (0.0005 = 0.05%%)")
     p.add_argument("--revisit", action="store_true",
                    help="re-evaluate tokens previously vetted as junk")
+    p.add_argument("--resume", action="store_true",
+                   help="continue an interrupted vet scan from "
+                        "data\\register.checkpoint.json (skips groups already "
+                        "vetted; restores the categories already chosen)")
     p.set_defaults(func=cmd_register)
 
     p = sub.add_parser("add-category", help="append a category to the register")

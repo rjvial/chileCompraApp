@@ -338,10 +338,12 @@ chilecompra-er pipeline --resume          # continue after an interruption
 It runs them as ordered **stages**, recording each completed stage in
 `data\pipeline.checkpoint.json`. If a stage is interrupted — a kill, a crash, a
 dropped Neo4j connection — re-run with `--resume`: completed stages are skipped
-and the run picks up at the interrupted one. The two long `resolve` stages
-(`build` and `final-resolve`) *also* resume **within** themselves (their own
-per-run checkpoints), so a kill mid-resolve continues from the exact record —
-no work lost, no rows duplicated. After it completes, keep iterating manually
+and the run picks up at the interrupted one. The four long LLM/resolve stages —
+`register`, `register-fallback`, `build`, and `final-resolve` — *also* resume
+**within** themselves (their own per-run checkpoints): a kill mid-`build`
+continues from the exact record, and a kill mid-`register` continues from the
+next un-vetted batch — no LLM work re-paid, no rows duplicated. After it
+completes, keep iterating manually
 with the ↺ loop (Steps 4 → 6) until the fallback share stops shrinking. See §4.2
 for the nine stages and every flag.
 
@@ -413,11 +415,13 @@ chilecompra-er pipeline --only train-tier2           # run a single stage in iso
   <stage>` runs exactly one stage and stops.
 
 Two layers of resume compose: **stage level** (the above) and **within a stage**
-(the `build` and `final-resolve` stages continue from their *own* per-run
-checkpoints, §4.4) — so a kill in the middle of the multi-hour `build` resumes
-from the exact record, not the top of the stage. A stage's non-zero exit halts
-the run with the prior stages still marked done — fix the cause and `--resume`,
-or `--from-step <next-stage>` to skip past it.
+— the `register`, `register-fallback` (§4.3), `build`, and `final-resolve`
+(§4.4) stages each continue from their *own* per-run checkpoint. So a kill in the
+middle of the multi-hour `build` resumes from the exact record, and a kill partway
+through the long `register` vet scan resumes at the next un-vetted batch — not the
+top of the stage. A stage's non-zero exit halts the run with the prior stages
+still marked done — fix the cause and `--resume`, or `--from-step <next-stage>`
+to skip past it.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -450,6 +454,7 @@ chilecompra-er register --segment 42 --count 10      # ...or cap at the top 10
 chilecompra-er register --segment 42 --preview       # stop at data\proposals.json for review
 chilecompra-er register --apply                      # ...then commit the edited file
 chilecompra-er register --from-fallback --preview    # candidates from the graph residue (§3 Phase 2)
+chilecompra-er register --segment 42 --resume        # continue an interrupted vet scan
 ```
 
 `--preview` and `--apply` are mutually exclusive opt-outs that split the run at a
@@ -472,10 +477,20 @@ re-profiling.
 | `--min-samples <n>` | `15` | Minimum distinct corpus descriptions a candidate must have. |
 | `--min-spend <f>` | `0.0005` | Spend-share floor; the scan stops below it (0.05%). With no `--count`, this is the real stop — lower it to reach deeper into the tail. |
 | `--revisit` | off | Re-evaluate tokens previously cached as junk (`categories\vet_rejections.json`). |
+| `--resume` | off | Continue an interrupted vet scan from `data\register.checkpoint.json` — restores the families already chosen and skips the groups already vetted (`--from-fallback` uses `register_fallback.checkpoint.json`). |
 
 > The first run does the slow full-corpus scan and caches the ranking. Re-running
 > to tune `--count`/`--min-spend` reuses the cache; add `--reprofile` only when
 > the underlying data changed.
+
+> **Resumable vet scan.** A full-segment scan vets thousands of head-noun groups
+> through the LLM over many minutes. The chosen families + scan cursor are
+> checkpointed after **every batch**, so a kill loses at most the in-flight
+> batch: re-run with `--resume` to continue where it stopped (the `pipeline`
+> `register` / `register-fallback` stages do this automatically). The checkpoint
+> is cleared once the proposals are written, and a `--resume` whose scope
+> (`--segment`/`--count`/floors) differs from the checkpoint starts fresh rather
+> than splicing two scans.
 
 **`add-category <id> --include <regex> [...]`** — manually append one known family
 (skips the LLM vet). `--include` is required & repeatable (Tier-1 inclusion regex
@@ -638,7 +653,8 @@ Outputs are split by **lifecycle**:
     record + its resolution), `<prefix>_productos_genericos.csv` (the
     generic-product nodes, dry runs only), `<prefix>.checkpoint.json` (per-run
     resolve resume marker), `pipeline.checkpoint.json` (stage-level `pipeline`
-    resume marker), `price_series_<cat>.csv`.
+    resume marker), `register.checkpoint.json` / `register_fallback.checkpoint.json`
+    (the `register` vet-scan resume markers, §4.3), `price_series_<cat>.csv`.
   - `tier2_model.joblib` (the trained classifier) also lives here but `clean`
     leaves it — regenerate it with `train-tier2`.
 - **The populated catalog lives in Neo4j**, written only by `resolve --persist`:

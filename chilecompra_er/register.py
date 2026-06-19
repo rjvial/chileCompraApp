@@ -62,6 +62,61 @@ def save_vet_rejections(rejections: dict[str, str],
                                      sort_keys=True) + "\n", encoding="utf-8")
 
 
+# --- propose() resume --------------------------------------------------------
+# The vet scan walks the whole spend ranking (10k+ groups for a full segment),
+# LLM-vetting in batches — minutes-to-hours of work whose result lives only in
+# memory until the scan ends. This checkpoint persists the chosen set + scan
+# cursor after every vetted batch, so a kill loses at most the in-flight batch,
+# not the entire walk (mirrors the resolve within-step resume in
+# ingest/resume.py). Default location is data/register.checkpoint.json; the
+# caller passes the path (None disables checkpointing, e.g. in unit tests).
+DEFAULT_PROPOSE_CHECKPOINT = Path("data/register.checkpoint.json")
+
+
+@dataclass
+class ProposeCheckpoint:
+    scope: dict           # run identity; resume only when it matches (else mix two scans)
+    cursor: int           # 1-based idx of the last ranked group fully scanned
+    done: bool            # the scan reached its natural end (count/floor/exhaustion)
+    chosen: list[dict]    # accepted candidates so far, as proposal-field dicts
+
+    def to_json(self) -> dict:
+        return {"scope": self.scope, "cursor": self.cursor,
+                "done": self.done, "chosen": self.chosen}
+
+    @classmethod
+    def from_json(cls, d: dict) -> "ProposeCheckpoint":
+        return cls(scope=d.get("scope", {}), cursor=d.get("cursor", 0),
+                   done=d.get("done", False), chosen=list(d.get("chosen", [])))
+
+
+def propose_scope(stats: list[GroupStat], *, count, min_samples,
+                  min_spend_share) -> dict:
+    """Identity of a propose() run. Resuming a checkpoint whose scope differs
+    (a re-profiled ranking, or changed count/floor knobs) would splice two
+    different scans together, so on a mismatch we start fresh instead."""
+    return {"groups": len(stats), "count": count,
+            "min_samples": min_samples, "min_spend_share": min_spend_share}
+
+
+def save_propose_checkpoint(path: Path, cp: ProposeCheckpoint) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # temp-then-replace: a kill mid-write can't leave a truncated checkpoint
+    # that would block resume (same guard as ingest/resume.save_checkpoint).
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(cp.to_json(), ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_propose_checkpoint(path: Path) -> ProposeCheckpoint | None:
+    path = Path(path)
+    if not path.exists():
+        return None
+    return ProposeCheckpoint.from_json(json.loads(path.read_text(encoding="utf-8")))
+
+
 VET_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -255,6 +310,7 @@ def _llm_vet(batch: list[Candidate]) -> dict:
 def propose(conn, stats: list[GroupStat], count: int | None = 10,
             min_samples: int = 15,
             min_spend_share: float = 0.0005, revisit: bool = False,
+            checkpoint_path: Path | None = None, resume: bool = False,
             vet=None, batch_size: int = 12,
             log=print) -> tuple[list[Candidate], list[Candidate]]:
     """Returns (chosen, rejected). Writes only the vet-rejection cache.
@@ -267,6 +323,11 @@ def propose(conn, stats: list[GroupStat], count: int | None = 10,
     proposed (the spend floor / ranking exhaustion become the only stops).
     Tokens the vet previously judged junk are skipped (cache at
     categories/vet_rejections.json; revisit=True re-evaluates them).
+
+    When `checkpoint_path` is given, the chosen set + scan cursor are persisted
+    after every vetted batch (see ProposeCheckpoint); `resume=True` restores
+    them from a same-scope checkpoint and continues past the groups already
+    vetted, so an interrupted scan never re-pays for its completed LLM batches.
     """
     register = load_register()
     clf = Tier1Classifier(register)
@@ -287,6 +348,18 @@ def propose(conn, stats: list[GroupStat], count: int | None = 10,
     rejected: list[Candidate] = []
     batch: list[Candidate] = []
     chosen_ids: set[str] = set()
+    pending_max_idx = 0  # highest ranking idx currently sitting in `batch`
+
+    scope = propose_scope(stats, count=count, min_samples=min_samples,
+                          min_spend_share=min_spend_share)
+
+    def save_progress(*, done: bool) -> None:
+        if checkpoint_path is None:
+            return
+        save_propose_checkpoint(checkpoint_path, ProposeCheckpoint(
+            scope=scope, cursor=(len(stats) if done else pending_max_idx),
+            done=done,
+            chosen=[{f: getattr(c, f) for f in _PROPOSAL_FIELDS} for c in chosen]))
 
     def flush_batch() -> None:
         nonlocal batch
@@ -310,8 +383,39 @@ def propose(conn, stats: list[GroupStat], count: int | None = 10,
                     c.viable, c.reason = False, c.reason or "superseded in this run"
                 rejected.append(c)
         batch = []
+        # Durable point: this batch's LLM verdicts are now reflected in `chosen`,
+        # and every group up to pending_max_idx has been decided. Checkpoint so a
+        # kill resumes past here, never re-vetting what we just paid for.
+        save_progress(done=False)
+
+    # Resume: restore the chosen set + scan cursor from a prior interrupted run
+    # (same scope only), then skip the ranking groups already vetted.
+    resume_cursor = 0
+    if resume and checkpoint_path is not None:
+        cp = load_propose_checkpoint(checkpoint_path)
+        if cp is not None and cp.scope == scope:
+            for p in cp.chosen:
+                c = Candidate(viable=True,
+                              **{f: p[f] for f in _PROPOSAL_FIELDS if f in p})
+                chosen.append(c)
+                chosen_ids.add(c.category_id)
+                working["categories"].append({
+                    "category_id": c.category_id, "name": c.name,
+                    "status": "candidate", "include": c.include,
+                    "exclude": c.exclude, "canonical_example": c.canonical_example,
+                })
+            resume_cursor = cp.cursor
+            log(f"  resuming vet scan: {len(chosen)} categories already chosen; "
+                f"skipping the first {resume_cursor}/{len(stats)} ranked groups")
+            if cp.done:
+                log("  checkpoint marks the scan already complete — nothing to vet")
+                return chosen, rejected
+        elif cp is not None:
+            log("  register checkpoint scope differs from this run — starting fresh")
 
     for idx, s in enumerate(stats, 1):
+        if idx <= resume_cursor:  # already vetted in the run we're resuming
+            continue
         if len(chosen) >= limit:
             break
         if s.spend_share < min_spend_share:
@@ -331,9 +435,11 @@ def propose(conn, stats: list[GroupStat], count: int | None = 10,
             continue
         batch.append(Candidate(token=s.group, records=s.records,
                                spend_share=s.spend_share, samples=samples))
+        pending_max_idx = idx
         if len(batch) >= batch_size:
             flush_batch()
     flush_batch()
+    save_progress(done=True)  # scan finished — checkpoint marks it complete
 
     if skipped_cached:
         log(f"  skipped {skipped_cached} tokens previously vetted as junk "

@@ -2,7 +2,8 @@ from chilecompra_er.categories import load_register
 from chilecompra_er.profiling import GroupStat
 from chilecompra_er.resolve import Tier1Classifier
 from chilecompra_er.register import (
-    Candidate, _is_covered, finalize_candidates, propose,
+    Candidate, _is_covered, finalize_candidates, load_propose_checkpoint,
+    propose,
 )
 
 register = load_register()
@@ -111,3 +112,48 @@ def test_count_none_lifts_the_cap():
                         min_samples=5, revisit=True, vet=_accept_all_vet,
                         log=lambda *_: None)
     assert {c.token for c in chosen} == set(_UNCOVERED)
+
+
+# --- propose(): within-step resume (checkpoint survives a kill) ------------
+
+def test_resume_continues_after_a_kill_without_re_vetting(tmp_path):
+    ckpt = tmp_path / "register.checkpoint.json"
+    ranking = _ranking(_UNCOVERED)  # 3 clean uncovered families, batch_size=1
+
+    # First run dies just as the 2nd batch begins — only batch 1 is checkpointed.
+    calls = []
+
+    def flaky_vet(batch):
+        calls.append([c.token for c in batch])
+        if len(calls) == 2:
+            raise RuntimeError("simulated kill")
+        return _accept_all_vet(batch)
+
+    try:
+        propose(_FakeConn(), ranking, count=None, min_samples=5, revisit=True,
+                checkpoint_path=ckpt, vet=flaky_vet, batch_size=1,
+                log=lambda *_: None)
+    except RuntimeError:
+        pass
+
+    cp = load_propose_checkpoint(ckpt)
+    assert cp is not None and not cp.done
+    assert len(cp.chosen) == 1                 # first batch's verdict was saved
+    assert cp.cursor == 1
+
+    # Resume: the already-vetted group must NOT be vetted again, yet the final
+    # chosen set is complete (restored + newly vetted).
+    resume_calls = []
+
+    def recording_vet(batch):
+        resume_calls.append([c.token for c in batch])
+        return _accept_all_vet(batch)
+
+    chosen, _ = propose(_FakeConn(), ranking, count=None, min_samples=5,
+                        revisit=True, checkpoint_path=ckpt, resume=True,
+                        vet=recording_vet, batch_size=1, log=lambda *_: None)
+
+    vetted_on_resume = {t for b in resume_calls for t in b}
+    assert _UNCOVERED[0] not in vetted_on_resume   # restored, not re-vetted
+    assert {c.token for c in chosen} == set(_UNCOVERED)
+    assert load_propose_checkpoint(ckpt).done

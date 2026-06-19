@@ -1,5 +1,1836 @@
 {
-  "register_version": "0.0.0",
+  "register_version": "0.107.0",
   "notes": "Reset to empty on 2026-06-18 for a full from-scratch run. Categories are rebuilt from the raw corpus via `register` (Tier-1 include/exclude regexes over NORMALIZED text; exclusions resolve sibling overlaps). The previous hand-curated 120-category register is recoverable from git commit 9c6e10c. Each category carries corpus_regex (raw-text filter for the schema strawman) and a canonical_example golden fixture; schemas live as versioned JSON under schemas/.",
-  "categories": []
+  "categories": [
+    {
+      "category_id": "yoduros_potasio",
+      "name": "Yoduro de potasio (materia prima/reactivo)",
+      "status": "candidate",
+      "include": [
+        "\\byoduro\\w*\\b.{0,15}\\bpotasio\\b",
+        "\\bpotasio\\b.{0,15}\\byoduro\\w*\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/yoduros_potasio.json",
+      "corpus_regex": "(?i).*yoduro.*potasio.*|.*potasio.*yoduro.*",
+      "canonical_example": "YODURO DE POTASIO P.A."
+    },
+    {
+      "category_id": "sondas",
+      "name": "Sondas (alimentacion/drenaje/gastrostomia)",
+      "status": "candidate",
+      "include": [
+        "\\bsonda\\w*"
+      ],
+      "exclude": [
+        "\\bdoppler\\b",
+        "\\bperiodontal\\w*",
+        "\\bestilete\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sondas.json",
+      "corpus_regex": "(?i).*sonda.*",
+      "canonical_example": "SONDA REEMPLAZO GASTROSTOMIA DIFERENTES MEDIDAS ( 12-14 -16-18-20-22-24 FR )"
+    },
+    {
+      "category_id": "guantes",
+      "name": "Guantes (procedimiento/quirurgicos/aseo)",
+      "status": "candidate",
+      "include": [
+        "\\bguante\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/guantes.json",
+      "corpus_regex": "(?i).*guante.*",
+      "canonical_example": "GUANTES NITRILO LIBRES DE TALCO TALLA SMALL CAJA X 100"
+    },
+    {
+      "category_id": "protesis",
+      "name": "Protesis y endoprotesis implantables",
+      "status": "candidate",
+      "include": [
+        "\\b(?:endo)?protesis\\w*"
+      ],
+      "exclude": [
+        "\\bfresa\\w*",
+        "\\bconsignacion\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/protesis.json",
+      "corpus_regex": "(?i).*protesis.*",
+      "canonical_example": "PROTESIS HIBRIDA"
+    },
+    {
+      "category_id": "gasas",
+      "name": "Gasas (tejidas y no tejidas)",
+      "status": "candidate",
+      "include": [
+        "\\bgasa\\w*"
+      ],
+      "exclude": [
+        "\\bhisopo\\b",
+        "\\bvenda\\w*",
+        "\\bcalcetin\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/gasas.json",
+      "corpus_regex": "(?i).*gasa.*",
+      "canonical_example": "GASA NO TEJIDA ESTERIL 4 PLIEGUES DE 7.5 X 7.5 CM. EN SOBRE DE 2 UNIDADES CADA UNO (224-6623-1)"
+    },
+    {
+      "category_id": "endoprotesis_vasculares",
+      "name": "Endoprótesis vasculares (stent grafts aórticos)",
+      "status": "candidate",
+      "include": [
+        "\\bendoprotesis\\w*",
+        "endoprotesis\\s+(aort\\w+|toracic\\w+|abdominal|bifurcad\\w+|bimodular|trimodular)"
+      ],
+      "exclude": [
+        "rodilla",
+        "\\bcadera\\b",
+        "dental\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/endoprotesis_vasculares.json",
+      "corpus_regex": "(?i).*endopr[oó]tesis.*",
+      "canonical_example": "INTRODUCTOR DE ENDOPROTESIS DESECHABLE CORRIENTE  DIFERENTES MEDIDAS · FCHV ADQ.INSUMOS S/A EN CALIDAD DE CONSIGNACIÓN ESPECIALIDAD GASTROENTEROLOGÍA"
+    },
+    {
+      "category_id": "equipos_administracion_suero",
+      "name": "Equipos/bajadas de administración de suero",
+      "status": "candidate",
+      "include": [
+        "\\bbajada\\b",
+        "equipo\\w*\\s+(de\\s+)?administracion\\w*\\s+(de\\s+)?solucion"
+      ],
+      "exclude": [
+        "\\bfiltro\\b",
+        "contenedor"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/equipos_administracion_suero.json",
+      "corpus_regex": "(?i).*(bajada|equipo.*administraci[oó]n.*soluci).*",
+      "canonical_example": "EQUIPO ADMINISTRACIÓN SOLUCION ADULTO, BAJADA MACROGOTEO, TUBO PVC LARGO MINIMO NECESARIO 180 CM, (INDICAR DURACION EN HORAS.) (225-5826) LI"
+    },
+    {
+      "category_id": "aerocamaras",
+      "name": "Aerocámaras (espaciadores de inhalación)",
+      "status": "candidate",
+      "include": [
+        "\\baerocamara\\w*"
+      ],
+      "exclude": [
+        "salbutamol",
+        "inhalador\\s+oral",
+        "micronizad\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/aerocamaras.json",
+      "corpus_regex": "(?i).*aeroc[aá]mara.*",
+      "canonical_example": "AEROCAMARA ADULTO"
+    },
+    {
+      "category_id": "canulas",
+      "name": "Cánulas",
+      "status": "candidate",
+      "include": [
+        "\\bcanula(s)?\\b"
+      ],
+      "exclude": [
+        "\\b(tornillo|clavo)\\b",
+        "canulad[oa]"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/canulas.json",
+      "corpus_regex": "(?i).*canula.*",
+      "canonical_example": "CANULA DE ASPIRACION TIPO FRAZIER"
+    },
+    {
+      "category_id": "mascarillas",
+      "name": "Mascarillas",
+      "status": "candidate",
+      "include": [
+        "\\bmascarilla\\w*"
+      ],
+      "exclude": [
+        "\\bbolsa\\b",
+        "resuscitacion|resucitacion"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/mascarillas.json",
+      "corpus_regex": "(?i).*mascarilla.*",
+      "canonical_example": "MASCARILLA CON RESERVORIO ADULTO"
+    },
+    {
+      "category_id": "placas_osteosintesis",
+      "name": "Placas de osteosíntesis",
+      "status": "candidate",
+      "include": [
+        "\\bplaca\\w*\\b.*(bloqueada|titanio|osteosintesis)",
+        "\\bplaca\\w*\\s+(de\\s+)?(tibia|fibula|humero|radio|femur)"
+      ],
+      "exclude": [
+        "electrobisturi",
+        "electrodo",
+        "m[uü]e?ller|hinton|agar|sangre"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/placas_osteosintesis.json",
+      "corpus_regex": "(?i).*placa.*",
+      "canonical_example": "PLACA DE FIBULA BLOQUEADA: PLACA DE TITANIO 2.7/3.5, DE DIFERENTES LARGOS, INCLUYE INSTRUMENTAL (1 PLACA Y 7 TORNILLOS)"
+    },
+    {
+      "category_id": "agujas",
+      "name": "Agujas",
+      "status": "candidate",
+      "include": [
+        "\\baguja\\w*"
+      ],
+      "exclude": [
+        "porta\\s*aguja"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/agujas.json",
+      "corpus_regex": "(?i).*aguja.*",
+      "canonical_example": "AGUJA DE BIOPSIA PARA DISPOSITIVO MECANICO AUTOMATICO 14G X 10CM (222-0890)"
+    },
+    {
+      "category_id": "marcapasos",
+      "name": "Marcapasos",
+      "status": "candidate",
+      "include": [
+        "\\bmarcapaso\\w*"
+      ],
+      "exclude": [
+        "\\bparche\\b",
+        "\\bintroductor\\b",
+        "\\belectrodo",
+        "medico|especialista"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/marcapasos.json",
+      "corpus_regex": "(?i).*marcapaso.*",
+      "canonical_example": "Hilo de marcapaso epicardio transitorio cod inter 40500032247 · INSUMOS PARA CIRUGÍAS CARDÍACAS"
+    },
+    {
+      "category_id": "suturas_quirurgicas",
+      "name": "Suturas quirúrgicas",
+      "status": "candidate",
+      "include": [
+        "\\bsutura\\w*"
+      ],
+      "exclude": [
+        "\\bpasador\\b",
+        "\\bmecanic\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/suturas_quirurgicas.json",
+      "corpus_regex": "(?i).*sutura.*",
+      "canonical_example": "2240137 SUTURA QUIRÚRGICA CATGUT SIMPLE 2/0 HR 37"
+    },
+    {
+      "category_id": "pecheras",
+      "name": "Pecheras / delantales de protección",
+      "status": "candidate",
+      "include": [
+        "\\bpecher\\w*",
+        "\\bbabero\\w*"
+      ],
+      "exclude": [
+        "\\bplomad\\w*",
+        "\\bplomo\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/pecheras.json",
+      "corpus_regex": "(?i).*pecher.*",
+      "canonical_example": "PECHERA PLASTICA ADULTO"
+    },
+    {
+      "category_id": "guias_metalicas",
+      "name": "Guías / alambres guía",
+      "status": "candidate",
+      "include": [
+        "\\b(alambre\\s+)?guia\\w*\\s+(hidrofilic|nitinol|teflon)",
+        "\\bguia\\w*\\s+(curv|recta|en\\s+j|hidrofilic)"
+      ],
+      "exclude": [
+        "\\bcateter\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/guias_metalicas.json",
+      "corpus_regex": "(?i).*gu[ií]a.*hidrofilic.*|.*alambre.*gu[ií]a.*",
+      "canonical_example": "GUIA HIDROFILICA NITINOL 0.38INCH, LARGO 150 CM CURVA"
+    },
+    {
+      "category_id": "circuitos_respiratorios",
+      "name": "Circuitos respiratorios para ventilador",
+      "status": "candidate",
+      "include": [
+        "\\bcircuito\\w*\\s+(respiratorio|bipap)?.*(ventilador|incubadora|bipap)",
+        "\\bcircuito\\w*\\s+respiratorio"
+      ],
+      "exclude": [
+        "\\bpanel\\w*",
+        "\\bpvc\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/circuitos_respiratorios.json",
+      "corpus_regex": "(?i).*circuito.*(ventilador|respiratori|bipap|incubadora).*",
+      "canonical_example": "Circuito respiratorio para ventilador de transporte Medumat Weinmann."
+    },
+    {
+      "category_id": "clavos_endomedulares",
+      "name": "Clavos endomedulares",
+      "status": "candidate",
+      "include": [
+        "\\bclavo\\w*\\s+(endomedular|cefalomedular|em\\b|de\\s+fibula)"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/clavos_endomedulares.json",
+      "corpus_regex": "(?i).*clavo.*(endomedular|cefalomedular|\\bem\\b).*",
+      "canonical_example": "012-1041\tClavo endomedular p/femur"
+    },
+    {
+      "category_id": "audifonos",
+      "name": "Audífonos",
+      "status": "candidate",
+      "include": [
+        "\\baudifono\\w*"
+      ],
+      "exclude": [
+        "\\bpeltor\\b",
+        "\\bprotecci\\w*",
+        "\\baudiometr\\w*",
+        "\\bcanasta\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/audifonos.json",
+      "corpus_regex": "(?i).*aud[ií]fono.*",
+      "canonical_example": "346-0060|AUDÍFONO PERDIDA LEVE A SEVERA"
+    },
+    {
+      "category_id": "colchones",
+      "name": "Colchones",
+      "status": "candidate",
+      "include": [
+        "\\bcolchon\\w*"
+      ],
+      "exclude": [
+        "\\bcojin\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/colchones.json",
+      "corpus_regex": "(?i).*colchon.*",
+      "canonical_example": "COLCHONES CUNAS RECIEN NACIDO (LARGO 75 CMS-ANCHO 40 CMS-ALTO 11CMS)"
+    },
+    {
+      "category_id": "ecotomografos",
+      "name": "Ecotomografos",
+      "status": "candidate",
+      "include": [
+        "\\becotomografo\\w*",
+        "\\btomografo\\w*\\s+computa\\w*"
+      ],
+      "exclude": [
+        "\\b(mantencion|reparacion|arriendo|servicio)\\b",
+        "papel"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/ecotomografos.json",
+      "corpus_regex": "(?i).*(eco)?tomografo.*",
+      "canonical_example": "Ecotomógrafo estático, según bases técnicas"
+    },
+    {
+      "category_id": "aceleradores_de_suero",
+      "name": "Aceleradores/presurizadores de suero e infusion",
+      "status": "candidate",
+      "include": [
+        "\\bacelerador\\w*\\s+(de\\s+|a\\s+)?(fluido|suero|infus|presion)"
+      ],
+      "exclude": [
+        "fraguado",
+        "endurecimiento",
+        "reactivo",
+        "colesterol",
+        "hdl"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/aceleradores_de_suero.json",
+      "corpus_regex": "(?i).*acelerador.*(suero|fluido|infus|presion).*",
+      "canonical_example": "206-0103 ACELERADOR DE FLUIDOS (APURADOR SUERO/SANGRE) VITAL SIGNS"
+    },
+    {
+      "category_id": "desfibriladores",
+      "name": "Desfibriladores",
+      "status": "candidate",
+      "include": [
+        "\\bdesfibrilador\\w*"
+      ],
+      "exclude": [
+        "\\b(electrodo|bateria|baterias|sensor|cable|set|repuesto|reparacion)\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/desfibriladores.json",
+      "corpus_regex": "(?i).*desfibrilador.*",
+      "canonical_example": "Adq. de desfibrilador para el Edificio Consistorial"
+    },
+    {
+      "category_id": "ecografos",
+      "name": "Ecografos",
+      "status": "candidate",
+      "include": [
+        "\\becografo\\w*"
+      ],
+      "exclude": [
+        "\\b(cateter|papel|hub|usb|kit|accesorio|repuesto)\\b",
+        "picc"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/ecografos.json",
+      "corpus_regex": "(?i).*ecografo.*",
+      "canonical_example": "ECOGRAFO, SEGUN EE.TT. ADJUNTAS."
+    },
+    {
+      "category_id": "pinzas",
+      "name": "Pinzas quirúrgicas",
+      "status": "candidate",
+      "include": [
+        "\\bpinza\\w*"
+      ],
+      "exclude": [
+        "\\bkit\\b",
+        "\\baposito\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/pinzas.json",
+      "corpus_regex": "(?i).*pinza.*",
+      "canonical_example": "3400599 PINZA KELLY RECTA 14 CM"
+    },
+    {
+      "category_id": "lentes_intraoculares",
+      "name": "Lentes intraoculares",
+      "status": "candidate",
+      "include": [
+        "\\blente\\w*\\s+intraocular"
+      ],
+      "exclude": [
+        "\\boptic\\w*",
+        "\\bestrabismo\\b",
+        "\\bviscoelastico\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/lentes_intraoculares.json",
+      "corpus_regex": "(?i).*lente.*intraocular.*",
+      "canonical_example": "20-345-150-003-00 LENTE INTRAOCULAR PLEGABLE BLANDO"
+    },
+    {
+      "category_id": "mallas_quirurgicas",
+      "name": "Mallas quirúrgicas",
+      "status": "candidate",
+      "include": [
+        "\\bmalla\\w*\\s+(para|kit|proceed)",
+        "\\bmalla\\w*\\s+(hern|prolaps|colpo)"
+      ],
+      "exclude": [
+        "\\bmosaico\\b",
+        "\\bgasa\\b",
+        "\\baposito\\w*",
+        "\\bcarbon\\b",
+        "\\bnylon\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/mallas_quirurgicas.json",
+      "corpus_regex": "(?i).*malla.*",
+      "canonical_example": "MALLA PARA COLPOPROMONTO SUSPENSION EN Y, CORTADO EN LASER CON BORDE REDONDEADO 60 G /M2, CON LINEAS INDICADORAS CADA 1 CM, TEJIDO ENTRELAZADO CON EFECTO MEMORIA · Propuesta Pública Nº 101/19 “SUMISTRO DE INSUMOS PARA VARIOS SERVICIOS, PARA HOSPITAL DR. ABRAHAM GODOY PEÑA DE LAUTARO”"
+    },
+    {
+      "category_id": "electrodos",
+      "name": "Electrodos",
+      "status": "candidate",
+      "include": [
+        "\\belectrodo\\w*"
+      ],
+      "exclude": [
+        "\\bpasta\\b",
+        "\\bpapel\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/electrodos.json",
+      "corpus_regex": "(?i).*electrodo.*",
+      "canonical_example": "202-0663 ELECTRODO DE CUCHILLA RECUBIERTA (EDGE), LONGITUD  16.51 CM (1455-6)"
+    },
+    {
+      "category_id": "vendas",
+      "name": "Vendas y vendajes",
+      "status": "candidate",
+      "include": [
+        "\\bvenda\\w*",
+        "\\bvendaje\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/vendas.json",
+      "corpus_regex": "(?i).*venda.*",
+      "canonical_example": "225-0474 | VENDA 5 CM ALCOLCHADO SINTETICO ORTOPEDICO"
+    },
+    {
+      "category_id": "tubos_endotraqueales",
+      "name": "Tubos endotraqueales y endobronquiales",
+      "status": "candidate",
+      "include": [
+        "\\btubo\\s+endo(traqueal|bronquial)\\w*"
+      ],
+      "exclude": [
+        "\\bprotector\\b",
+        "\\bdental\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/tubos_endotraqueales.json",
+      "corpus_regex": "(?i).*tubo.*endo.*",
+      "canonical_example": "TUBO ENDOTRAQUEAL 2  -2,5-3 Y 3,5 MM SIN BALON"
+    },
+    {
+      "category_id": "trocares",
+      "name": "Trócares",
+      "status": "candidate",
+      "include": [
+        "\\btrocar\\w*"
+      ],
+      "exclude": [
+        "\\bcateter\\w*",
+        "\\belectrocard\\w*",
+        "\\bpasta\\b",
+        "\\bpapel\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/trocares.json",
+      "corpus_regex": "(?i).*trocar.*",
+      "canonical_example": "3401008 TROCAR TORÁXICO N°30"
+    },
+    {
+      "category_id": "compresas",
+      "name": "Compresas",
+      "status": "candidate",
+      "include": [
+        "\\bcompresa\\w*"
+      ],
+      "exclude": [
+        "\\bcalentador\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/compresas.json",
+      "corpus_regex": "(?i).*compresa.*",
+      "canonical_example": "COMPRESA GÉNERO 45 X 45 CM, CREA 100% ALGODÓN, COLOR BLANCO."
+    },
+    {
+      "category_id": "coils_embolizacion",
+      "name": "Coils de embolización",
+      "status": "candidate",
+      "include": [
+        "\\bcoils?\\b",
+        "\\bmicrocoils?\\b"
+      ],
+      "exclude": [
+        "\\bmicrocateter\\w*",
+        "\\badaptador\\w*",
+        "\\bmicrocateter de"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/coils_embolizacion.json",
+      "corpus_regex": "(?i).*coils.*",
+      "canonical_example": "MICROCOILS FIBRADOS 0,014- 0,018  TIPO TORNADO O NESTER DIFERENTES MEDIDAS  REF; COOK , TERUMO"
+    },
+    {
+      "category_id": "sensores_spo2",
+      "name": "Sensores SpO2",
+      "status": "candidate",
+      "include": [
+        "\\bsensor\\w*.*\\bspo\\b",
+        "\\bspo\\b\\s*2"
+      ],
+      "exclude": [
+        "\\bflujo\\b",
+        "\\boxigeno\\b",
+        "\\btemperatura\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sensores_spo2.json",
+      "corpus_regex": "(?i).*sensor.*spo.*",
+      "canonical_example": "SENSOR SPO2 PARA MONITOR SPACELABS MODELO XPREZZON"
+    },
+    {
+      "category_id": "microcateteres",
+      "name": "Microcatéteres",
+      "status": "candidate",
+      "include": [
+        "\\bmicrocateter\\w*"
+      ],
+      "exclude": [
+        "\\bset\\b.*biopsia",
+        "\\bdilatador\\w*",
+        "\\bcateter\\s+diagnostico",
+        "\\bset\\b.*drenaje"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/microcateteres.json",
+      "corpus_regex": "(?i).*microcateter.*",
+      "canonical_example": "MICROCATETER DE CRUCE VASOS ARTERIALES  HD XAM015"
+    },
+    {
+      "category_id": "valvulas_cardiacas_mecanicas",
+      "name": "Valvulas cardiacas mecanicas",
+      "status": "candidate",
+      "include": [
+        "\\bvalvula\\w*\\s+mecanic\\w*",
+        "\\btubo\\s+valvulad\\w*\\s+aortic\\w*"
+      ],
+      "exclude": [
+        "ameu",
+        "endouterin\\w*",
+        "dental"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/valvulas_cardiacas_mecanicas.json",
+      "corpus_regex": "(?i).*(v[aá]lvula.*mec[aá]nic|tubo\\s+valvulad).*",
+      "canonical_example": "265-8722 valvulas mecanicas aorticas"
+    },
+    {
+      "category_id": "medios_de_cultivo",
+      "name": "Medios de cultivo para laboratorio",
+      "status": "candidate",
+      "include": [
+        "\\bmedios?\\s+de\\s+cultivo\\w*"
+      ],
+      "exclude": [
+        "\\bmedio\\s+ambiente\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/medios_de_cultivo.json",
+      "corpus_regex": "(?i).*medios?\\s+de\\s+cultivo.*",
+      "canonical_example": "MEDIOS DE CULTIVO PREPARADOS, AGAR CHOCOLATE. CAJA POR 10 PLACAS."
+    },
+    {
+      "category_id": "microscopios",
+      "name": "Microscopios",
+      "status": "candidate",
+      "include": [
+        "\\bmicroscopio\\w*"
+      ],
+      "exclude": [
+        "\\bfunda\\w*",
+        "\\baceite\\b",
+        "\\bampolleta\\w*",
+        "\\breparac\\w*",
+        "\\bbiomicroscopio\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/microscopios.json",
+      "corpus_regex": "(?i).*microscopio.*",
+      "canonical_example": "MICROSCOPIO PARA USO EN OTORRINO, DE ACUERDO A ANEXO \"A\" BASES TÉCNICAS"
+    },
+    {
+      "category_id": "batas_clinicas",
+      "name": "Batas clínicas",
+      "status": "candidate",
+      "include": [
+        "\\bbata\\b",
+        "\\bbatas\\b"
+      ],
+      "exclude": [
+        "corbata",
+        "abatacept"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/batas_clinicas.json",
+      "corpus_regex": "(?i).*\\bbata.*",
+      "canonical_example": "Bata quirúrgica básica estéril talla L, color azul, manga larga (SAR)"
+    },
+    {
+      "category_id": "mamografos",
+      "name": "Mamógrafos",
+      "status": "candidate",
+      "include": [
+        "\\bmamografo\\w*"
+      ],
+      "exclude": [
+        "\\bchasis\\b",
+        "\\bmanten",
+        "\\blupa\\b",
+        "\\bbalanza\\b",
+        "\\balcohol\\b",
+        "insumos? para mamografo",
+        "repuesto"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/mamografos.json",
+      "corpus_regex": "(?i).*mam(o|ó)grafo.*",
+      "canonical_example": "Mamografo con tomosintesis"
+    },
+    {
+      "category_id": "drenajes_quirurgicos",
+      "name": "Drenajes quirúrgicos",
+      "status": "candidate",
+      "include": [
+        "\\bdrenaje\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/drenajes_quirurgicos.json",
+      "corpus_regex": "(?i).*drenaje.*",
+      "canonical_example": "DRENAJE PENROSE DIAM. 1,30 X 50 CM LARGO"
+    },
+    {
+      "category_id": "catres_clinicos",
+      "name": "Catres clínicos",
+      "status": "candidate",
+      "include": [
+        "\\bcatres?\\b",
+        "\\bcatre\\w*\\s+clinic"
+      ],
+      "exclude": [
+        "ropa de cama",
+        "mesa lateral",
+        "mueble lateral",
+        "camilla",
+        "mesa quirurgic"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/catres_clinicos.json",
+      "corpus_regex": "(?i).*catre.*",
+      "canonical_example": "Adquisición de 4 catres clínicos para beneficiarios del programa de Ayudas técnicas menores de la Oficina de la Discapacidad según especificaciones Técnicas. · ADQUISICIÓN DE 4 CATRES CLINICO - OF. DISCAPACIDAD"
+    },
+    {
+      "category_id": "vainas_hidrofilicas",
+      "name": "Vainas hidrofílicas",
+      "status": "candidate",
+      "include": [
+        "\\bvaina\\w*\\s+hidrofilic"
+      ],
+      "exclude": [
+        "termometro",
+        "resectoscopio",
+        "electrodo",
+        "haz de his"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/vainas_hidrofilicas.json",
+      "corpus_regex": "(?i).*vaina.*hidrof.*",
+      "canonical_example": "VAINA HIDROFILICA TIPO RAABE 6FR X55 CM VER ANEXO 5"
+    },
+    {
+      "category_id": "equipos_infusion",
+      "name": "Equipos y sets de infusión",
+      "status": "candidate",
+      "include": [
+        "\\b(equipo|set|bajada)\\s+(de\\s+)?\\w*\\s*infusion",
+        "infusion\\s*/?\\s*transfusion"
+      ],
+      "exclude": [
+        "solucion concentrada para infusion",
+        "etoposido",
+        "\\bfiltro\\b",
+        "\\bllave\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/equipos_infusion.json",
+      "corpus_regex": "(?i).*infusi(o|ó)n.*",
+      "canonical_example": "EQUIPO INFUSION/TRANSFUSION NIÑO"
+    },
+    {
+      "category_id": "fijadores_citologicos",
+      "name": "Fijadores citológicos",
+      "status": "candidate",
+      "include": [
+        "\\bfijador\\w*\\s+citolog"
+      ],
+      "exclude": [
+        "externo",
+        "fijador o nuez",
+        "periomat",
+        "revelador",
+        "tornillo"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/fijadores_citologicos.json",
+      "corpus_regex": "(?i).*fijador.*citol.*",
+      "canonical_example": "FIJADOR CITOLOGICO SPRAY FCO 100 ML USO PAPANICOLAU Y CITODIAGNOSTICO (209-0005)"
+    },
+    {
+      "category_id": "sillas_de_ruedas",
+      "name": "Sillas de ruedas",
+      "status": "candidate",
+      "include": [
+        "\\bsillas?\\s+de\\s+ruedas"
+      ],
+      "exclude": [
+        "evacuacion",
+        "oftalmologic",
+        "pechera",
+        "botiquin"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sillas_de_ruedas.json",
+      "corpus_regex": "(?i).*silla.*de\\s+ruedas.*",
+      "canonical_example": "[5070008] SILLAS DE RUEDAS NEUROLOGICAS 140 KILOS"
+    },
+    {
+      "category_id": "andadores",
+      "name": "Andadores (ayudas técnicas)",
+      "status": "candidate",
+      "include": [
+        "\\bandador\\w*"
+      ],
+      "exclude": [
+        "\\bbaston\\w*",
+        "\\bsilla\\s+de\\s+ruedas"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/andadores.json",
+      "corpus_regex": "(?i).*andador.*",
+      "canonical_example": "ANDADOR PLEGABLE 2 RUEDAS DE ALUMINIO"
+    },
+    {
+      "category_id": "preservativos",
+      "name": "Preservativos",
+      "status": "candidate",
+      "include": [
+        "\\bpreservativo\\w*"
+      ],
+      "exclude": [
+        "\\bdildo\\b",
+        "\\beducacion\\s+sexual"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/preservativos.json",
+      "corpus_regex": "(?i).*preservativo.*",
+      "canonical_example": "PRESERVATIVO CON LUBRICANTE"
+    },
+    {
+      "category_id": "camillas",
+      "name": "Camillas",
+      "status": "candidate",
+      "include": [
+        "\\bcamilla\\w*"
+      ],
+      "exclude": [
+        "\\bmantencion\\b",
+        "\\bmantenci\\w*",
+        "\\breparacion\\b",
+        "\\bcorrectiv\\w*",
+        "\\bpreventiv\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/camillas.json",
+      "corpus_regex": "(?i).*camilla.*",
+      "canonical_example": "1 Camilla plegable lona con ojetillos. Paño 47 cms ancho y 1.85 mts largo."
+    },
+    {
+      "category_id": "fresas_dentales",
+      "name": "Fresas dentales",
+      "status": "candidate",
+      "include": [
+        "\\bfresa\\w*"
+      ],
+      "exclude": [
+        "\\bfresario\\w*",
+        "\\bfrutilla",
+        "\\bfresco\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/fresas_dentales.json",
+      "corpus_regex": "(?i).*fresa.*",
+      "canonical_example": "2520297 FRESA CARBIDE A/V REDONDA N° 0.18"
+    },
+    {
+      "category_id": "papeles_esterilizacion",
+      "name": "Papeles para esterilización",
+      "status": "candidate",
+      "include": [
+        "\\bpapel\\b.{0,40}(esteriliz|autoclave|crepado|polipropileno|sms|grado\\s+medico)",
+        "\\bpapel\\s+(crepado|termico).{0,30}(autoclave|esteriliz)"
+      ],
+      "exclude": [
+        "\\bpapel\\s+higienico",
+        "\\bpapel\\s+toalla",
+        "\\bpapeli\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/papeles_esterilizacion.json",
+      "corpus_regex": "(?i).*papel.*(esteriliz|autoclave|crepado|polipropileno|sms).*",
+      "canonical_example": "PAPEL TERMICO 57 MM X 41 METROS PARA AUTOCLAVE ESTERILIZACION (347-0349)"
+    },
+    {
+      "category_id": "textiles_clinicos",
+      "name": "Ropa y textiles clinicos",
+      "status": "candidate",
+      "include": [
+        "\\bblusa\\w*",
+        "\\bcamisa\\w*\\s+(de\\s+)?(operar|paciente)",
+        "\\bfunda\\w*\\s+(de\\s+)?almohada"
+      ],
+      "exclude": [
+        "propanolol",
+        "proparacaina"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/textiles_clinicos.json",
+      "corpus_regex": "(?i).*(blusa de operar|camisa paciente|ropa clinica|funda de almohada).*",
+      "canonical_example": "BLUSA DE OPERAR CREA VERDE C/ BOLSILLO LATERAL IZQUIERDO MANGA CORTA TALLA L/XL 100% ALGODÓN. · INSUMOS DE TEXTILES Y ROPA CLÍNICA AÑO 2020-"
+    },
+    {
+      "category_id": "parches_curacion",
+      "name": "Parches y apositos de curacion",
+      "status": "candidate",
+      "include": [
+        "\\bparche\\w*"
+      ],
+      "exclude": [
+        "buprenorfina",
+        "lidocaina",
+        "fentanilo",
+        "marcapaso",
+        "stat\\s*-?\\s*padz",
+        "desfibril",
+        "semilla",
+        "vaccaria",
+        "acupuntura"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/parches_curacion.json",
+      "corpus_regex": "(?i).*parche.*",
+      "canonical_example": "PARCHE HIDROCOLOIDE 10 X 10 DELGADOS (225-1033) · INSUMOS NEONATOLOGÍA 2020-2021"
+    },
+    {
+      "category_id": "grapadoras_quirurgicas",
+      "name": "Grapadoras quirurgicas y recargas",
+      "status": "candidate",
+      "include": [
+        "\\bendograpadora\\w*",
+        "\\bengrapadora\\w*",
+        "\\bgrapadora\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/grapadoras_quirurgicas.json",
+      "corpus_regex": "(?i).*(grapadora|engrapadora).*",
+      "canonical_example": "205-2323 ENDOGRAPADORA CIRCULAR 25 MM (STAPLER) · SUMINISTRO DE INSUMOS DE VARIOS PABELLON CENTRAL"
+    },
+    {
+      "category_id": "ecocardiografos",
+      "name": "Ecocardiografos",
+      "status": "candidate",
+      "include": [
+        "\\becocardiografo\\w*"
+      ],
+      "exclude": [
+        "arriendo",
+        "mantencion",
+        "mantenimiento",
+        "servicio",
+        "teclado",
+        "accesorio",
+        "repuesto"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/ecocardiografos.json",
+      "corpus_regex": "(?i).*ecocardiografo.*",
+      "canonical_example": "ECOCARDIOGRAFO DOPPLER · Adq. Equipo Médico ECOCARDIOGRAFO DOPPLER"
+    },
+    {
+      "category_id": "nutricion_parenteral",
+      "name": "Nutricion parenteral",
+      "status": "candidate",
+      "include": [
+        "\\bnutricion\\w*\\s+parenteral\\w*",
+        "bolsa\\s+de\\s+nutricion\\s+parenteral",
+        "solucion\\s+de\\s+aminoacidos"
+      ],
+      "exclude": [
+        "bajada\\s+de\\s+suero"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/nutricion_parenteral.json",
+      "corpus_regex": "(?i).*(nutricion parenteral|aminoacidos).*",
+      "canonical_example": "NUTRICION PARENTERAL CENTRAL 1600 KCAL (SMOFKABIVEN) · FÁRMACOS: MEDICAMENTOS ENERO 2020"
+    },
+    {
+      "category_id": "clips_quirurgicos",
+      "name": "Clips quirurgicos para ligadura",
+      "status": "candidate",
+      "include": [
+        "\\bclip\\w*"
+      ],
+      "exclude": [
+        "ecg",
+        "ergometro",
+        "cocodrilo",
+        "banana"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/clips_quirurgicos.json",
+      "corpus_regex": "(?i).*clip.*",
+      "canonical_example": "CLIPS PARA MARCACION Y LIGADURA DE TITANIO, PARA DEPARTAMENDO DE CARDIOLOGÍA · APLICADORES Y CORCHETERAS DE PIEL PARA PABELLONES"
+    },
+    {
+      "category_id": "controles_esterilizacion",
+      "name": "Controles e indicadores de esterilizacion",
+      "status": "candidate",
+      "include": [
+        "control\\s+quimico",
+        "control\\s+de\\s+esterilizacion",
+        "control\\w*\\s+(p\\s*/|para\\s+)?autoclave"
+      ],
+      "exclude": [
+        "control\\s+de\\s+calidad",
+        "control\\s+de\\s+coomb",
+        "reactivo",
+        "inmunohematolog",
+        "incontinencia"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/controles_esterilizacion.json",
+      "corpus_regex": "(?i).*control.*esteriliz.*|.*control quimico.*",
+      "canonical_example": "CONTROL QUIMICO TIPO CLASE 4, PARA OXIDO DE ETILENO, TIRAS 2 X 11 CM APROX.(224-6955) · “INSUMOS GENERALES DE ESTERILIZACIÓN 2020-2021"
+    },
+    {
+      "category_id": "soluciones_dialisis_peritoneal",
+      "name": "Soluciones de diálisis peritoneal",
+      "status": "candidate",
+      "include": [
+        "\\bsolucion\\w*\\b.*\\bdialisis\\b",
+        "\\bperitoneo\\s+dialisis\\b.*\\bcalcio\\b"
+      ],
+      "exclude": [
+        "\\bcateter\\w*",
+        "\\bcassette\\b",
+        "\\blinea\\b",
+        "\\bpinza\\b",
+        "\\bset\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/soluciones_dialisis_peritoneal.json",
+      "corpus_regex": "(?i).*soluci[oó]n.*di[aá]lisis.*",
+      "canonical_example": "SOLUCION PERITONEO DIALISIS CALCIO BAJO MANUAL 1.5% 2.5 L (218-3044) · INSUMOS PARA PERITONEO DIÁLISIS"
+    },
+    {
+      "category_id": "transductores_presion",
+      "name": "Transductores de presión",
+      "status": "candidate",
+      "include": [
+        "\\btransductor\\w*\\b.*\\bpresion\\b",
+        "\\btransductor\\w*\\b.*linea\\s+arterial"
+      ],
+      "exclude": [
+        "\\bflujo\\b",
+        "\\bmhz\\b",
+        "\\becografo\\b",
+        "\\bsonda\\b",
+        "\\bdesinfectante\\b",
+        "\\bfhr\\b",
+        "\\barriendo\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/transductores_presion.json",
+      "corpus_regex": "(?i).*transductor.*presi[oó]n.*",
+      "canonical_example": "TRANSDUCTOR DE PRESIÓN CON TAPA PORTECTORA Y CONEXIÓN TIPO LUER - LOCK PARA MÁQUINAS DE HEMODIÁLISIS. · INSUMOS PARA TERAPIA DE SOPORTE RENA"
+    },
+    {
+      "category_id": "suplementos_nutricionales",
+      "name": "Suplementos nutricionales",
+      "status": "candidate",
+      "include": [
+        "\\bsuplemento\\w*\\b.*nutricional",
+        "\\bsuplemento\\w*\\b.*aliment\\w*"
+      ],
+      "exclude": [
+        "\\bbactec\\b",
+        "\\bmgit\\b",
+        "\\bagar\\b",
+        "\\bplaca\\b",
+        "\\bkit\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/suplementos_nutricionales.json",
+      "corpus_regex": "(?i).*suplemento.*(nutricional|aliment).*",
+      "canonical_example": "SUPLEMENTO NUTRICIONAL LIQUIDO HIPERCALORICO-HIPOPROTEICO PARA PACIENTES EN PRE-DIALISIS Y/O CON RESTRICCION HIDRICA. PRESENTACION 200 A 250"
+    },
+    {
+      "category_id": "fibras_laser",
+      "name": "Fibras láser",
+      "status": "candidate",
+      "include": [
+        "\\bfibra\\w*\\b.*\\blaser\\b"
+      ],
+      "exclude": [
+        "\\bfenofibrato\\b",
+        "\\bperno\\w*",
+        "elastic\\w*",
+        "intraparenquimatosa",
+        "\\borceina\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/fibras_laser.json",
+      "corpus_regex": "(?i).*fibra.*l[aá]ser.*",
+      "canonical_example": "FIBRAS LASER 273 MULTIUSO (PROMEDIO 20 USOS) · Suministro Insumos Urologicos"
+    },
+    {
+      "category_id": "tijeras",
+      "name": "Tijeras",
+      "status": "candidate",
+      "include": [
+        "\\btijera\\w*"
+      ],
+      "exclude": [
+        "\\bkit\\b",
+        "\\bset\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/tijeras.json",
+      "corpus_regex": "(?i).*tijera.*",
+      "canonical_example": "Tijera Mayo curva 17cm (Dr.Guerra) · Insumos varios,Hospital de Vicuña"
+    },
+    {
+      "category_id": "medias_antiembolicas",
+      "name": "Medias antiembólicas / antitrombóticas",
+      "status": "candidate",
+      "include": [
+        "\\bmedia[s]?\\s+antiembolic\\w*",
+        "\\bmedia[s]?\\s+antitrombotic\\w*"
+      ],
+      "exclude": [
+        "\\bfutbol\\b",
+        "deportiv\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/medias_antiembolicas.json",
+      "corpus_regex": "(?i).*medias?\\s+anti(embol|trombot).*",
+      "canonical_example": "MEDIA ANTIEMBOLICA TALLA M"
+    },
+    {
+      "category_id": "vaselinas",
+      "name": "Vaselina (líquida / estéril / medicinal)",
+      "status": "candidate",
+      "include": [
+        "\\bvaselina\\w*"
+      ],
+      "exclude": [
+        "aposito",
+        "barrera\\s+antimicrob",
+        "corticoide"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/vaselinas.json",
+      "corpus_regex": "(?i).*vaselina.*",
+      "canonical_example": "VASELINA ESTERIL 10 ML"
+    },
+    {
+      "category_id": "sillones_dentales",
+      "name": "Sillones dentales",
+      "status": "candidate",
+      "include": [
+        "\\bsillon(es)?\\s+dental\\w*"
+      ],
+      "exclude": [
+        "mantencion",
+        "\\bservicio",
+        "manguera",
+        "ampolleta",
+        "arriendo"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sillones_dentales.json",
+      "corpus_regex": "(?i).*sillon.*dental.*",
+      "canonical_example": "SILLON DENTAL"
+    },
+    {
+      "category_id": "apositos_espuma",
+      "name": "Apósitos de espuma hidrofílica",
+      "status": "candidate",
+      "include": [
+        "\\baposito[s]?\\s+(de\\s+)?espuma\\w*",
+        "espuma\\s+hidrofil\\w*"
+      ],
+      "exclude": [
+        "detergente",
+        "escudo\\s+facial",
+        "talonera"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/apositos_espuma.json",
+      "corpus_regex": "(?i).*aposito.*espuma.*",
+      "canonical_example": "APOSITO ESPUMA HIDROFILICA UNILAMINAR SIN POLIURETANAO NO ADHESIVA 10 X 10 CM  (225-0151)"
+    },
+    {
+      "category_id": "anestesicos_dentales",
+      "name": "Anestésicos dentales (cartuchos)",
+      "status": "candidate",
+      "include": [
+        "\\banestesia\\s+(al\\s+)?\\d",
+        "\\banestesia\\s+(topica|mepivacaina|lidocaina)"
+      ],
+      "exclude": [
+        "maquina",
+        "trampa\\s+de\\s+agua",
+        "colonoscop",
+        "pet\\s+ct"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/anestesicos_dentales.json",
+      "corpus_regex": "(?i).*anestesia\\s+.*(lidocaina|mepivacaina|al\\s*\\d|topica).*",
+      "canonical_example": "ANESTESIA AL 2%  LIDOCAÍNA + EPINEFRINA"
+    },
+    {
+      "category_id": "injertos_oseos",
+      "name": "Injertos oseos",
+      "status": "candidate",
+      "include": [
+        "\\b(injerto|aloinjerto)\\w*"
+      ],
+      "exclude": [
+        "\\b(fresa|fresas)\\b",
+        "\\bnervio\\b",
+        "\\bligamento\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/injertos_oseos.json",
+      "corpus_regex": "(?i).*(injerto|aloinjerto).*",
+      "canonical_example": "7002480\tALOINJERTO ÓSEO LIOFILIZADO, JERINGA 0,5 CC"
+    },
+    {
+      "category_id": "torulas",
+      "name": "Torulas de algodon",
+      "status": "candidate",
+      "include": [
+        "\\btorula\\w*"
+      ],
+      "exclude": [
+        "\\bkit\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/torulas.json",
+      "corpus_regex": "(?i).*torula.*",
+      "canonical_example": "TORULAS DE ALGODON 3,5 GR.  ENVASADO EN BOLSA DE POLIETILENO CON 100 UNIDADES (225-0363)"
+    },
+    {
+      "category_id": "cojines_antiescara",
+      "name": "Cojines antiescara",
+      "status": "candidate",
+      "include": [
+        "\\bcojin(es)?\\b"
+      ],
+      "exclude": [
+        "\\bcolchon\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cojines_antiescara.json",
+      "corpus_regex": "(?i).*coj[ií]n.*",
+      "canonical_example": "COJIN ANTIESCARA VICOELASTICO 45 CMS DE ANCHO"
+    },
+    {
+      "category_id": "mascaras_laringeas",
+      "name": "Mascaras laringeas",
+      "status": "candidate",
+      "include": [
+        "\\bmascara\\w*\\s+laringea\\w*"
+      ],
+      "exclude": [
+        "\\bfacial\\b",
+        "\\bproteccion\\b",
+        "\\bpantalla\\b",
+        "enmascarar"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/mascaras_laringeas.json",
+      "corpus_regex": "(?i).*mascara\\s+laringea.*",
+      "canonical_example": "MASCARA LARINGEA N°4 FASTRACH"
+    },
+    {
+      "category_id": "cables_interfaz_monitores",
+      "name": "Cables e interfaz para monitores y equipos medicos",
+      "status": "candidate",
+      "include": [
+        "\\bcable\\w*"
+      ],
+      "exclude": [
+        "\\bsin\\s+cable\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cables_interfaz_monitores.json",
+      "corpus_regex": "(?i).*cable.*",
+      "canonical_example": "CABLE INTERFAZ MONITOR SPACELABS MODELO XPREZZON"
+    },
+    {
+      "category_id": "microguias",
+      "name": "Microguias neurovasculares / hemodinamia",
+      "status": "candidate",
+      "include": [
+        "\\bmicroguia\\w*"
+      ],
+      "exclude": [
+        "compatible",
+        "\\bbalon\\b",
+        "\\bmicrocateter\\b",
+        "\\badaptador\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/microguias.json",
+      "corpus_regex": "(?i).*microguia.*",
+      "canonical_example": "212-0086 MICROGUIA DE INTERCAMBIO EXTRASOFT DE 0.030 X 150CM X 5MM EN J."
+    },
+    {
+      "category_id": "diversores_de_flujo",
+      "name": "Diversores de flujo neurovasculares",
+      "status": "candidate",
+      "include": [
+        "\\bdiversor\\w*"
+      ],
+      "exclude": [
+        "\\bmicrocateter\\b",
+        "compatible"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/diversores_de_flujo.json",
+      "corpus_regex": "(?i).*diversor.*",
+      "canonical_example": "20-222-500-619-00 Diversor diferentes medidas"
+    },
+    {
+      "category_id": "micromotores_dentales",
+      "name": "Micromotores dentales",
+      "status": "candidate",
+      "include": [
+        "\\bmicromotor\\w*",
+        "\\bmicro\\s+motor\\w*"
+      ],
+      "exclude": [
+        "contra\\s*angulo",
+        "\\baceite\\b",
+        "\\bspray\\b",
+        "\\blapiz\\b",
+        "\\btorno\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/micromotores_dentales.json",
+      "corpus_regex": "(?i).*micro\\s*motor.*",
+      "canonical_example": "MICROMOTOR TIPO  MIDWEST (UD)"
+    },
+    {
+      "category_id": "llaves_3_pasos",
+      "name": "Llaves de 3 pasos",
+      "status": "candidate",
+      "include": [
+        "\\bllave\\w*\\s+(de\\s+)?3\\s+pasos"
+      ],
+      "exclude": [
+        "\\btorque\\b",
+        "\\btroque\\b",
+        "dispensadora",
+        "\\ben\\s+y\\b",
+        "herramienta"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/llaves_3_pasos.json",
+      "corpus_regex": "(?i).*llave.*3.*paso.*",
+      "canonical_example": "LLAVE 3 PASOS PARA INFUSION LIPIDOS NEONATOS RESISTENTE PARA EVITAR FUGAS (TIPO DISCOFIX C)  (222-6601-1)"
+    },
+    {
+      "category_id": "electrobisturies",
+      "name": "Electrobisturies (unidades electroquirurgicas)",
+      "status": "candidate",
+      "include": [
+        "\\belectrobisturi\\w*",
+        "\\belectroquirurgic\\w*"
+      ],
+      "exclude": [
+        "\\bplaca\\b",
+        "\\blapiz\\b",
+        "\\bpunta\\b",
+        "reparacion",
+        "limpiador",
+        "\\bcable\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/electrobisturies.json",
+      "corpus_regex": "(?i).*electrobisturi.*",
+      "canonical_example": "Unidades Electroquirurgicas/ Electrobisturi"
+    },
+    {
+      "category_id": "hemostaticos_absorbibles",
+      "name": "Hemostaticos absorbibles topicos",
+      "status": "candidate",
+      "include": [
+        "\\bhemostatic\\w*"
+      ],
+      "exclude": [
+        "\\binyectable\\b",
+        "etamsilato",
+        "astringente",
+        "\\bsolucion\\b",
+        "\\bbotella\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/hemostaticos_absorbibles.json",
+      "corpus_regex": "(?i).*hemostatic.*",
+      "canonical_example": "HEMOSTATICO ABSORBIBLE SURGICEL UN KNIT DE 7.6X10.2 CM"
+    },
+    {
+      "category_id": "hojas_de_bisturi",
+      "name": "Hojas de bisturi",
+      "status": "candidate",
+      "include": [
+        "\\bhoja\\w*\\s+(de\\s+)?bisturi\\w*"
+      ],
+      "exclude": [
+        "\\bsierra\\b",
+        "\\bpapel\\b",
+        "\\bresma\\b",
+        "envolver",
+        "mantequilla"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/hojas_de_bisturi.json",
+      "corpus_regex": "(?i).*hoja.*bisturi.*",
+      "canonical_example": "HOJA DE BISTURÍ Nº 15 ESTÉRIL"
+    },
+    {
+      "category_id": "sabanillas",
+      "name": "Sabanillas clinicas desechables",
+      "status": "candidate",
+      "include": [
+        "\\bsabanilla\\w*"
+      ],
+      "exclude": [
+        "\\bpanal\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sabanillas.json",
+      "corpus_regex": "(?i).*sabanilla.*",
+      "canonical_example": "SABANILLA CLÍNICA DESECHABLE 48 MT X 50 CM"
+    },
+    {
+      "category_id": "sabanas",
+      "name": "Sabanas clinicas y hospitalarias",
+      "status": "candidate",
+      "include": [
+        "\\bsabana\\w*"
+      ],
+      "exclude": [
+        "sabanilla"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sabanas.json",
+      "corpus_regex": "(?i).*s[aá]bana(?!illa).*",
+      "canonical_example": "SABANA ENCIMERA VERDE DE 120*120 CM, CREA 100% ALGODÓN, DOBLE PAÑO."
+    },
+    {
+      "category_id": "oxigeno_medicinal",
+      "name": "Oxigeno medicinal",
+      "status": "candidate",
+      "include": [
+        "\\boxigeno\\w*"
+      ],
+      "exclude": [
+        "sonda",
+        "naricera",
+        "bigotera"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/oxigeno_medicinal.json",
+      "corpus_regex": "(?i).*oxigeno.*",
+      "canonical_example": "OXIGENO LIQUIDO MEDICINAL"
+    },
+    {
+      "category_id": "detergentes",
+      "name": "Detergentes y limpiadores",
+      "status": "candidate",
+      "include": [
+        "\\bdetergente\\w*"
+      ],
+      "exclude": [
+        "agua destilada",
+        "cloro"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/detergentes.json",
+      "corpus_regex": "(?i).*detergente.*",
+      "canonical_example": "DETERGENTE DESINFECTANTE PARA SUPERFICIES"
+    },
+    {
+      "category_id": "papilotomos",
+      "name": "Papilotomos para endoscopia",
+      "status": "candidate",
+      "include": [
+        "\\bpapilotomo\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/papilotomos.json",
+      "corpus_regex": "(?i).*papilotomo.*",
+      "canonical_example": "PAPILOTOMO CURVO TRIPLE LUMEN CANAL 2,8 MM LONGITUD 1700 MM"
+    },
+    {
+      "category_id": "sellantes_dentales",
+      "name": "Sellantes dentales de fosas y fisuras",
+      "status": "candidate",
+      "include": [
+        "\\bsellante\\w*"
+      ],
+      "exclude": [
+        "pincel\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sellantes_dentales.json",
+      "corpus_regex": "(?i).*sellante.*",
+      "canonical_example": "SELLANTE DE FOSAS Y FISURA (RESINA)"
+    },
+    {
+      "category_id": "iohexol",
+      "name": "Iohexol (medio de contraste yodado)",
+      "status": "candidate",
+      "include": [
+        "\\biohexol\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/iohexol.json",
+      "corpus_regex": "(?i).*iohexol.*",
+      "canonical_example": "IOHEXOL 350 MG. / 50 ML FA"
+    },
+    {
+      "category_id": "material_osteosintesis",
+      "name": "Material de osteosintesis (placas y tornillos)",
+      "status": "candidate",
+      "include": [
+        "\\bosteosintesis\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/material_osteosintesis.json",
+      "corpus_regex": "(?i).*osteosintesis.*",
+      "canonical_example": "CAJA DE TRAUMA MAXILO FACIAL OSTEOSINTESIS"
+    },
+    {
+      "category_id": "matrices_dentales",
+      "name": "Bandas y portamatrices dentales",
+      "status": "candidate",
+      "include": [
+        "\\b(?:banda|huincha)\\s+matriz\\w*",
+        "\\bporta\\s*matriz\\w*"
+      ],
+      "exclude": [
+        "\\balginato\\b",
+        "\\baposito\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/matrices_dentales.json",
+      "corpus_regex": "(?i).*matriz.*",
+      "canonical_example": "Banda matriz ancha 0,7mm  (rollo)"
+    },
+    {
+      "category_id": "medios_de_contraste",
+      "name": "Medios de contraste radiológico",
+      "status": "candidate",
+      "include": [
+        "\\bmedio\\w*\\s+(?:de\\s+)?contraste",
+        "\\bcontraste\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/medios_de_contraste.json",
+      "corpus_regex": "(?i).*contraste.*",
+      "canonical_example": "MEDIOS DE CONTRASTE ISOSMOLAR 320 MG/ML, TIPO IODIXANOL"
+    },
+    {
+      "category_id": "pilares_dentales",
+      "name": "Pilares dentales sobre implante",
+      "status": "candidate",
+      "include": [
+        "\\bpilar\\w*\\b.*\\btitanio\\b",
+        "\\bpilares\\b"
+      ],
+      "exclude": [
+        "\\bdisco\\b",
+        "ferreteria",
+        "\\bdesbaste\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/pilares_dentales.json",
+      "corpus_regex": "(?i).*pilar(?:es)?\\b.*titanio.*",
+      "canonical_example": "Pilares con base de titanio de altura entre 4 y 5 mm., conexión cilindro cónica, sistema de bloqueo mecánico (que incluya tornillo), que per"
+    },
+    {
+      "category_id": "insumos_artrodesis",
+      "name": "Implantes de artrodesis (clavos/placas)",
+      "status": "candidate",
+      "include": [
+        "\\bartrodesis\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/insumos_artrodesis.json",
+      "corpus_regex": "(?i).*artrodesis.*",
+      "canonical_example": "SET CLAVO ARTRODESIS TIBIO-TALO-CALCANEO"
+    },
+    {
+      "category_id": "lamparas_clinicas",
+      "name": "Lámparas clínicas de examen/procedimiento",
+      "status": "candidate",
+      "include": [
+        "\\blampara\\w*"
+      ],
+      "exclude": [
+        "\\bportalampara\\w*",
+        "\\bporta\\s*lampara\\w*",
+        "reparacion"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/lamparas_clinicas.json",
+      "corpus_regex": "(?i).*l[aá]mpara.*",
+      "canonical_example": "LAMPARAS TALLO FLEXIBLE LED"
+    },
+    {
+      "category_id": "anclas_quirurgicas",
+      "name": "Anclas quirúrgicas (fijación de tejidos)",
+      "status": "candidate",
+      "include": [
+        "\\banclas?\\b"
+      ],
+      "exclude": [
+        "\\bshaver\\b",
+        "\\bpinzas?\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/anclas_quirurgicas.json",
+      "corpus_regex": "(?i).*anclas?\\b.*",
+      "canonical_example": "Ancla de Titanio; de acuerdo a requerimientos técnicos y bases adjuntas."
+    },
+    {
+      "category_id": "extractores_de_leche",
+      "name": "Extractores de leche",
+      "status": "candidate",
+      "include": [
+        "\\bextractor\\w*\\s+de\\s+leche\\b",
+        "\\bbomba\\s+extractora\\b"
+      ],
+      "exclude": [
+        "\\brepuesto\\w*",
+        "\\bmanguera\\b",
+        "\\bmembrana\\w*",
+        "\\bvalvula\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/extractores_de_leche.json",
+      "corpus_regex": "(?i).*extractor.*leche.*",
+      "canonical_example": "EXTRACTOR DE LECHE MANUAL"
+    },
+    {
+      "category_id": "fijadores_externos",
+      "name": "Fijadores externos (traumatología)",
+      "status": "candidate",
+      "include": [
+        "\\bfijador(es)?\\s+externo\\w*",
+        "\\btutor\\b"
+      ],
+      "exclude": [
+        "\\bcitolog\\w*",
+        "\\btubo\\s+endotraqueal\\b",
+        "\\bspray\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/fijadores_externos.json",
+      "corpus_regex": "(?i).*fijador.*externo.*",
+      "canonical_example": "Fijador externo tipo orthofix. kit de reconstruccion de miembro para adulto, compresor y distractor."
+    },
+    {
+      "category_id": "mantas_termicas",
+      "name": "Mantas térmicas",
+      "status": "candidate",
+      "include": [
+        "\\bmanta[s]?\\s+termica\\w*"
+      ],
+      "exclude": [
+        "\\bdiamantad\\w*",
+        "\\bamantadina\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/mantas_termicas.json",
+      "corpus_regex": "(?i).*manta.*t[eé]rmica.*",
+      "canonical_example": "MANTA TÉRMICA DE EMERGENCIA ADULTO"
+    },
+    {
+      "category_id": "gases_medicinales",
+      "name": "Gases medicinales/clínicos",
+      "status": "candidate",
+      "include": [
+        "\\bgases?\\s+(medicinal\\w*|clinic\\w*)"
+      ],
+      "exclude": [
+        "\\bmantenci\\w*",
+        "\\bjeringa\\b",
+        "\\bcaldera\\w*",
+        "\\bsangre\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/gases_medicinales.json",
+      "corpus_regex": "(?i).*gases?\\s+(medicinal|cl[ií]nic).*",
+      "canonical_example": "Contratación de suministro de Gases Clínicos para el Hospital Padre Alberto Hurtado"
+    },
+    {
+      "category_id": "calcio_gluconato",
+      "name": "Calcio gluconato (inyectable)",
+      "status": "candidate",
+      "include": [
+        "\\bcalcio\\s+gluconato\\b",
+        "\\bgluconato\\s+de\\s+calcio\\b"
+      ],
+      "exclude": [
+        "\\bcarbonato\\b",
+        "\\bperitoneo\\b",
+        "\\bfolinato\\b",
+        "\\bdialisis\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/calcio_gluconato.json",
+      "corpus_regex": "(?i).*calcio\\s+gluconato.*|.*gluconato\\s+de\\s+calcio.*",
+      "canonical_example": "Calcio Gluconato 10 % Am 10 ml"
+    },
+    {
+      "category_id": "lavadoras_de_instrumental",
+      "name": "Lavadoras de instrumental (ultrasónicas/descontaminadoras)",
+      "status": "candidate",
+      "include": [
+        "\\blavadora\\w*\\b.*(ultrasonic|descontamin|termodesinfect)",
+        "\\blavadora\\s+(ultrasonic|descontamin|termodesinfect)\\w*"
+      ],
+      "exclude": [
+        "detergente",
+        "\\blavado\\b",
+        "mantencion",
+        "mantenimiento",
+        "servicio"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/lavadoras_de_instrumental.json",
+      "corpus_regex": "(?i).*lavadora.*",
+      "canonical_example": "LAVADORA ULTRASÓNICA de 10 lts."
+    },
+    {
+      "category_id": "campos_quirurgicos",
+      "name": "Campos quirúrgicos/clínicos estériles",
+      "status": "candidate",
+      "include": [
+        "\\bcampo\\w*\\s+(quirurgic|clinic)\\w*",
+        "\\bcampo\\s+de\\s+envolver",
+        "pano\\s+perforado\\s+esteril\\s+campo"
+      ],
+      "exclude": [
+        "campo\\s+visual"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/campos_quirurgicos.json",
+      "corpus_regex": "(?i).*campo.*(quir[uú]rgic|cl[ií]nic|envolver).*",
+      "canonical_example": "CAMPO QUIRÚRGICO ESTÉRIL 40X40"
+    },
+    {
+      "category_id": "tubos_al_vacio",
+      "name": "Tubos al vacío para laboratorio",
+      "status": "candidate",
+      "include": [
+        "tubo\\s+\\d+\\s*ml\\s+tapa",
+        "tubo\\w*\\s+al\\s+vacio"
+      ],
+      "exclude": [
+        "ungento",
+        "ungüento",
+        "anestesia",
+        "mepivacaina",
+        "oftalmolog"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/tubos_al_vacio.json",
+      "corpus_regex": "(?i).*tubo.*(al\\s+vac[ií]o|tapa\\s+(verde|lavanda|roja|azul)).*",
+      "canonical_example": "233-2804|TUBO 2 ml TAPA VERDE CON HEP DE LITIO"
+    },
+    {
+      "category_id": "resucitadores_manuales",
+      "name": "Resucitadores manuales tipo Ambu",
+      "status": "candidate",
+      "include": [
+        "\\bresucitador\\w*"
+      ],
+      "exclude": [
+        "\\basa\\b",
+        "mascara\\s+laringea",
+        "\\bfaja\\b",
+        "\\bguante\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/resucitadores_manuales.json",
+      "corpus_regex": "(?i).*resucitador.*",
+      "canonical_example": "340-8430\tRESUCITADOR ADULTO MANUAL TIPO AMBU COMPLETAMENTE  AUTOCLAVABLE (UD) INCLUSO BOLSA DE RESERVORIO"
+    },
+    {
+      "category_id": "colostomia",
+      "name": "Insumos de colostomía",
+      "status": "candidate",
+      "include": [
+        "\\bcolostom\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/colostomia.json",
+      "corpus_regex": "(?i).*colostom.*",
+      "canonical_example": "BOLSA COLOSTOMIA ABIERTA 50 MM"
+    },
+    {
+      "category_id": "peliculas_dentales",
+      "name": "Pelicula radiografica dental",
+      "status": "candidate",
+      "include": [
+        "\\bpelicula\\w*\\s+dental",
+        "\\bpelicula\\w*\\s+(retroalveolar|periapical|df\\s*-?\\s*\\d+)"
+      ],
+      "exclude": [
+        "\\blaser\\b",
+        "\\bmamografia\\b",
+        "\\bradiografia\\s+general\\b",
+        "\\bprotector\\s+cutaneo\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/peliculas_dentales.json",
+      "corpus_regex": "(?i).*pelicula.*dental.*",
+      "canonical_example": "PELICULA DENTAL ADULTO"
+    },
+    {
+      "category_id": "botones_gastrostomia",
+      "name": "Boton de gastrostomia",
+      "status": "candidate",
+      "include": [
+        "\\bboton\\w*\\s+(de\\s+|metalico\\s+)?gastrostom\\w*",
+        "gastrostom\\w*.*\\bboton\\w*"
+      ],
+      "exclude": [
+        "\\bboton\\w*\\s+(metalico|de\\s+titanio|de\\s+acero|de\\s+cementar|trazador)"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/botones_gastrostomia.json",
+      "corpus_regex": "(?i).*boton.*gastrostom.*",
+      "canonical_example": "222-0614 | BOTON DE GASTROSTOMIA 16 FR X 1,7 CM"
+    },
+    {
+      "category_id": "cuchilletes_oftalmologicos",
+      "name": "Cuchillete oftalmologico",
+      "status": "candidate",
+      "include": [
+        "\\bcuchillete\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/cuchilletes_oftalmologicos.json",
+      "corpus_regex": "(?i).*cuchillete.*",
+      "canonical_example": "CUCHILLETE DE FACO 2,4 MM. CÓDIGO HOSPITAL OFT0032"
+    }
+  ]
 }
