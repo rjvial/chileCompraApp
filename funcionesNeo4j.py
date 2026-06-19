@@ -58,16 +58,26 @@ class Neo4jConnection:
         if self.__driver is not None:
             self.__driver.close()
 
-    def stream(self, cypher: str, parameters: dict | None = None, db: str | None = None):
+    def stream(self, cypher: str, parameters: dict | None = None,
+               db: str | None = None, fetch_size: int | None = None):
         """Yield neo4j.Record objects one at a time instead of buffering the
         whole result (funcionesNeo4j.query does list(...)). For large reads
         where the caller wants to process/report rows as they arrive. The
         session stays open for the lifetime of the generator; closing happens
         when it is exhausted or the consumer stops iterating.
+
+        `fetch_size` sets how many records the driver pulls per network round
+        trip (Bolt PULL). A larger value cuts round trips on a high-latency link
+        at the cost of more buffered rows per pull.
         """
         assert self.__driver is not None, "Driver not initialized!"
         self.__driver.verify_connectivity()
-        session = self.__driver.session(database=db) if db else self.__driver.session()
+        kwargs = {}
+        if db:
+            kwargs["database"] = db
+        if fetch_size:
+            kwargs["fetch_size"] = fetch_size
+        session = self.__driver.session(**kwargs)
         try:
             for record in session.run(cypher, parameters or {}):
                 yield record

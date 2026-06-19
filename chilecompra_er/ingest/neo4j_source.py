@@ -56,15 +56,15 @@ def combined_text(item_expr: str, tender_expr: str = TENDER_NAME) -> str:
             f"ELSE {item_expr} + ' · ' + coalesce({tender_expr}, '') END")
 
 
-# Page size for SKIP/LIMIT streaming. The scan order is stable but unindexed, so
-# each page pays a SKIP that re-scans every prior row — total *fetch* cost is
-# O(n²/page). A big page keeps that quadratic term small (fewer, larger deep
-# SKIPs) at the cost of buffering one page in memory (20k items+offers is fine).
-# This addresses only the fetch; the per-item snapshot-load round-trips that
-# actually dominated a remote resolve are handled separately by Catalog.preload().
-# A true O(n) fetch would need a unique ordered index on ItemLicitacion for
-# keyset/seek paging — not present.
-_BATCH = 20_000
+# Driver fetch size (Bolt PULL batch) for the single streamed fetch in _paged.
+# Bigger = fewer network round trips on a high-latency link, more rows buffered
+# per pull. 10k items+offers per pull is a fine trade-off.
+_BATCH = 10_000
+
+# LIMIT sentinel for "all remaining rows" (Neo4j wants a concrete Long). Must be
+# far above any real row count yet small enough that SKIP+LIMIT — which Neo4j adds
+# internally — can't overflow Long. 1e12 ≫ the corpus (~1.3M) and ≪ 2^63.
+_NO_LIMIT = 1_000_000_000_000
 
 
 def segment_bounds(segment: int | None) -> tuple[int | None, int | None]:
@@ -122,23 +122,19 @@ class SourceItem:
 
 def _paged(conn, cypher: str, build, contains: str | None, limit: int | None,
            skip: int = 0, extra_params: dict | None = None) -> Iterator[SourceItem]:
-    """Stream results in SKIP/LIMIT pages so large pulls don't buffer fully."""
-    fetched = 0
-    while True:
-        page = min(_BATCH, limit - fetched) if limit is not None else _BATCH
-        if page <= 0:
-            return
-        params = {"contains": contains.lower() if contains else None,
-                  "skip": skip, "limit": page}
-        if extra_params:
-            params.update(extra_params)
-        records = conn.query(cypher, parameters=params)
-        for rec in records:
-            yield build(rec)
-            fetched += 1
-        if len(records) < page:
-            return
-        skip += page
+    """Stream the whole result in ONE query, pulled lazily by the driver in
+    `_BATCH`-sized batches. The query keeps a single SKIP (the resume offset,
+    applied once by the server) and an effectively unbounded LIMIT, so the source
+    is scanned ONCE — instead of the old SKIP/LIMIT paging that re-scanned every
+    prior row on each page (O(n²) total, which made a deep resolve slow down as
+    it advanced). This holds a flat rate to the end; memory stays bounded because
+    the driver yields lazily rather than buffering the full result."""
+    params = {"contains": contains.lower() if contains else None,
+              "skip": skip, "limit": limit if limit is not None else _NO_LIMIT}
+    if extra_params:
+        params.update(extra_params)
+    for rec in conn.stream(cypher, parameters=params, fetch_size=_BATCH):
+        yield build(rec)
 
 
 def fetch_tender_items(conn, contains: str | None = None,

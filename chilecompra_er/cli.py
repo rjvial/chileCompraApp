@@ -443,8 +443,8 @@ def cmd_resolve(args) -> int:
         # Initial checkpoint so even a kill before the first progress tick
         # leaves a resumable marker.
         checkpoint(base_stats, done=False)
-        from .ingest.neo4j_source import _BATCH as _page
-        print(f"fetching + resolving (streamed in pages of {_page:,})...",
+        from .ingest.neo4j_source import _BATCH as _fetch
+        print(f"fetching + resolving (single streamed scan, pull batch {_fetch:,})...",
               file=sys.stderr, flush=True)
 
         try:
