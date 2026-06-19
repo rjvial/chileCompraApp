@@ -226,6 +226,44 @@ class Neo4jCatalog:
         self.conn = conn
         self._categories_synced: set[str] = set()
         self._snapshots: dict[str, dict[str, NodeView]] = {}
+        # Raw preloaded GenericProduct rows grouped by category (filled by
+        # preload()); converted to NodeViews lazily in load() once the category's
+        # schema is known. None until preload() runs.
+        self._preloaded: dict[str, list] | None = None
+
+    def preload(self) -> int:
+        """Load the WHOLE curated catalog (all GenericProducts + parent edges) in
+        ONE query, instead of one query per category in load(). Over a high-
+        latency link this turns hundreds/thousands of per-category round-trips
+        into a single one — the dominant cost of a remote `resolve` (see the
+        latency analysis). UNSPSC fallback buckets are excluded: they are single
+        attribute-less roots with nothing to dedup against, so load() serves them
+        from memory without ever touching the graph. Returns the rows preloaded."""
+        rows = self.conn.query(
+            """
+            MATCH (g:GenericProduct)
+            WHERE NOT g.category_id STARTS WITH 'unspsc_'
+            OPTIONAL MATCH (p:GenericProduct)-[:PARENT_OF]->(g)
+            RETURN g{.*} AS props, p.id AS parent_id
+            """
+        )
+        grouped: dict[str, list] = {}
+        for rec in rows:
+            grouped.setdefault(rec["props"]["category_id"], []).append(rec)
+        self._preloaded = grouped
+        return len(rows)
+
+    def _snapshot_from_rows(self, rows: list, id_names: set) -> dict[str, NodeView]:
+        out: dict[str, NodeView] = {}
+        for rec in rows:
+            props = rec["props"]
+            out[props["id"]] = NodeView(
+                id=props["id"],
+                identity_values={k: v for k, v in props.items()
+                                 if k in id_names and v is not None},
+                parent_id=rec["parent_id"],
+            )
+        return out
 
     def ensure_category(self, schema: CategorySchema) -> None:
         if schema.category_id in self._categories_synced:
@@ -251,24 +289,27 @@ class Neo4jCatalog:
     def load(self, category_id: str, schema: CategorySchema) -> dict[str, NodeView]:
         if category_id in self._snapshots:
             return self._snapshots[category_id]
-        records = self.conn.query(
-            """
-            MATCH (g:GenericProduct {category_id: $cid})
-            OPTIONAL MATCH (p:GenericProduct)-[:PARENT_OF]->(g)
-            RETURN g{.*} AS props, p.id AS parent_id
-            """,
-            parameters={"cid": category_id},
-        )
+        # Fallback buckets are attribute-less single roots: nothing to dedup, so
+        # never read the graph — serve (and grow) them purely in memory. The
+        # idempotent MERGE in apply() keeps the root correct across resumes.
+        if schema.status == "fallback":
+            return self._snapshots.setdefault(category_id, {})
         id_names = set(schema.identity_names)
-        out: dict[str, NodeView] = {}
-        for rec in records:
-            props = rec["props"]
-            out[props["id"]] = NodeView(
-                id=props["id"],
-                identity_values={k: v for k, v in props.items()
-                                 if k in id_names and v is not None},
-                parent_id=rec["parent_id"],
+        # Prefer the bulk preload (one round-trip for the whole catalog) over a
+        # per-category query; pop the raw rows once converted so we don't hold
+        # both the raw preload and the NodeView snapshot in memory.
+        if self._preloaded is not None:
+            out = self._snapshot_from_rows(self._preloaded.pop(category_id, []), id_names)
+        else:
+            records = self.conn.query(
+                """
+                MATCH (g:GenericProduct {category_id: $cid})
+                OPTIONAL MATCH (p:GenericProduct)-[:PARENT_OF]->(g)
+                RETURN g{.*} AS props, p.id AS parent_id
+                """,
+                parameters={"cid": category_id},
             )
+            out = self._snapshot_from_rows(records, id_names)
         self._snapshots[category_id] = out
         return out
 
@@ -418,7 +459,7 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
     each checkpoint and at the end). MERGE keys make every flush idempotent, so
     a kill + --resume re-merges safely."""
 
-    def __init__(self, conn, batch_size: int = 1000):
+    def __init__(self, conn, batch_size: int = 10_000):
         super().__init__(conn)
         self.batch_size = batch_size
         self._cat_buf: list[dict] = []

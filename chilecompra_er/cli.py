@@ -352,6 +352,11 @@ def cmd_resolve(args) -> int:
         items = fetchers[args.kind](conn, **kwargs)
 
         catalog = BatchedNeo4jCatalog(conn) if args.persist else InMemoryCatalog()
+        if args.persist:
+            # One bulk snapshot read instead of one per category — collapses the
+            # dominant round-trip cost on a high-latency link (see preload()).
+            n = catalog.preload()
+            print(f"preloaded catalog snapshot: {n:,} generic products (1 query)")
         if args.resume and not args.persist:
             seeded = seed_inmemory_catalog(catalog, prod_csv)
             print(f"reseeded {seeded} existing products from {prod_csv.name}")
@@ -438,7 +443,8 @@ def cmd_resolve(args) -> int:
         # Initial checkpoint so even a kill before the first progress tick
         # leaves a resumable marker.
         checkpoint(base_stats, done=False)
-        print("fetching + resolving (streamed in pages of 1000)...",
+        from .ingest.neo4j_source import _BATCH as _page
+        print(f"fetching + resolving (streamed in pages of {_page:,})...",
               file=sys.stderr, flush=True)
 
         try:

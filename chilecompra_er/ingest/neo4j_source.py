@@ -56,7 +56,15 @@ def combined_text(item_expr: str, tender_expr: str = TENDER_NAME) -> str:
             f"ELSE {item_expr} + ' · ' + coalesce({tender_expr}, '') END")
 
 
-_BATCH = 1000
+# Page size for SKIP/LIMIT streaming. The scan order is stable but unindexed, so
+# each page pays a SKIP that re-scans every prior row — total *fetch* cost is
+# O(n²/page). A big page keeps that quadratic term small (fewer, larger deep
+# SKIPs) at the cost of buffering one page in memory (20k items+offers is fine).
+# This addresses only the fetch; the per-item snapshot-load round-trips that
+# actually dominated a remote resolve are handled separately by Catalog.preload().
+# A true O(n) fetch would need a unique ordered index on ItemLicitacion for
+# keyset/seek paging — not present.
+_BATCH = 20_000
 
 
 def segment_bounds(segment: int | None) -> tuple[int | None, int | None]:
