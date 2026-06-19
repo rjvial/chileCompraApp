@@ -311,7 +311,7 @@ def propose(conn, stats: list[GroupStat], count: int | None = 10,
             min_samples: int = 15,
             min_spend_share: float = 0.0005, revisit: bool = False,
             checkpoint_path: Path | None = None, resume: bool = False,
-            vet=None, batch_size: int = 12,
+            vet=None, batch_size: int = 12, progress=None,
             log=print) -> tuple[list[Candidate], list[Candidate]]:
     """Returns (chosen, rejected). Writes only the vet-rejection cache.
 
@@ -413,7 +413,10 @@ def propose(conn, stats: list[GroupStat], count: int | None = 10,
         elif cp is not None:
             log("  register checkpoint scope differs from this run — starting fresh")
 
+    total = len(stats)
     for idx, s in enumerate(stats, 1):
+        if progress is not None and idx % 25 == 0:
+            progress(idx, total)  # scan-position heartbeat for `pipeline --status`
         if idx <= resume_cursor:  # already vetted in the run we're resuming
             continue
         if len(chosen) >= limit:
@@ -439,6 +442,8 @@ def propose(conn, stats: list[GroupStat], count: int | None = 10,
         if len(batch) >= batch_size:
             flush_batch()
     flush_batch()
+    if progress is not None:
+        progress(total, total)  # scan finished — final heartbeat at 100%
     save_progress(done=True)  # scan finished — checkpoint marks it complete
 
     if skipped_cached:

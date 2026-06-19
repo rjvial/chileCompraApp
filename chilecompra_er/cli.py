@@ -172,7 +172,8 @@ def cmd_build_brand_lexicon(args) -> int:
     conn = get_connection()
     try:
         generated, dropped = build(conn, only=args.only, samples=args.samples,
-                                   max_per_category=args.max_per_category, log=log)
+                                   max_per_category=args.max_per_category, log=log,
+                                   progress=_progress_writer(getattr(args, "progress", None)))
     finally:
         conn.close()
 
@@ -497,6 +498,25 @@ def _ns(**kw):
     return argparse.Namespace(**kw)
 
 
+def _progress_writer(path, *, every: float = 1.0):
+    """A (processed, total) -> None callback that appends a timeline sample to
+    `path` so `pipeline --status` can show the step's N/total + rate + ETA — the
+    same shape the resolve steps already write. Throttled to one sample per
+    `every` seconds (plus always the final point). None path -> no-op."""
+    if path is None:
+        return None
+    from .ingest.resume import append_progress
+    last = [0.0]
+
+    def write(processed, total) -> None:
+        now = time.time()
+        if now - last[0] >= every or (total and processed >= total):
+            append_progress(path, {"ts": now, "processed": processed, "total": total})
+            last[0] = now
+
+    return write
+
+
 def cmd_pipeline(args) -> int:
     """Run the whole end-to-end build as an ordered, step-level-resumable
     sequence (see chilecompra_er/pipeline.py). Each step reuses the existing
@@ -539,6 +559,13 @@ def cmd_pipeline(args) -> int:
     final_prefix = data / FINAL_PREFIX_NAME
     prefix_of = {STEP_BUILD: build_prefix, STEP_FINAL: final_prefix}
 
+    def step_progress_path(step: str):
+        """Progress-timeline file for ANY step — uniform with the resolve steps'
+        <prefix>.progress.jsonl — so --status reads every step the same way."""
+        if step in prefix_of:
+            return sub_progress_path(prefix_of[step])
+        return data / f"{step.replace('-', '_')}.progress.jsonl"
+
     def sub_processed(step: str) -> tuple[int, bool] | None:
         """(records done, complete?) for a resolve step's within-run checkpoint,
         or None if it hasn't started."""
@@ -561,7 +588,7 @@ def cmd_pipeline(args) -> int:
         over the trailing `window` samples (recent); `elapsed` is the whole
         timeline's active time; `eta` extrapolates the remaining loop at `rate`.
         None if the timeline has <2 points."""
-        hist = read_progress(sub_progress_path(prefix_of[step]))
+        hist = read_progress(step_progress_path(step))
         if len(hist) < 2:
             return None
         last = hist[-1]
@@ -625,40 +652,42 @@ def cmd_pipeline(args) -> int:
         if not cp.loop_sizes and STEP_MIGRATE in cp.done:
             compute_loop_sizes(cp)
         done = set(cp.done)
+        todo = [s for s in PIPELINE_STEPS if s not in done]
+        current = todo[0] if todo else None
         stamp = time.strftime("%H:%M:%S")
         print(f"pipeline status  (segment={cp.segment}  limit={cp.limit})  {stamp}")
         print(f"  checkpoint: {cp_path}")
         print(f"  {len(done)}/{len(PIPELINE_STEPS)} steps done\n")
         for step in PIPELINE_STEPS:
-            mark = "[x]" if step in done else "[ ]"
-            detail = ""
-            if step in RESOLVE_STEPS:
-                size = cp.loop_sizes.get(step)
-                total = f"{size:,}" if size is not None else "—"
-                prog = sub_processed(step)
-                ps = progress_stats(step)
-                if prog is None and ps is None:
-                    detail = f"  loop size {total}  [not started]"
-                else:
-                    complete = prog[1] if prog else False
-                    # Show the freshest count: the timeline ticks ~100x finer
-                    # than the durable checkpoint, so count/pct/rate/ETA all
-                    # derive from the same point.
-                    n = ps["processed"] if ps else prog[0]
-                    pct = f" ({n/size:.1%})" if size else ""
-                    if complete:
-                        el = f"  in {_fmt_dur(ps['elapsed_secs'])}" if ps else ""
-                        detail = f"  loop {n:,}/{total}{pct}  [done{el}]"
-                    elif ps and ps["rate_per_min"] > 0:
-                        eta = f"ETA ~{_fmt_dur(ps['eta_secs'])}" if ps["eta_secs"] \
-                            else "ETA —"
-                        detail = (f"  loop {n:,}/{total}{pct}  "
-                                  f"{ps['rate_per_min']:,.0f}/min  {eta}"
-                                  f"  (elapsed {_fmt_dur(ps['elapsed_secs'])})")
-                    else:
-                        detail = f"  loop {n:,}/{total}{pct}  [in progress]"
-            print(f"  {mark} {step}{detail}")
+            print(f"  {'[x]' if step in done else '[ ]'} {step}"
+                  f"{_step_detail(step, step in done, step == current, cp)}")
         return "complete" if cp.is_complete() else "running"
+
+    def _step_detail(step: str, is_done: bool, is_current: bool,
+                     cp: PipelineCheckpoint) -> str:
+        """One step's progress line — uniform for every step: N/total + rate + ETA
+        when the step has a timeline (resolve steps, the register vet scans, the
+        brand-lexicon scan); plain done/running/pending otherwise."""
+        ps = progress_stats(step)
+        size = cp.loop_sizes.get(step)  # resolve steps know their size up front
+        if ps:
+            n, total = ps["processed"], ps["total"]
+            tot = f"{total:,}" if total else "—"
+            pct = f" ({n / total:.1%})" if total else ""
+            if is_done:
+                return f"  {n:,}/{tot}{pct}  [done in {_fmt_dur(ps['elapsed_secs'])}]"
+            if ps["rate_per_min"] > 0:
+                eta = f"ETA ~{_fmt_dur(ps['eta_secs'])}" if ps["eta_secs"] else "ETA —"
+                return (f"  {n:,}/{tot}{pct}  {ps['rate_per_min']:,.0f}/min  {eta}"
+                        f"  (elapsed {_fmt_dur(ps['elapsed_secs'])})")
+            return f"  {n:,}/{tot}{pct}  [in progress]"
+        if is_done:
+            return "  [done]"
+        if is_current:
+            return "  [running…]"
+        if size:  # a resolve step that hasn't started, but whose size is known
+            return f"  loop size {size:,}  [not started]"
+        return ""  # pending
 
     if getattr(args, "status", False) or getattr(args, "watch", False):
         if not getattr(args, "watch", False):
@@ -683,13 +712,14 @@ def cmd_pipeline(args) -> int:
 
     # --- resume / restart bookkeeping -----------------------------------------
     if args.restart:
-        for p in (cp_path,
-                  sub_checkpoint_path(build_prefix), sub_checkpoint_path(final_prefix),
-                  sub_progress_path(build_prefix), sub_progress_path(final_prefix)):
+        victims = [cp_path,
+                   sub_checkpoint_path(build_prefix), sub_checkpoint_path(final_prefix)]
+        victims += list(data.glob("*.progress.jsonl"))  # every step's timeline
+        for p in victims:
             if p.exists():
                 p.unlink()
         log(f"--restart: cleared {cp_path.name}, the resolve sub-checkpoints "
-            "and their progress timelines")
+            "and all step progress timelines")
 
     cp = load_pipeline_checkpoint(cp_path)
     if cp is not None and not (args.resume or args.restart or args.from_step or args.only):
@@ -743,6 +773,7 @@ def cmd_pipeline(args) -> int:
         # Within-step resume: a kill mid-vet leaves this checkpoint, and the next
         # `pipeline --resume` (which re-enters the unfinished register step)
         # continues the scan instead of re-vetting from the top.
+        step = STEP_REGISTER_FALLBACK if from_fallback else STEP_REGISTER
         ckpt = data / ("register_fallback.checkpoint.json" if from_fallback
                        else "register.checkpoint.json")
         return cmd_register(_ns(
@@ -750,7 +781,7 @@ def cmd_pipeline(args) -> int:
             proposals=data / "proposals.json", ranking=data / "profiling.csv",
             reprofile=False, all_segments=args.all_segments, segment=args.segment,
             limit=None, count=None, min_samples=15, min_spend=0.0005, revisit=False,
-            checkpoint=ckpt, resume=True))
+            checkpoint=ckpt, resume=True, progress=step_progress_path(step)))
 
     steps = {
         STEP_INSTANCE: lambda: cmd_instance(_ns(action="start")),
@@ -765,7 +796,7 @@ def cmd_pipeline(args) -> int:
             threshold=0.60, min_rows=500, eval=False, out=None)),
         STEP_BRANDS: lambda: cmd_build_brand_lexicon(_ns(
             only=None, samples=50, max_per_category=15, overwrite=False,
-            dry_run=False)),
+            dry_run=False, progress=step_progress_path(STEP_BRANDS))),
         STEP_FINAL: lambda: run_resolve(final_prefix, STEP_FINAL,
                                         brands=True, tier2=True),
     }
@@ -936,7 +967,9 @@ def _register_build(args, log, register: bool) -> int:
                                    min_samples=args.min_samples,
                                    min_spend_share=args.min_spend,
                                    revisit=args.revisit,
-                                   checkpoint_path=ckpt, resume=resume, log=log)
+                                   checkpoint_path=ckpt, resume=resume,
+                                   progress=_progress_writer(getattr(args, "progress", None)),
+                                   log=log)
 
         if rejected:
             print("\nrejected by the vet:")

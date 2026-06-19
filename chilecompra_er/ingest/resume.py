@@ -45,9 +45,15 @@ def resolutions_path(prefix: Path) -> Path:
 # is tolerated on read.
 
 def append_progress(path: Path, sample: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+    # Best-effort: the progress timeline is monitoring-only, so a transient file
+    # lock (antivirus, a syncing folder, the editor) must never crash the run —
+    # drop the sample and carry on.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def read_progress(path: Path) -> list[dict]:

@@ -105,7 +105,8 @@ def save_brand_map(mapping: dict[str, str], path: Path = BRAND_LEXICON_PATH,
 
 def build(conn, only: str | None = None, samples: int = 50,
           max_per_category: int = 15, log=print,
-          register: dict | None = None) -> tuple[dict[str, str], dict[str, list[str]]]:
+          register: dict | None = None, progress=None
+          ) -> tuple[dict[str, str], dict[str, list[str]]]:
     """Returns (generated, dropped): generated is {brand: category_id} for brands
     claimed by exactly one category; dropped is {brand: [categories]} for the
     ambiguous ones (claimed by more than one)."""
@@ -114,9 +115,11 @@ def build(conn, only: str | None = None, samples: int = 50,
     clf = Tier1Classifier(register)
     proposals: dict[str, set[str]] = {}
 
-    for fam in families(register):
-        if only and fam["category_id"] != only:
-            continue
+    fams = [f for f in families(register) if not only or f["category_id"] == only]
+    total = len(fams)
+    for i, fam in enumerate(fams, 1):
+        if progress is not None:
+            progress(i, total)  # per-category heartbeat for `pipeline --status`
         raw = fetch_samples(conn, fam["corpus_regex"], samples)
         if len(raw) < 5:
             log(f"== {fam['category_id']}: only {len(raw)} samples — SKIPPED")
