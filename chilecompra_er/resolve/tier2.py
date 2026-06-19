@@ -53,7 +53,7 @@ def train_pipeline(texts: list[str], labels: list[str]):
     pipe = Pipeline([
         ("features", features),
         ("clf", LogisticRegression(max_iter=200, C=10.0, class_weight="balanced",
-                                   solver="saga", tol=1e-3, verbose=1)),
+                                   solver="lbfgs", tol=1e-3, verbose=1)),
     ])
     pipe.fit(texts, labels)
     return pipe
@@ -67,17 +67,38 @@ class Tier2Classifier:
         self.pipeline = pipeline
         self.threshold = threshold
         self.register_version = register_version
+        # Batch-prediction cache (see prime()). predict_proba has heavy per-call
+        # overhead — a per-item classify() is ~150x slower than predicting a whole
+        # chunk at once. The runner primes this cache per chunk so classify() is a
+        # dict lookup.
+        self._cache: dict[str, Classification] = {}
 
-    def classify(self, normalized_text: str) -> Classification:
-        if not normalized_text or not normalized_text.strip():
-            return Classification(None, UNCLASSIFIED, tier="tier2")
-        proba = self.pipeline.predict_proba([normalized_text])[0]
+    def _verdict(self, proba) -> Classification:
         i = int(proba.argmax())
         p = float(proba[i])
         if p >= self.threshold:
             return Classification(self.pipeline.classes_[i], CLASSIFIED,
                                   matched=(f"p={p:.2f}",), tier="tier2")
         return Classification(None, UNCLASSIFIED, tier="tier2")
+
+    def prime(self, normalized_texts) -> None:
+        """Predict a whole chunk of texts in ONE predict_proba call and cache the
+        verdicts, so the following per-item classify() calls are dict lookups.
+        Replaces the cache each call, so it stays chunk-sized."""
+        uniq = {t for t in normalized_texts if t and t.strip()}
+        self._cache = {}
+        if uniq:
+            keys = list(uniq)
+            for t, proba in zip(keys, self.pipeline.predict_proba(keys)):
+                self._cache[t] = self._verdict(proba)
+
+    def classify(self, normalized_text: str) -> Classification:
+        if not normalized_text or not normalized_text.strip():
+            return Classification(None, UNCLASSIFIED, tier="tier2")
+        hit = self._cache.get(normalized_text)
+        if hit is not None:
+            return hit
+        return self._verdict(self.pipeline.predict_proba([normalized_text])[0])
 
     def save(self, path: Path = TIER2_MODEL_PATH) -> None:
         import joblib

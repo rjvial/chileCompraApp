@@ -25,6 +25,13 @@ class LayeredClassifier:
         self.tier2 = tier2
         self.register_version = tier1.register_version
 
+    def prime(self, normalized_texts) -> None:
+        """Batch-prime the statistical tier (Tier-2) for a chunk of texts so its
+        per-item classify() calls become cache lookups (~150x cheaper than one
+        predict_proba per item). No-op when there's no Tier-2 tier."""
+        if self.tier2 is not None and hasattr(self.tier2, "prime"):
+            self.tier2.prime(normalized_texts)
+
     def classify(self, normalized_text: str) -> Classification:
         primary = self.tier1.classify(normalized_text)
         if primary.status != UNCLASSIFIED:

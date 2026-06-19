@@ -84,6 +84,45 @@ class ResolutionStats:
         return "\n".join(lines)
 
 
+_TIER2_BATCH = 2000  # chunk size for batched Tier-2 priming (see _prime_ahead)
+
+
+def _item_texts(item):
+    """Every raw text an item gets classified on: buyer line, tender title, and
+    each offer description (resolve_item._prepare classifies all of them)."""
+    yield item.raw_text
+    yield item.extra.get("tender_text")
+    for o in (item.extra.get("offers") or []):
+        yield o.get("text")
+
+
+def _prime_ahead(items, resolver, batch: int = _TIER2_BATCH):
+    """Yield items unchanged, but in chunks: before releasing a chunk, batch-prime
+    the classifier's Tier-2 cache on EVERY normalized text the chunk will classify
+    (buyer + tender + offers — one predict_proba for the lot instead of one call
+    per text). The consumer then resolves the chunk against a warm cache.
+    Passthrough if the classifier has no prime() (Tier-1-only runs)."""
+    primer = getattr(resolver.classifier, "prime", None)
+    if primer is None:
+        yield from items
+        return
+    norm = resolver.normalizer
+
+    def prime(buf):
+        primer([norm(t) for b in buf for t in _item_texts(b) if t])
+
+    buf: list = []
+    for item in items:
+        buf.append(item)
+        if len(buf) >= batch:
+            prime(buf)
+            yield from buf
+            buf = []
+    if buf:
+        prime(buf)
+        yield from buf
+
+
 def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
                   persist: bool = True,
                   collect_reports: bool = False,
@@ -105,6 +144,12 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
     checkpoint's cumulative stats so counts and progress stay cumulative)."""
     stats = stats if stats is not None else ResolutionStats()
     reports: list[ResolutionReport] = []
+
+    # Batch-prime the statistical tier (Tier-2) per chunk: buffer items, predict
+    # the chunk's texts in one call (~150x cheaper than per-item), then yield them
+    # so the resolve loop's classify() calls hit the warm cache. No-op (passthrough)
+    # when the classifier has no prime() — e.g. a Tier-1-only build run.
+    items = _prime_ahead(items, resolver)
 
     for item in items:
         price_fields = {"total": item.total, "quantity": item.quantity,
