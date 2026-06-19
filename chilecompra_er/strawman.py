@@ -209,12 +209,23 @@ def dry_run(doc_path: Path, normalized_samples: list[str]) -> dict:
     }
 
 
-def generate(conn, only: str | None = None, samples: int = 50, log=print) -> list[Path]:
-    """Generate draft schemas for FAMILIES; returns the written paths."""
+def generate(conn, only: str | None = None, samples: int = 50,
+             overwrite: bool = False, log=print) -> list[Path]:
+    """Generate draft schemas for FAMILIES; returns the written paths.
+
+    A schema that already exists on disk is left untouched (the LLM draft is
+    skipped) unless `overwrite=True` — so re-running over an established register
+    builds over it instead of re-drafting (and clobbering hand-edits on) schemas
+    that are already there. Delete a schema file to force a fresh draft."""
     norm = Normalizer()
     written: list[Path] = []
     for fam in families():
         if only and fam["category_id"] != only:
+            continue
+        path = SCHEMAS_DIR / f"{fam['category_id']}.json"
+        if path.exists() and not overwrite:
+            log(f"== {fam['category_id']}: schema exists — SKIPPED "
+                "(--overwrite to redraft)")
             continue
         raw = fetch_samples(conn, fam["corpus_regex"], samples)
         if len(raw) < 5:
@@ -233,7 +244,6 @@ def generate(conn, only: str | None = None, samples: int = 50, log=print) -> lis
         for note in notes:
             log(f"   curate: {note}")
 
-        path = SCHEMAS_DIR / f"{fam['category_id']}.json"
         path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
 
         stats = dry_run(path, normalized)

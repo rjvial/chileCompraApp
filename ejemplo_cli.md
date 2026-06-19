@@ -401,6 +401,7 @@ chilecompra-er pipeline --resume                     # continue at the interrupt
 chilecompra-er pipeline --restart                    # discard the checkpoint and start over
 chilecompra-er pipeline --from-step register-fallback  # resume at a CHOSEN stage + run the rest
 chilecompra-er pipeline --only train-tier2           # run a single stage in isolation
+chilecompra-er pipeline --status                     # print the plan + live progress, then exit
 ```
 
 **Resuming from any stage — the two ways.**
@@ -429,6 +430,7 @@ to skip past it.
 | `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints; start from the first stage. |
 | `--from-step <stage>` | none | Force-run this stage and everything after it (ignores the done list). |
 | `--only <stage>` | none | Run just this one stage. |
+| `--status` | off | Print the plan (stages done/pending) + each resolve stage's precomputed loop size and live progress %, then exit without running anything. |
 | `--segment <n>` | `42` | UNSPSC segment scope for `register` + `resolve`. |
 | `--all-segments` | off | Run over the WHOLE marketplace (overrides `--segment`). |
 | `--limit <n>` | all | Cap records per resolve stage; `all`/`0` = no cap. |
@@ -440,6 +442,18 @@ to skip past it.
 > `--restart`. The build and final resolve write to the `pipeline_build` /
 > `pipeline_final` `--out` prefixes (distinct so their checkpoints don't collide).
 > Resuming with a different `--segment`/`--limit` than the checkpoint is refused.
+
+> **Precomputed loop size.** A resolve stage iterates a *deterministic* number of
+> records — the count of buyer lines in scope (resolution only adds catalog
+> nodes, it never adds source items, so the count can't drift mid-run). The
+> pipeline counts it **once, right after `migrate`** (the earliest point the data
+> exists) and saves it to `pipeline.checkpoint.json` under `loop_sizes`. From then
+> on `build`/`final-resolve` report `processed N / TOTAL (pct%)` instead of a bare
+> count, the resumed-run banner shows how far in you are, and `pipeline --status`
+> reads it back any time. The same number is stored in each resolve stage's own
+> `*.checkpoint.json` (`total`), so resume restores the denominator without
+> re-counting. (A checkpoint from an older build with no `loop_sizes` is
+> backfilled automatically on the next `--resume` or `--status`.)
 
 ### 4.3 `register` — build the category register
 
@@ -492,6 +506,16 @@ re-profiling.
 > (`--segment`/`--count`/floors) differs from the checkpoint starts fresh rather
 > than splicing two scans.
 
+> **Builds over the existing register — never regenerates it.** Every `register`
+> run (and so every `pipeline` run, fresh or resumed) reads the current register
+> and schemas first and only adds what's new: the vet scan **skips families
+> already covered** by a registered category's Tier-1 regex, `apply` **skips a
+> proposed id that's already registered** (no duplicate, no version bump), and
+> schema drafting **skips any schema already on disk**. So the 100+ categories and
+> schemas you've already built are never re-vetted, re-added, or re-drafted — a
+> re-run just extends coverage. Use `--revisit` to re-evaluate cached junk tokens,
+> or `generate-schemas --overwrite` to deliberately redraft a schema.
+
 **`add-category <id> --include <regex> [...]`** — manually append one known family
 (skips the LLM vet). `--include` is required & repeatable (Tier-1 inclusion regex
 over normalized text); `--exclude` (repeatable) resolves sibling overlaps;
@@ -503,10 +527,14 @@ over normalized text); `--exclude` (repeatable) resolves sibling overlaps;
 chilecompra-er add-category mascarillas --include "\bmascarilla\w*" --example "MASCARILLA QUIRURGICA 3 PLIEGUES"
 ```
 
-**`generate-schemas [--only <id>] [--samples 50]`** — LLM strawman attribute
-schemas from corpus samples. `register` already drafts one per new category;
-re-run to refine or regenerate a specific one. `--only` limits to one category;
-`--samples` is how many descriptions to feed the LLM.
+**`generate-schemas [--only <id>] [--samples 50] [--overwrite]`** — LLM strawman
+attribute schemas from corpus samples. `register` already drafts one per new
+category. **A schema that already exists on disk is skipped** (no LLM call, no
+clobbered hand-edits): re-running only fills in the *missing* ones. `--only`
+limits to one category; `--samples` is how many descriptions to feed the LLM;
+`--overwrite` forces a fresh redraft of schemas that already exist (or just
+delete the schema file). This is what lets a `pipeline`/`register` re-run **build
+over** an established register instead of regenerating it.
 
 ### 4.4 `resolve` — fill the catalog
 
@@ -571,6 +599,13 @@ checkpoint: data\check.checkpoint.json
 > **Resumable long runs:** a killed `--persist` run leaves a checkpoint; re-run
 > the *identical* command with `--resume`. The resolutions CSV is trimmed to the
 > last durable checkpoint, so kill timing can never duplicate rows.
+
+> **Live progress %.** For `--kind item`/`tender`, `resolve` counts the records in
+> scope once up front (index-backed) and the per-tick progress line reads
+> `...processed N/TOTAL (pct%)` against that deterministic loop size; the count is
+> stored in the checkpoint (`total`) so `--resume` restores the % without
+> re-counting. The `pipeline` stages reuse the size precomputed at establishment
+> (§4.2) rather than counting again.
 
 ### 4.5 Coverage tools (Phase 2)
 

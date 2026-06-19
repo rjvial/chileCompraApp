@@ -485,6 +485,12 @@ def load_proposals(path: Path | str) -> list[Candidate]:
 def apply(conn, candidates: list[Candidate], schema_samples: int = 50, log=print) -> None:
     from .strawman import fetch_samples, generate
 
+    # Build over whatever is already registered: a candidate whose id is already
+    # in the register is not re-added (no crash, no duplicate version bump), and
+    # generate() leaves existing schema files untouched. So re-running apply over
+    # an established register only fills genuine gaps.
+    existing = {c["category_id"] for c in load_register()["categories"]}
+
     registerable = []
     for cand in candidates:
         # The vet judged the family from token-group samples; its proposed
@@ -498,11 +504,16 @@ def apply(conn, candidates: list[Candidate], schema_samples: int = 50, log=print
         registerable.append(cand)
 
     for cand in registerable:
+        if cand.category_id in existing:
+            log(f"already registered {cand.category_id} — skipping (build over it)")
+            continue
         entry = add_category(
             category_id=cand.category_id, name=cand.name, include=cand.include,
             exclude=cand.exclude, corpus_regex=cand.corpus_regex,
             canonical_example=cand.canonical_example,
         )
         log(f"registered {entry['category_id']}")
+    # generate() skips any schema already on disk, so this only drafts the new
+    # (or previously-missing) ones.
     for cand in registerable:
         generate(conn, only=cand.category_id, samples=schema_samples, log=log)

@@ -54,6 +54,11 @@ PIPELINE_STEPS = [
 BUILD_PREFIX_NAME = "pipeline_build"
 FINAL_PREFIX_NAME = "pipeline_final"
 
+# The record-streaming steps whose loop size is deterministic and knowable up
+# front (both stream the full segment, so both equal the segment item count).
+# These are the steps cmd_pipeline precomputes loop_sizes for.
+RESOLVE_STEPS = [STEP_BUILD, STEP_FINAL]
+
 
 def pipeline_checkpoint_path(data_dir: Path) -> Path:
     return data_dir / "pipeline.checkpoint.json"
@@ -64,14 +69,24 @@ class PipelineCheckpoint:
     segment: int | None
     limit: int | None
     done: list[str] = field(default_factory=list)
+    # Deterministic loop size of each record-streaming step, precomputed once
+    # when the pipeline is established (step name -> number of records it will
+    # iterate). The resolve steps (build/final-resolve) both stream the whole
+    # segment, so both map to the same segment item count. Persisted so it can
+    # be consulted any time (`pipeline --status`) and reused for resume +
+    # progress % without re-counting. Empty on checkpoints written before this
+    # field existed; cmd_pipeline backfills it on the next --resume.
+    loop_sizes: dict[str, int] = field(default_factory=dict)
 
     def to_json(self) -> dict:
-        return {"segment": self.segment, "limit": self.limit, "done": self.done}
+        return {"segment": self.segment, "limit": self.limit,
+                "done": self.done, "loop_sizes": self.loop_sizes}
 
     @classmethod
     def from_json(cls, d: dict) -> "PipelineCheckpoint":
         return cls(segment=d.get("segment"), limit=d.get("limit"),
-                   done=list(d.get("done", [])))
+                   done=list(d.get("done", [])),
+                   loop_sizes=dict(d.get("loop_sizes", {})))
 
     def mark_done(self, step: str) -> None:
         if step not in self.done:

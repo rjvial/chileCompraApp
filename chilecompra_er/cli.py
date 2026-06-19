@@ -264,6 +264,13 @@ def cmd_resolve(args) -> int:
                 "oc": fetch_oc_items, "joint": fetch_offers, "item": fetch_items}
     joint = args.kind == "joint"
     item_mode = args.kind == "item"
+    # Records this run will iterate. The pipeline passes the value it precomputed
+    # at establishment (args.total); a standalone resolve over the buyer-text
+    # corpus counts it once up front (cheap, index-backed). It's the deterministic
+    # denominator for progress %, ETA, and the resumed-run banner. None -> the
+    # loop size is unknown (an exotic kind), so progress falls back to a bare
+    # count with no percentage.
+    loop_total = getattr(args, "total", None)
 
     prefix = args.out
     cp_path = checkpoint_path(prefix)
@@ -298,14 +305,37 @@ def cmd_resolve(args) -> int:
         run_start_skip = cp.start_skip
         effective_skip = cp.start_skip + cp.processed
         remaining_limit = (args.limit - cp.processed) if args.limit else None
+        # Reuse the loop size recorded at the run's start (deterministic, so it
+        # still holds) when the caller didn't pass one.
+        if loop_total is None:
+            loop_total = cp.total
         # Align the CSV to the checkpoint exactly so kill timing can't dup rows.
         kept = truncate_resolutions(res_csv, cp.processed)
         append = True
-        print(f"resuming: {cp.processed} records already done "
+        of_total = f"/{loop_total:,} ({cp.processed / loop_total:.1%})" if loop_total \
+            else ""
+        print(f"resuming: {cp.processed:,}{of_total} records already done "
               f"(CSV trimmed to {kept} rows); continuing from skip {effective_skip}")
 
     conn = get_connection()
     try:
+        # Resolve the deterministic loop size if the caller didn't supply one.
+        # A bounded run stops at --limit, so the limit IS the loop size — no need
+        # to count the whole corpus just to cap to a smaller number. An unbounded
+        # run counts once (count_resolve_items mirrors the item/tender fetchers'
+        # filter exactly). Other kinds have no cheap precount -> loop_total stays
+        # None and progress falls back to a bare count.
+        if loop_total is None and args.kind in ("item", "tender"):
+            if args.limit:
+                loop_total = args.limit
+            else:
+                from .ingest.neo4j_source import count_resolve_items
+                loop_total = count_resolve_items(conn, contains=args.contains,
+                                                 unspsc_segment=args.segment)
+        elif loop_total is not None and args.limit:
+            # caller-supplied total (pipeline), still capped by an explicit limit
+            loop_total = min(loop_total, args.limit)
+
         kwargs = {"contains": args.contains, "limit": remaining_limit}
         if args.kind in ("tender", "offer", "joint", "item"):
             kwargs.update(skip=effective_skip, unspsc_segment=args.segment)
@@ -365,7 +395,7 @@ def cmd_resolve(args) -> int:
                 kind=args.kind, contains=args.contains, segment=args.segment,
                 persist=args.persist, limit=args.limit,
                 start_skip=run_start_skip, processed=st.total, done=done,
-                stats_dict=st.to_dict()))
+                stats_dict=st.to_dict(), total=loop_total))
 
         # The products-CSV rewrite is expensive at scale and lock-prone under a
         # syncing folder, so checkpoint durably only every ~20k records; the
@@ -379,11 +409,17 @@ def cmd_resolve(args) -> int:
             writer.flush()
             if ticks % durable_every == 0:
                 checkpoint(st, done=False)
-            denom = f"/{args.limit}" if args.limit else ""
+            # Denominator + % against the deterministic loop size; falls back to
+            # a bare count when the loop size is unknown.
+            if loop_total:
+                pct = f" ({st.total / loop_total:.1%})"
+                denom = f"/{loop_total:,}{pct}"
+            else:
+                denom = f"/{args.limit}" if args.limit else ""
             res = st.by_status.get("resolved_generic", 0)
             unr = st.by_status.get("unresolved", 0)
-            print(f"  ...processed {st.total}{denom}  resolved={res}  "
-                  f"unresolved={unr}  created={st.nodes_created}",
+            print(f"  ...processed {st.total:,}{denom}  resolved={res:,}  "
+                  f"unresolved={unr:,}  created={st.nodes_created:,}",
                   file=sys.stderr, flush=True)
 
         # Initial checkpoint so even a kill before the first progress tick
@@ -437,6 +473,7 @@ def cmd_pipeline(args) -> int:
         BUILD_PREFIX_NAME,
         FINAL_PREFIX_NAME,
         PIPELINE_STEPS,
+        RESOLVE_STEPS,
         STEP_BRANDS,
         STEP_BUILD,
         STEP_FALLBACK_REPORT,
@@ -462,6 +499,67 @@ def cmd_pipeline(args) -> int:
     cp_path = pipeline_checkpoint_path(data)
     build_prefix = data / BUILD_PREFIX_NAME
     final_prefix = data / FINAL_PREFIX_NAME
+    prefix_of = {STEP_BUILD: build_prefix, STEP_FINAL: final_prefix}
+
+    def sub_processed(step: str) -> tuple[int, bool] | None:
+        """(records done, complete?) for a resolve step's within-run checkpoint,
+        or None if it hasn't started."""
+        sub = load_sub_checkpoint(sub_checkpoint_path(prefix_of[step]))
+        return (sub.processed, sub.done) if sub is not None else None
+
+    def compute_loop_sizes(cp: PipelineCheckpoint) -> bool:
+        """Precompute + persist the deterministic loop size of each resolve step
+        (= the segment item count). Needs the migrated graph, so it's called once
+        migrate has run. Best-effort: a count failure (instance stopped, etc.)
+        leaves loop_sizes empty and is non-fatal. Returns True if filled."""
+        from .graphdb import get_connection
+        from .ingest.neo4j_source import count_resolve_items
+        try:
+            conn = get_connection()
+            try:
+                n = count_resolve_items(conn, contains=None, unspsc_segment=segment)
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001 - never let counting kill the run
+            log(f"  (could not precompute resolve loop size: {exc!r})")
+            return False
+        cp.loop_sizes = {step: n for step in RESOLVE_STEPS}
+        save_pipeline_checkpoint(cp_path, cp)
+        log(f"  resolve loop size precomputed: {n:,} records "
+            f"(segment {segment if segment is not None else 'all'}) "
+            f"-> {', '.join(RESOLVE_STEPS)}")
+        return True
+
+    # --- consultation: print the plan + live progress, then exit --------------
+    if getattr(args, "status", False):
+        cp = load_pipeline_checkpoint(cp_path)
+        if cp is None:
+            print(f"no pipeline checkpoint at {cp_path} — nothing established yet")
+            return 0
+        # Backfill a checkpoint that predates loop_sizes (e.g. a run started by
+        # an older build) so the status view can still show the %; best-effort.
+        if not cp.loop_sizes and STEP_MIGRATE in cp.done:
+            compute_loop_sizes(cp)
+        done = set(cp.done)
+        print(f"pipeline status  (segment={cp.segment}  limit={cp.limit})")
+        print(f"  checkpoint: {cp_path}")
+        print(f"  {len(done)}/{len(PIPELINE_STEPS)} steps done\n")
+        for step in PIPELINE_STEPS:
+            mark = "[x]" if step in done else "[ ]"
+            size = cp.loop_sizes.get(step)
+            detail = ""
+            if step in RESOLVE_STEPS:
+                total = f"{size:,}" if size is not None else "—"
+                prog = sub_processed(step)
+                if prog is not None:
+                    n, complete = prog
+                    pct = f" ({n/size:.1%})" if size else ""
+                    state = "done" if complete else "in progress"
+                    detail = f"  loop {n:,}/{total}{pct}  [{state}]"
+                else:
+                    detail = f"  loop size {total}  [not started]"
+            print(f"  {mark} {step}{detail}")
+        return 0
 
     # --- resume / restart bookkeeping -----------------------------------------
     if args.restart:
@@ -495,8 +593,14 @@ def cmd_pipeline(args) -> int:
         print(f"pipeline already complete ({len(cp.done)} steps done) — nothing to do")
         return 0
 
+    # Backfill the loop sizes onto a checkpoint that predates this field (or a
+    # resume that skipped a fresh establishment): the data is already migrated,
+    # so the count is available now.
+    if not cp.loop_sizes and STEP_MIGRATE in cp.done:
+        compute_loop_sizes(cp)
+
     # --- step implementations -------------------------------------------------
-    def run_resolve(prefix, *, brands: bool, tier2: bool) -> int:
+    def run_resolve(prefix, step, *, brands: bool, tier2: bool) -> int:
         sub = load_sub_checkpoint(sub_checkpoint_path(prefix))
         if sub is not None and sub.done:
             log(f"    {prefix.name}: already complete ({sub.processed} records) "
@@ -510,7 +614,8 @@ def cmd_pipeline(args) -> int:
             kind="item", contains=None, segment=segment, persist=True,
             limit=limit, skip=0, out=prefix, show=0, fallback="unspsc",
             progress_every=args.progress_every, resume=resume,
-            brands=brands, tier2=tier2, tier2_model=None, tier2_threshold=None))
+            brands=brands, tier2=tier2, tier2_model=None, tier2_threshold=None,
+            total=cp.loop_sizes.get(step)))
 
     def run_register(*, from_fallback: bool) -> int:
         # Within-step resume: a kill mid-vet leaves this checkpoint, and the next
@@ -529,7 +634,8 @@ def cmd_pipeline(args) -> int:
         STEP_INSTANCE: lambda: cmd_instance(_ns(action="start")),
         STEP_MIGRATE: lambda: cmd_migrate(_ns(dry_run=False)),
         STEP_REGISTER: lambda: run_register(from_fallback=False),
-        STEP_BUILD: lambda: run_resolve(build_prefix, brands=False, tier2=False),
+        STEP_BUILD: lambda: run_resolve(build_prefix, STEP_BUILD,
+                                        brands=False, tier2=False),
         STEP_FALLBACK_REPORT: lambda: cmd_fallback_report(_ns(
             top=20, min_count=5, out=data / "fallback_ranking.csv")),
         STEP_REGISTER_FALLBACK: lambda: run_register(from_fallback=True),
@@ -538,7 +644,8 @@ def cmd_pipeline(args) -> int:
         STEP_BRANDS: lambda: cmd_build_brand_lexicon(_ns(
             only=None, samples=50, max_per_category=15, overwrite=False,
             dry_run=False)),
-        STEP_FINAL: lambda: run_resolve(final_prefix, brands=True, tier2=True),
+        STEP_FINAL: lambda: run_resolve(final_prefix, STEP_FINAL,
+                                        brands=True, tier2=True),
     }
 
     log(f"pipeline: {len(cp.done)}/{len(PIPELINE_STEPS)} steps done; "
@@ -557,6 +664,11 @@ def cmd_pipeline(args) -> int:
         cp.mark_done(step)
         save_pipeline_checkpoint(cp_path, cp)
         log(f"=== step {step!r} done (checkpoint saved) ===")
+        # The graph is populated once migrate finishes, so the resolve loop size
+        # becomes knowable here: precompute + persist it before the resolve steps
+        # run (so their progress shows N/total, and `--status` can report it).
+        if step == STEP_MIGRATE and not cp.loop_sizes:
+            compute_loop_sizes(cp)
 
     if args.only or args.from_step:
         print(f"\nran {todo} (manual selection). Checkpoint: {cp_path}")
@@ -624,7 +736,8 @@ def cmd_generate_schemas(args) -> int:
 
     conn = get_connection()
     try:
-        written = generate(conn, only=args.only, samples=args.samples)
+        written = generate(conn, only=args.only, samples=args.samples,
+                           overwrite=args.overwrite)
     finally:
         conn.close()
     print(f"\nschemas written: {[p.name for p in written] or 'none'}")
@@ -1017,6 +1130,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "done list — use to skip past a benign failure)")
     p.add_argument("--only", default=None, choices=PIPELINE_STEPS,
                    help="run just this one step")
+    p.add_argument("--status", action="store_true",
+                   help="print the plan: steps done/pending + each resolve "
+                        "step's precomputed loop size and live progress, then exit")
     p.add_argument("--segment", type=int, default=42,
                    help="UNSPSC segment scope for register + resolve (default 42)")
     p.add_argument("--all-segments", action="store_true",
@@ -1042,6 +1158,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("generate-schemas", help="LLM strawman drafts from corpus samples")
     p.add_argument("--only", default=None, help="single category_id")
     p.add_argument("--samples", type=int, default=50)
+    p.add_argument("--overwrite", action="store_true",
+                   help="redraft schemas that already exist on disk (default: "
+                        "skip them and only draft the missing ones)")
     p.set_defaults(func=cmd_generate_schemas)
 
     p = sub.add_parser("build-brand-lexicon",

@@ -50,6 +50,9 @@ class Checkpoint:
     processed: int         # cumulative records resolved so far
     done: bool
     stats_dict: dict       # serialized cumulative ResolutionStats
+    total: int | None = None  # deterministic loop size (records this run will
+                              # iterate); the denominator for progress/ETA. None
+                              # on checkpoints written before this field existed.
 
     def stats(self) -> ResolutionStats:
         return ResolutionStats.from_dict(self.stats_dict)
@@ -59,7 +62,7 @@ class Checkpoint:
             "kind": self.kind, "contains": self.contains, "segment": self.segment,
             "persist": self.persist, "limit": self.limit,
             "start_skip": self.start_skip, "processed": self.processed,
-            "done": self.done, "stats": self.stats_dict,
+            "done": self.done, "stats": self.stats_dict, "total": self.total,
         }
 
     def mismatches(self, *, kind, contains, segment, persist, limit) -> list[str]:
@@ -98,6 +101,7 @@ def load_checkpoint(path: Path) -> Checkpoint | None:
         persist=d.get("persist", False), limit=d.get("limit"),
         start_skip=d.get("start_skip", 0), processed=d.get("processed", 0),
         done=d.get("done", False), stats_dict=d.get("stats", {}),
+        total=d.get("total"),
     )
 
 

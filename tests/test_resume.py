@@ -42,12 +42,21 @@ def _data_rows(path):
 def test_checkpoint_roundtrip(tmp_path):
     cp = Checkpoint(kind="tender", contains=None, segment=42, persist=False,
                     limit=5000, start_skip=0, processed=1400, done=False,
-                    stats_dict={"total": 1400})
+                    stats_dict={"total": 1400}, total=1342833)
     p = tmp_path / "x.checkpoint.json"
     save_checkpoint(p, cp)
     back = load_checkpoint(p)
     assert back.processed == 1400 and back.segment == 42 and back.done is False
     assert back.stats().total == 1400
+    assert back.total == 1342833  # deterministic loop size survives the round-trip
+
+
+def test_checkpoint_total_defaults_none_on_old_json(tmp_path):
+    # a checkpoint written before `total` existed loads with total=None
+    p = tmp_path / "old.checkpoint.json"
+    p.write_text('{"kind": "item", "processed": 10, "done": false, "stats": {}}',
+                 encoding="utf-8")
+    assert load_checkpoint(p).total is None
 
 
 def test_checkpoint_mismatch_detection():

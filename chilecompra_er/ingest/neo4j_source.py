@@ -71,6 +71,31 @@ def segment_bounds(segment: int | None) -> tuple[int | None, int | None]:
     return segment * factor, (segment + 1) * factor
 
 
+def count_resolve_items(conn, contains: str | None = None,
+                        unspsc_segment: int | None = None) -> int:
+    """The deterministic loop size of a resolve run: how many ItemLicitacion
+    rows fetch_items/fetch_tender_items will stream for this scope. The MATCH +
+    WHERE mirror those fetchers exactly (same node, same buyer-text + segment
+    filters, same contains lowercasing as _paged), so the result equals the
+    number of records resolve will iterate — the denominator for progress %,
+    ETA, and resume. Stable for a fixed scope: resolution only adds catalog
+    nodes, it never adds or mutates ItemLicitacion, so re-counting mid-run
+    returns the same number."""
+    seg_low, seg_high = segment_bounds(unspsc_segment)
+    cypher = """
+        MATCH (l:Licitacion)-[:TIENE_ITEM]->(i:ItemLicitacion)
+        WHERE i.descripcion_comprador IS NOT NULL
+          AND ($contains IS NULL OR toLower(i.descripcion_comprador) CONTAINS $contains)
+          AND ($seg_low IS NULL OR
+               (i.codigo_unspsc_producto >= $seg_low AND i.codigo_unspsc_producto < $seg_high))
+        RETURN count(i) AS n
+    """
+    rows = conn.query(cypher, parameters={
+        "contains": contains.lower() if contains else None,
+        "seg_low": seg_low, "seg_high": seg_high})
+    return int(rows[0]["n"]) if rows else 0
+
+
 @dataclass(frozen=True)
 class SourceItem:
     """One retrievable source record: reference + text + price fields."""
