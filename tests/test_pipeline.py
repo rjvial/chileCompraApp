@@ -286,3 +286,39 @@ def test_watch_flag_parses(tmp_path):
     args = build_parser().parse_args(
         ["pipeline", "--data-dir", str(tmp_path), "--watch", "--interval", "5"])
     assert args.watch is True and args.interval == 5
+
+
+def test_status_rate_ignores_kill_resume_gap(tmp_path, capsys):
+    """A long idle gap (overnight kill) between two timeline points must not drag
+    the reported rate down — it's summed over active intervals only."""
+    from chilecompra_er.ingest.resume import (
+        Checkpoint,
+        append_progress,
+        progress_path,
+        save_checkpoint,
+    )
+    from chilecompra_er.ingest.resume import checkpoint_path as subcp
+    from chilecompra_er.pipeline import BUILD_PREFIX_NAME
+
+    save_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path),
+                             PipelineCheckpoint(
+                                 segment=42, limit=None,
+                                 done=[STEP_INSTANCE, STEP_MIGRATE, STEP_REGISTER],
+                                 loop_sizes={STEP_BUILD: 1342833,
+                                             STEP_FINAL: 1342833}))
+    prefix = tmp_path / BUILD_PREFIX_NAME
+    save_checkpoint(subcp(prefix), Checkpoint(
+        kind="item", contains=None, segment=42, persist=True, limit=None,
+        start_skip=0, processed=462000, done=False,
+        stats_dict={"total": 462000}, total=1342833))
+    pp = progress_path(prefix)
+    # 1,000/min before the kill, a ~28h idle gap, then 1,000/min after resume
+    append_progress(pp, {"ts": 0.0, "processed": 460000, "total": 1342833})
+    append_progress(pp, {"ts": 60.0, "processed": 461000, "total": 1342833})
+    append_progress(pp, {"ts": 100000.0, "processed": 461000, "total": 1342833})
+    append_progress(pp, {"ts": 100060.0, "processed": 462000, "total": 1342833})
+
+    assert _run(["--status"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "1,000/min" in out          # gap excluded; not the ~20/min naive figure
+    assert "elapsed 2m00s" in out      # active time only (2x60s), not ~28h

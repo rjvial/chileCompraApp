@@ -538,24 +538,37 @@ def cmd_pipeline(args) -> int:
 
     def progress_stats(step: str, *, window: int = 20) -> dict | None:
         """Rate/ETA from a resolve step's progress timeline (the .progress.jsonl
-        written each tick). `rate` is over the trailing `window` samples (recent,
-        so a kill/resume gap early on doesn't drag it down); `eta` extrapolates
-        the remaining loop at that rate. None if the timeline has <2 points."""
+        written each tick). Rate + elapsed are summed over *active* consecutive
+        intervals only — pairs where work advanced in a sane span — so a resume's
+        rewind (processed steps back) and a kill's idle gap (a long pause with no
+        progress) are excluded rather than dragging the numbers down. `rate` is
+        over the trailing `window` samples (recent); `elapsed` is the whole
+        timeline's active time; `eta` extrapolates the remaining loop at `rate`.
+        None if the timeline has <2 points."""
         hist = read_progress(sub_progress_path(prefix_of[step]))
         if len(hist) < 2:
             return None
-        first, last = hist[0], hist[-1]
+        last = hist[-1]
+
+        def active(samples: list[dict]) -> tuple[float, float]:
+            dn = dt = 0.0
+            for a, b in zip(samples, samples[1:]):
+                d_n, d_t = b["processed"] - a["processed"], b["ts"] - a["ts"]
+                if d_n > 0 and 0 < d_t < 3600:  # skip rewinds + long idle gaps
+                    dn += d_n
+                    dt += d_t
+            return dn, dt
+
         win = hist[-window:] if len(hist) > window else hist
-        a, b = win[0], win[-1]
-        dt, dn = b["ts"] - a["ts"], b["processed"] - a["processed"]
-        rate = (dn / dt * 60) if dt > 0 else 0.0  # records/min
+        wdn, wdt = active(win)
+        rate = (wdn / wdt * 60) if wdt > 0 else 0.0          # records/min, recent
+        _, active_secs = active(hist)                        # processing time
         total = last.get("total")
         remaining = (total - last["processed"]) if total else None
         eta = (remaining / rate * 60) if (remaining and rate > 0) else None
         return {
             "processed": last["processed"], "total": total,
-            "rate_per_min": rate, "eta_secs": eta,
-            "elapsed_secs": last["ts"] - first["ts"],
+            "rate_per_min": rate, "eta_secs": eta, "elapsed_secs": active_secs,
             "resolved": last.get("resolved"), "unresolved": last.get("unresolved"),
             "samples": len(hist),
         }
@@ -607,12 +620,16 @@ def cmd_pipeline(args) -> int:
                 size = cp.loop_sizes.get(step)
                 total = f"{size:,}" if size is not None else "—"
                 prog = sub_processed(step)
-                if prog is None:
+                ps = progress_stats(step)
+                if prog is None and ps is None:
                     detail = f"  loop size {total}  [not started]"
                 else:
-                    n, complete = prog
+                    complete = prog[1] if prog else False
+                    # Show the freshest count: the timeline ticks ~100x finer
+                    # than the durable checkpoint, so count/pct/rate/ETA all
+                    # derive from the same point.
+                    n = ps["processed"] if ps else prog[0]
                     pct = f" ({n/size:.1%})" if size else ""
-                    ps = progress_stats(step)
                     if complete:
                         el = f"  in {_fmt_dur(ps['elapsed_secs'])}" if ps else ""
                         detail = f"  loop {n:,}/{total}{pct}  [done{el}]"
@@ -650,11 +667,13 @@ def cmd_pipeline(args) -> int:
 
     # --- resume / restart bookkeeping -----------------------------------------
     if args.restart:
-        for p in (cp_path, sub_checkpoint_path(build_prefix),
-                  sub_checkpoint_path(final_prefix)):
+        for p in (cp_path,
+                  sub_checkpoint_path(build_prefix), sub_checkpoint_path(final_prefix),
+                  sub_progress_path(build_prefix), sub_progress_path(final_prefix)):
             if p.exists():
                 p.unlink()
-        log(f"--restart: cleared {cp_path.name} and the resolve sub-checkpoints")
+        log(f"--restart: cleared {cp_path.name}, the resolve sub-checkpoints "
+            "and their progress timelines")
 
     cp = load_pipeline_checkpoint(cp_path)
     if cp is not None and not (args.resume or args.restart or args.from_step or args.only):

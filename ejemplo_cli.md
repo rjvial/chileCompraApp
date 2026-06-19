@@ -428,7 +428,7 @@ to skip past it.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--resume` | off | Continue `data\pipeline.checkpoint.json`, skipping completed stages. |
-| `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints; start from the first stage. |
+| `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints + their progress timelines; start from the first stage. |
 | `--from-step <stage>` | none | Force-run this stage and everything after it (ignores the done list). |
 | `--only <stage>` | none | Run just this one stage. |
 | `--status` | off | Print the plan (stages done/pending) + each resolve stage's loop size, live progress %, **rate (records/min) and ETA**, then exit without running anything. |
@@ -462,12 +462,14 @@ to skip past it.
 > timeline — `<prefix>.progress.jsonl` (e.g. `pipeline_build.progress.jsonl`) —
 > every progress tick: `{ts, processed, total, resolved, unresolved, created}`.
 > It's append-only, so the curve **spans kills and resumes**. `pipeline --status`
-> reads it to show the recent **rate (records/min)** and **ETA** (extrapolated from
-> the remaining loop); `pipeline --watch [--interval <s>]` reprints that on a timer
-> as a live monitor you can leave running in another terminal. The rate is taken
-> over a trailing window of samples, so an early kill/resume gap doesn't drag it
-> down. Both read straight off disk — they never touch or slow the running job, and
-> work from any terminal at any time, even after the run was killed.
+> reads it to show the recent **rate (records/min)**, an **ETA** (extrapolated from
+> the remaining loop) and the **elapsed** processing time; `pipeline --watch
+> [--interval <s>]` reprints that on a timer as a live monitor you can leave running
+> in another terminal. Rate and elapsed are summed over *active* intervals only —
+> a resume's rewind and a kill's idle gap are excluded — so neither is distorted by
+> a pause, wherever it falls. Both read straight off disk: they never touch or slow
+> the running job, and work from any terminal at any time, even after the run was
+> killed.
 
 ### 4.3 `register` — build the category register
 
@@ -614,12 +616,13 @@ checkpoint: data\check.checkpoint.json
 > the *identical* command with `--resume`. The resolutions CSV is trimmed to the
 > last durable checkpoint, so kill timing can never duplicate rows.
 
-> **Live progress %.** For `--kind item`/`tender`, `resolve` counts the records in
-> scope once up front (index-backed) and the per-tick progress line reads
-> `...processed N/TOTAL (pct%)` against that deterministic loop size; the count is
-> stored in the checkpoint (`total`) so `--resume` restores the % without
-> re-counting. The `pipeline` stages reuse the size precomputed at establishment
-> (§4.2) rather than counting again.
+> **Live progress %.** For `--kind item`/`tender`, the per-tick progress line reads
+> `...processed N/TOTAL (pct%)` against the deterministic loop size: an unbounded
+> run counts the in-scope records once up front (index-backed); a bounded `--limit`
+> run just uses the limit as the denominator (no count needed). The size is stored
+> in the checkpoint (`total`) so `--resume` restores the % without re-counting, and
+> the `pipeline` stages reuse the size precomputed at establishment (§4.2) rather
+> than counting again.
 
 ### 4.5 Coverage tools (Phase 2)
 
