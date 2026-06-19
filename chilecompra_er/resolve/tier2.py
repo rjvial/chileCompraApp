@@ -27,19 +27,29 @@ TIER2_MODEL_PATH = Path("data/tier2_model.joblib")
 def train_pipeline(texts: list[str], labels: list[str]):
     """Fit a TF-IDF + logistic-regression pipeline on NORMALIZED texts -> labels.
     word 1-2 grams + char 3-5 grams (char grams catch terse/typo'd lines and
-    shared morphology); balanced classes so rare families aren't drowned out."""
+    shared morphology); balanced classes so rare families aren't drowned out.
+
+    The vectorizers are CAPPED (max_features): uncapped, char 3-5 grams over a
+    large corpus (300k+ rows) explode to millions of features, and the per-class
+    coefficient matrix then blows past available RAM (one untuned run hit ~9 GB
+    and swapped for an hour). The caps bound memory and training time and reduce
+    overfit, with negligible accuracy cost since dropped grams are rare. min_df=2
+    stays (small training sets must keep a non-empty vocabulary). saga handles the
+    large sparse multi-class fit and honours max_iter as a real time bound."""
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import FeatureUnion, Pipeline
 
     features = FeatureUnion([
-        ("word", TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True)),
+        ("word", TfidfVectorizer(ngram_range=(1, 2), min_df=2,
+                                 max_features=50_000, sublinear_tf=True)),
         ("char", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5),
-                                 min_df=2, sublinear_tf=True)),
+                                 min_df=2, max_features=100_000, sublinear_tf=True)),
     ])
     pipe = Pipeline([
         ("features", features),
-        ("clf", LogisticRegression(max_iter=2000, C=10.0, class_weight="balanced")),
+        ("clf", LogisticRegression(max_iter=1000, C=10.0, class_weight="balanced",
+                                   solver="saga")),
     ])
     pipe.fit(texts, labels)
     return pipe
