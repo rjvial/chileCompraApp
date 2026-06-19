@@ -566,12 +566,6 @@ def cmd_pipeline(args) -> int:
             return sub_progress_path(prefix_of[step])
         return data / f"{step.replace('-', '_')}.progress.jsonl"
 
-    def sub_processed(step: str) -> tuple[int, bool] | None:
-        """(records done, complete?) for a resolve step's within-run checkpoint,
-        or None if it hasn't started."""
-        sub = load_sub_checkpoint(sub_checkpoint_path(prefix_of[step]))
-        return (sub.processed, sub.done) if sub is not None else None
-
     def _fmt_dur(secs: float) -> str:
         secs = int(max(0, secs))
         h, m = secs // 3600, (secs % 3600) // 60

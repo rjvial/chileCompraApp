@@ -413,10 +413,15 @@ def propose(conn, stats: list[GroupStat], count: int | None = 10,
         elif cp is not None:
             log("  register checkpoint scope differs from this run — starting fresh")
 
-    total = len(stats)
+    # The scan stops at the spend floor, not the end of the ranking (stats are
+    # spend-sorted descending) — so report progress against the groups ABOVE the
+    # floor, the real loop size, or --status would show a completed scan as e.g.
+    # "271/8821 (3%)" with a nonsense ETA. (A --count cap can stop even earlier;
+    # that just makes the ETA a slight over-estimate, which is fine.)
+    total = sum(1 for s in stats if s.spend_share >= min_spend_share) or len(stats)
     for idx, s in enumerate(stats, 1):
         if progress is not None and idx % 25 == 0:
-            progress(idx, total)  # scan-position heartbeat for `pipeline --status`
+            progress(min(idx, total), total)  # heartbeat for `pipeline --status`
         if idx <= resume_cursor:  # already vetted in the run we're resuming
             continue
         if len(chosen) >= limit:
