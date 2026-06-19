@@ -7,9 +7,12 @@ from chilecompra_er.ingest.export import write_products_csv
 from chilecompra_er.ingest.resume import (
     Checkpoint,
     StreamingResolutionWriter,
+    append_progress,
     checkpoint_path,
     load_checkpoint,
     products_path,
+    progress_path,
+    read_progress,
     resolutions_path,
     save_checkpoint,
     seed_inmemory_catalog,
@@ -49,6 +52,24 @@ def test_checkpoint_roundtrip(tmp_path):
     assert back.processed == 1400 and back.segment == 42 and back.done is False
     assert back.stats().total == 1400
     assert back.total == 1342833  # deterministic loop size survives the round-trip
+
+
+def test_progress_history_append_and_read(tmp_path):
+    p = progress_path(tmp_path / "run")
+    append_progress(p, {"ts": 1000.0, "processed": 200, "total": 5000})
+    append_progress(p, {"ts": 1060.0, "processed": 1200, "total": 5000})
+    hist = read_progress(p)
+    assert [s["processed"] for s in hist] == [200, 1200]
+    assert hist[-1]["ts"] == 1060.0
+
+
+def test_progress_history_tolerates_torn_final_line(tmp_path):
+    p = progress_path(tmp_path / "run")
+    append_progress(p, {"ts": 1.0, "processed": 10, "total": 100})
+    with open(p, "a", encoding="utf-8") as f:
+        f.write('{"ts": 2.0, "processed": 20')  # killed mid-write, no newline
+    hist = read_progress(p)
+    assert len(hist) == 1 and hist[0]["processed"] == 10  # torn line skipped
 
 
 def test_checkpoint_total_defaults_none_on_old_json(tmp_path):

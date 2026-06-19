@@ -29,8 +29,41 @@ def checkpoint_path(prefix: Path) -> Path:
     return prefix.with_name(prefix.name + ".checkpoint.json")
 
 
+def progress_path(prefix: Path) -> Path:
+    return prefix.with_name(prefix.name + ".progress.jsonl")
+
+
 def resolutions_path(prefix: Path) -> Path:
     return prefix.with_name(prefix.name + "_resoluciones.csv")
+
+
+# --- progress history (append-only, for monitoring the run's evolution) -------
+# The checkpoint records only the LATEST point; this records the whole curve so
+# `pipeline --status` can show rate + ETA, and so progress survives across kills
+# (the file is appended, never rewritten — a resumed run continues the same
+# timeline). One JSON object per line; a torn final line from a kill mid-write
+# is tolerated on read.
+
+def append_progress(path: Path, sample: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+
+
+def read_progress(path: Path) -> list[dict]:
+    if not Path(path).exists():
+        return []
+    out: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass  # tolerate a half-written final line after a kill
+    return out
 
 
 def products_path(prefix: Path) -> Path:

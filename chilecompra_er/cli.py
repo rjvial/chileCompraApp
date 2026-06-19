@@ -249,9 +249,11 @@ def cmd_resolve(args) -> int:
     from .ingest.resume import (
         Checkpoint,
         StreamingResolutionWriter,
+        append_progress,
         checkpoint_path,
         load_checkpoint,
         products_path,
+        progress_path,
         resolutions_path,
         save_checkpoint,
         seed_inmemory_catalog,
@@ -276,6 +278,7 @@ def cmd_resolve(args) -> int:
     cp_path = checkpoint_path(prefix)
     res_csv = resolutions_path(prefix)
     prod_csv = products_path(prefix)
+    prog_path = progress_path(prefix)
 
     # --- resume bookkeeping ---------------------------------------------------
     base_stats = ResolutionStats()
@@ -283,6 +286,11 @@ def cmd_resolve(args) -> int:
     effective_skip = args.skip
     remaining_limit = args.limit
     append = False
+
+    # A fresh run starts a clean progress timeline; a --resume continues the
+    # existing one (append-only, so the curve spans the kill).
+    if not args.resume and prog_path.exists():
+        prog_path.unlink()
 
     if args.resume:
         cp = load_checkpoint(cp_path)
@@ -421,6 +429,11 @@ def cmd_resolve(args) -> int:
             print(f"  ...processed {st.total:,}{denom}  resolved={res:,}  "
                   f"unresolved={unr:,}  created={st.nodes_created:,}",
                   file=sys.stderr, flush=True)
+            # Record the point on the persistent timeline so the evolution
+            # (rate, ETA) can be consulted any time via `pipeline --status`.
+            append_progress(prog_path, {
+                "ts": time.time(), "processed": st.total, "total": loop_total,
+                "resolved": res, "unresolved": unr, "created": st.nodes_created})
 
         # Initial checkpoint so even a kill before the first progress tick
         # leaves a resumable marker.
@@ -440,6 +453,13 @@ def cmd_resolve(args) -> int:
             writer.close()
 
         checkpoint(stats, done=True)  # final: writes products CSV (with retries)
+        # Final point on the timeline (status reads this to mark the stage done
+        # and to anchor the last rate sample at the true end).
+        append_progress(prog_path, {
+            "ts": time.time(), "processed": stats.total, "total": loop_total,
+            "resolved": stats.by_status.get("resolved_generic", 0),
+            "unresolved": stats.by_status.get("unresolved", 0),
+            "created": stats.nodes_created, "done": True})
 
         print(stats.summary())
         print(f"written: {res_csv}")
@@ -469,6 +489,8 @@ def cmd_pipeline(args) -> int:
     themselves via their own per-run checkpoints (ingest/resume.py)."""
     from .ingest.resume import checkpoint_path as sub_checkpoint_path
     from .ingest.resume import load_checkpoint as load_sub_checkpoint
+    from .ingest.resume import progress_path as sub_progress_path
+    from .ingest.resume import read_progress
     from .pipeline import (
         BUILD_PREFIX_NAME,
         FINAL_PREFIX_NAME,
@@ -507,6 +529,37 @@ def cmd_pipeline(args) -> int:
         sub = load_sub_checkpoint(sub_checkpoint_path(prefix_of[step]))
         return (sub.processed, sub.done) if sub is not None else None
 
+    def _fmt_dur(secs: float) -> str:
+        secs = int(max(0, secs))
+        h, m = secs // 3600, (secs % 3600) // 60
+        if h:
+            return f"{h}h{m:02d}m"
+        return f"{m}m{secs % 60:02d}s" if m else f"{secs}s"
+
+    def progress_stats(step: str, *, window: int = 20) -> dict | None:
+        """Rate/ETA from a resolve step's progress timeline (the .progress.jsonl
+        written each tick). `rate` is over the trailing `window` samples (recent,
+        so a kill/resume gap early on doesn't drag it down); `eta` extrapolates
+        the remaining loop at that rate. None if the timeline has <2 points."""
+        hist = read_progress(sub_progress_path(prefix_of[step]))
+        if len(hist) < 2:
+            return None
+        first, last = hist[0], hist[-1]
+        win = hist[-window:] if len(hist) > window else hist
+        a, b = win[0], win[-1]
+        dt, dn = b["ts"] - a["ts"], b["processed"] - a["processed"]
+        rate = (dn / dt * 60) if dt > 0 else 0.0  # records/min
+        total = last.get("total")
+        remaining = (total - last["processed"]) if total else None
+        eta = (remaining / rate * 60) if (remaining and rate > 0) else None
+        return {
+            "processed": last["processed"], "total": total,
+            "rate_per_min": rate, "eta_secs": eta,
+            "elapsed_secs": last["ts"] - first["ts"],
+            "resolved": last.get("resolved"), "unresolved": last.get("unresolved"),
+            "samples": len(hist),
+        }
+
     def compute_loop_sizes(cp: PipelineCheckpoint) -> bool:
         """Precompute + persist the deterministic loop size of each resolve step
         (= the segment item count). Needs the migrated graph, so it's called once
@@ -530,36 +583,70 @@ def cmd_pipeline(args) -> int:
             f"-> {', '.join(RESOLVE_STEPS)}")
         return True
 
-    # --- consultation: print the plan + live progress, then exit --------------
-    if getattr(args, "status", False):
+    # --- consultation: print the plan + live progress (optionally watch) ------
+    def render_status() -> str:
+        """Print the plan + per-stage progress (rate/ETA for the running resolve).
+        Returns 'absent' | 'complete' | 'running'."""
         cp = load_pipeline_checkpoint(cp_path)
         if cp is None:
             print(f"no pipeline checkpoint at {cp_path} — nothing established yet")
-            return 0
+            return "absent"
         # Backfill a checkpoint that predates loop_sizes (e.g. a run started by
-        # an older build) so the status view can still show the %; best-effort.
+        # an older build) so the view can show the %; best-effort, computed once.
         if not cp.loop_sizes and STEP_MIGRATE in cp.done:
             compute_loop_sizes(cp)
         done = set(cp.done)
-        print(f"pipeline status  (segment={cp.segment}  limit={cp.limit})")
+        stamp = time.strftime("%H:%M:%S")
+        print(f"pipeline status  (segment={cp.segment}  limit={cp.limit})  {stamp}")
         print(f"  checkpoint: {cp_path}")
         print(f"  {len(done)}/{len(PIPELINE_STEPS)} steps done\n")
         for step in PIPELINE_STEPS:
             mark = "[x]" if step in done else "[ ]"
-            size = cp.loop_sizes.get(step)
             detail = ""
             if step in RESOLVE_STEPS:
+                size = cp.loop_sizes.get(step)
                 total = f"{size:,}" if size is not None else "—"
                 prog = sub_processed(step)
-                if prog is not None:
+                if prog is None:
+                    detail = f"  loop size {total}  [not started]"
+                else:
                     n, complete = prog
                     pct = f" ({n/size:.1%})" if size else ""
-                    state = "done" if complete else "in progress"
-                    detail = f"  loop {n:,}/{total}{pct}  [{state}]"
-                else:
-                    detail = f"  loop size {total}  [not started]"
+                    ps = progress_stats(step)
+                    if complete:
+                        el = f"  in {_fmt_dur(ps['elapsed_secs'])}" if ps else ""
+                        detail = f"  loop {n:,}/{total}{pct}  [done{el}]"
+                    elif ps and ps["rate_per_min"] > 0:
+                        eta = f"ETA ~{_fmt_dur(ps['eta_secs'])}" if ps["eta_secs"] \
+                            else "ETA —"
+                        detail = (f"  loop {n:,}/{total}{pct}  "
+                                  f"{ps['rate_per_min']:,.0f}/min  {eta}"
+                                  f"  (elapsed {_fmt_dur(ps['elapsed_secs'])})")
+                    else:
+                        detail = f"  loop {n:,}/{total}{pct}  [in progress]"
             print(f"  {mark} {step}{detail}")
-        return 0
+        return "complete" if cp.is_complete() else "running"
+
+    if getattr(args, "status", False) or getattr(args, "watch", False):
+        if not getattr(args, "watch", False):
+            render_status()
+            return 0
+        interval = max(2, getattr(args, "interval", None) or 15)
+        print(f"watching pipeline status every {interval}s (Ctrl-C to stop)...\n")
+        try:
+            while True:
+                state = render_status()
+                if state == "complete":
+                    print("\npipeline complete — stopping watch.")
+                    return 0
+                if state == "absent":
+                    return 0  # nothing to watch yet
+                print("\n" + "-" * 60)
+                sys.stdout.flush()  # show live even when piped/redirected (block-buffered)
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\nstopped watching.")
+            return 0
 
     # --- resume / restart bookkeeping -----------------------------------------
     if args.restart:
@@ -1016,7 +1103,8 @@ _DATA_KEEP = {"profiling.csv", "proposals.json", "fallback_ranking.csv"}
 # Regenerable run artifacts `clean` removes: the resolve output triplets plus
 # loose run logs/redirects.
 _DATA_TEMP_GLOBS = ("*_resoluciones.csv", "*_productos_genericos.csv",
-                    "*.checkpoint.json", "price_series_*.csv", "*.log", "*.out")
+                    "*.checkpoint.json", "*.progress.jsonl",
+                    "price_series_*.csv", "*.log", "*.out")
 
 
 def cmd_clean(args) -> int:
@@ -1133,6 +1221,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status", action="store_true",
                    help="print the plan: steps done/pending + each resolve "
                         "step's precomputed loop size and live progress, then exit")
+    p.add_argument("--watch", action="store_true",
+                   help="like --status but refresh on an interval (rate + ETA "
+                        "from the progress timeline), until complete or Ctrl-C")
+    p.add_argument("--interval", type=int, default=15,
+                   help="--watch refresh seconds (default 15)")
     p.add_argument("--segment", type=int, default=42,
                    help="UNSPSC segment scope for register + resolve (default 42)")
     p.add_argument("--all-segments", action="store_true",

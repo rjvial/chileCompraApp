@@ -401,7 +401,8 @@ chilecompra-er pipeline --resume                     # continue at the interrupt
 chilecompra-er pipeline --restart                    # discard the checkpoint and start over
 chilecompra-er pipeline --from-step register-fallback  # resume at a CHOSEN stage + run the rest
 chilecompra-er pipeline --only train-tier2           # run a single stage in isolation
-chilecompra-er pipeline --status                     # print the plan + live progress, then exit
+chilecompra-er pipeline --status                     # snapshot: plan + progress % + rate + ETA
+chilecompra-er pipeline --watch                      # live monitor (refreshes until done / Ctrl-C)
 ```
 
 **Resuming from any stage — the two ways.**
@@ -430,7 +431,9 @@ to skip past it.
 | `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints; start from the first stage. |
 | `--from-step <stage>` | none | Force-run this stage and everything after it (ignores the done list). |
 | `--only <stage>` | none | Run just this one stage. |
-| `--status` | off | Print the plan (stages done/pending) + each resolve stage's precomputed loop size and live progress %, then exit without running anything. |
+| `--status` | off | Print the plan (stages done/pending) + each resolve stage's loop size, live progress %, **rate (records/min) and ETA**, then exit without running anything. |
+| `--watch` | off | Like `--status` but **refresh on an interval** until the run completes or you Ctrl-C — a live monitor you can open in a second terminal alongside the run. |
+| `--interval <n>` | `15` | `--watch` refresh seconds. |
 | `--segment <n>` | `42` | UNSPSC segment scope for `register` + `resolve`. |
 | `--all-segments` | off | Run over the WHOLE marketplace (overrides `--segment`). |
 | `--limit <n>` | all | Cap records per resolve stage; `all`/`0` = no cap. |
@@ -454,6 +457,17 @@ to skip past it.
 > `*.checkpoint.json` (`total`), so resume restores the denominator without
 > re-counting. (A checkpoint from an older build with no `loop_sizes` is
 > backfilled automatically on the next `--resume` or `--status`.)
+
+> **Monitoring the evolution.** Each resolve stage appends a point to a persistent
+> timeline — `<prefix>.progress.jsonl` (e.g. `pipeline_build.progress.jsonl`) —
+> every progress tick: `{ts, processed, total, resolved, unresolved, created}`.
+> It's append-only, so the curve **spans kills and resumes**. `pipeline --status`
+> reads it to show the recent **rate (records/min)** and **ETA** (extrapolated from
+> the remaining loop); `pipeline --watch [--interval <s>]` reprints that on a timer
+> as a live monitor you can leave running in another terminal. The rate is taken
+> over a trailing window of samples, so an early kill/resume gap doesn't drag it
+> down. Both read straight off disk — they never touch or slow the running job, and
+> work from any terminal at any time, even after the run was killed.
 
 ### 4.3 `register` — build the category register
 
@@ -687,7 +701,9 @@ Outputs are split by **lifecycle**:
   - *Run outputs `clean` always removes*: `<prefix>_resoluciones.csv` (every
     record + its resolution), `<prefix>_productos_genericos.csv` (the
     generic-product nodes, dry runs only), `<prefix>.checkpoint.json` (per-run
-    resolve resume marker), `pipeline.checkpoint.json` (stage-level `pipeline`
+    resolve resume marker), `<prefix>.progress.jsonl` (the append-only progress
+    timeline that feeds `pipeline --status`/`--watch`, §4.2),
+    `pipeline.checkpoint.json` (stage-level `pipeline`
     resume marker), `register.checkpoint.json` / `register_fallback.checkpoint.json`
     (the `register` vet-scan resume markers, §4.3), `price_series_<cat>.csv`.
   - `tier2_model.joblib` (the trained classifier) also lives here but `clean`

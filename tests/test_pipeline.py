@@ -247,3 +247,42 @@ def test_status_reports_plan_and_progress(tmp_path, monkeypatch, capsys):
 def test_status_with_no_checkpoint_is_noop(tmp_path, monkeypatch):
     _stub_handlers(monkeypatch)
     assert _run(["--status"], tmp_path) == 0  # nothing established yet
+
+
+def test_status_shows_rate_and_eta_from_history(tmp_path, capsys):
+    from chilecompra_er.ingest.resume import (
+        Checkpoint,
+        append_progress,
+        progress_path,
+        save_checkpoint,
+    )
+    from chilecompra_er.ingest.resume import checkpoint_path as subcp
+    from chilecompra_er.pipeline import BUILD_PREFIX_NAME
+
+    save_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path),
+                             PipelineCheckpoint(
+                                 segment=42, limit=None,
+                                 done=[STEP_INSTANCE, STEP_MIGRATE, STEP_REGISTER],
+                                 loop_sizes={STEP_BUILD: 1342833,
+                                             STEP_FINAL: 1342833}))
+    prefix = tmp_path / BUILD_PREFIX_NAME
+    save_checkpoint(subcp(prefix), Checkpoint(
+        kind="item", contains=None, segment=42, persist=True, limit=None,
+        start_skip=0, processed=461000, done=False,
+        stats_dict={"total": 461000}, total=1342833))
+    # two timeline points 60s apart -> 1,000 records/min
+    pp = progress_path(prefix)
+    append_progress(pp, {"ts": 1000.0, "processed": 460000, "total": 1342833})
+    append_progress(pp, {"ts": 1060.0, "processed": 461000, "total": 1342833})
+
+    assert _run(["--status"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "1,000/min" in out          # rate computed from the timeline
+    assert "ETA" in out                # extrapolated from remaining/rate
+    assert "461,000/1,342,833" in out
+
+
+def test_watch_flag_parses(tmp_path):
+    args = build_parser().parse_args(
+        ["pipeline", "--data-dir", str(tmp_path), "--watch", "--interval", "5"])
+    assert args.watch is True and args.interval == 5
