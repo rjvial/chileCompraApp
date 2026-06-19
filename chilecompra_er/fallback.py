@@ -67,8 +67,10 @@ def fetch_fallback_items(conn) -> list[dict]:
     spend = conn.query(
         "MATCH (p:Product)-[:VARIANT_OF]->(g:GenericProduct) "
         "WHERE g.category_id STARTS WITH $p AND p.awarded = true "
-        "AND p.total_clp IS NOT NULL "
-        "RETURN g.category_id AS code, sum(p.total_clp) AS spend",
+        # toFloat() coerces numeric strings and nulls out non-numeric junk, so
+        # SUM never trips over a dirty source price (precio_total_clp can arrive
+        # as a string); IS NOT NULL alone let those through and crashed the query.
+        "RETURN g.category_id AS code, sum(toFloat(p.total_clp)) AS spend",
         parameters={"p": FALLBACK_PREFIX})
     bucket_spend = {r["code"]: float(r["spend"] or 0) for r in spend}
     counts: Counter[str] = Counter(r["code"] for r in items)
