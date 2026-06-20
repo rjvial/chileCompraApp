@@ -20,7 +20,7 @@ def test_resolve_limit_all_means_no_cap():
 
 
 def test_wipe_requires_explicit_yes_flag():
-    args = parse(["wipe-category", "sondas_foley"])
+    args = parse(["wipe-category", "sondas"])
     assert args.yes is False  # cmd refuses without it
 
 

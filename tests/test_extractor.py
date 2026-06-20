@@ -1,9 +1,13 @@
-from chilecompra_er.categories import schema_for
+from pathlib import Path
+
+from chilecompra_er.categories.schema import load_schema
 from chilecompra_er.normalize import Normalizer
 from chilecompra_er.resolve import extract
 
 norm = Normalizer()
-schema = schema_for("sondas_foley")
+# Fixed fixture schema (original sondas_foley draft) so extraction assertions
+# run against a stable schema, not the evolving auto-generated catalog.
+schema = load_schema(Path(__file__).parent / "fixtures" / "sondas_foley.json")
 
 
 def values(raw: str) -> dict:

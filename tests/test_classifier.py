@@ -6,16 +6,25 @@ clf = Tier1Classifier()
 
 def test_foley_classified():
     c = clf.classify("sonda foley 16 silicona")
-    assert c.status == CLASSIFIED and c.category_id == "sondas_foley"
+    assert c.status == CLASSIFIED and c.category_id == "sondas"
 
 
 def test_outside_launched_categories_stays_unclassified():
-    c = clf.classify("termometro digital axilar")
+    # a nonsense token no family covers (stable as the catalog grows)
+    c = clf.classify("widgetron digital axilar")
     assert c.status == UNCLASSIFIED and c.category_id is None
 
 
 def test_exclusion_pattern_blocks():
-    c = clf.classify("sonda foley nelaton 16")  # contradictory text -> route to review
+    # each sibling family excludes the other's term, so a line carrying both
+    # ("foley" AND "nelaton") makes both abstain -> left UNCLASSIFIED for review.
+    reg = {"register_version": "test", "categories": [
+        {"category_id": "sondas_foley", "status": "candidate",
+         "include": ["\\bfoley\\b"], "exclude": ["\\bnelaton\\b"]},
+        {"category_id": "sondas_nelaton", "status": "candidate",
+         "include": ["\\bnelaton\\b"], "exclude": ["\\bfoley\\b"]},
+    ]}
+    c = Tier1Classifier(reg).classify("sonda foley nelaton 16")
     assert c.status == UNCLASSIFIED
 
 

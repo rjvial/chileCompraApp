@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from chilecompra_er.categories import schema_for
+from chilecompra_er.categories.schema import load_schema
 from chilecompra_er.resolve import (
     InMemoryCatalog,
     identity_key,
@@ -8,11 +10,14 @@ from chilecompra_er.resolve import (
     subsumes,
 )
 
-schema = schema_for("sondas_foley")
+# A fixed fixture schema (the original sondas_foley draft) so these planning
+# tests run against a stable schema, not the evolving live catalog.
+schema = load_schema(Path(__file__).parent / "fixtures" / "sondas_foley.json")
+CID = schema.category_id
 
 
 def assign(catalog: InMemoryCatalog, values: dict):
-    plan = plan_assignment(schema, values, catalog.load("sondas_foley", schema))
+    plan = plan_assignment(schema, values, catalog.load(CID, schema))
     catalog.apply(plan, schema)
     return plan
 

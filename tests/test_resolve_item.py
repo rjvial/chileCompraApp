@@ -19,7 +19,7 @@ def test_buyer_line_wins_when_it_classifies():
     rep = r().resolve_item("SONDA FOLEY CH16 SILICONA 2 VIAS", tender_text=None,
                            offers=[offer("MARCA X COD 123")])
     assert rep.status == "resolved_generic"
-    assert rep.classification.category_id == "sondas_foley"
+    assert rep.classification.category_id == "sondas"
     assert rep.evidence["category_source"] == "buyer"
 
 
@@ -29,7 +29,7 @@ def test_offer_consensus_recovers_rubric_buyer_line():
                            offers=[offer("SONDA FOLEY CH16 2 VIAS"),
                                    offer("SONDA FOLEY CH18 SILICONA")])
     assert rep.status == "resolved_generic"
-    assert rep.classification.category_id == "sondas_foley"
+    assert rep.classification.category_id == "sondas"
     assert rep.evidence["category_source"] == "offer"
 
 
@@ -39,14 +39,14 @@ def test_offer_majority_breaks_a_split_vote():
                            offers=[offer("SONDA FOLEY CH16 2 VIAS"),
                                    offer("SONDA FOLEY CH18 LATEX"),
                                    offer("GUANTE QUIRURGICO ESTERIL N 7")])
-    assert rep.classification.category_id == "sondas_foley"
-    assert rep.evidence["offer_votes"]["sondas_foley"] == 2
+    assert rep.classification.category_id == "sondas"
+    assert rep.evidence["offer_votes"]["sondas"] == 2
 
 
 def test_tender_title_is_the_last_resort():
     rep = r().resolve_item("ITEM 1", tender_text="ADQUISICION DE SONDA FOLEY",
                            offers=[])
-    assert rep.classification.category_id == "sondas_foley"
+    assert rep.classification.category_id == "sondas"
     assert rep.evidence["category_source"] == "tender"
 
 
@@ -86,7 +86,7 @@ def test_curated_match_beats_fallback():
     # a classifiable buyer line never falls through to the UNSPSC bucket
     rep = r().resolve_item("SONDA FOLEY CH16 2 VIAS", tender_text=None, offers=[],
                            unspsc=42182200, fallback="unspsc")
-    assert rep.classification.category_id == "sondas_foley"
+    assert rep.classification.category_id == "sondas"
 
 
 def test_same_unspsc_code_shares_one_fallback_node():
@@ -154,4 +154,4 @@ def test_runner_dispatches_item_mode():
                              item_mode=True)
     assert stats.total == 1
     assert stats.by_status["resolved_generic"] == 1
-    assert stats.by_category["sondas_foley"] == 1
+    assert stats.by_category["sondas"] == 1
