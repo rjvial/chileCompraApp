@@ -401,7 +401,7 @@ chilecompra-er pipeline --resume                     # continue at the interrupt
 chilecompra-er pipeline --restart                    # discard the checkpoint and start over
 chilecompra-er pipeline --from-step register-fallback  # resume at a CHOSEN stage + run the rest
 chilecompra-er pipeline --only train-tier2           # run a single stage in isolation
-chilecompra-er pipeline --status                     # snapshot: plan + progress % + rate + ETA
+chilecompra-er pipeline --status                     # snapshot: plan + per-step progress % + rate + ETA
 chilecompra-er pipeline --watch                      # live monitor (refreshes until done / Ctrl-C)
 ```
 
@@ -428,10 +428,10 @@ to skip past it.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--resume` | off | Continue `data\pipeline.checkpoint.json`, skipping completed stages. |
-| `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints + their progress timelines; start from the first stage. |
+| `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints + every step's progress timeline; start from the first stage. |
 | `--from-step <stage>` | none | Force-run this stage and everything after it (ignores the done list). |
 | `--only <stage>` | none | Run just this one stage. |
-| `--status` | off | Print the plan (stages done/pending) + each resolve stage's loop size, live progress %, **rate (records/min) and ETA**, then exit without running anything. |
+| `--status` | off | Print the plan (stages done/pending) + **per-step progress** — `N/total`, live %, **rate and ETA** for every step that loops (the resolve stages, the `register`/`register-fallback` vet scans, the brand-lexicon scan); `[done]`/`[running…]` for the rest. Read-only: exits without running anything (and without writing the checkpoint). |
 | `--watch` | off | Like `--status` but **refresh on an interval** until the run completes or you Ctrl-C — a live monitor you can open in a second terminal alongside the run. |
 | `--interval <n>` | `15` | `--watch` refresh seconds. |
 | `--segment <n>` | `42` | UNSPSC segment scope for `register` + `resolve`. |
@@ -456,20 +456,28 @@ to skip past it.
 > reads it back any time. The same number is stored in each resolve stage's own
 > `*.checkpoint.json` (`total`), so resume restores the denominator without
 > re-counting. (A checkpoint from an older build with no `loop_sizes` is
-> backfilled automatically on the next `--resume` or `--status`.)
+> backfilled automatically on the next `--resume`; `--status` is read-only and
+> simply shows no % for a resolve stage until then.)
 
-> **Monitoring the evolution.** Each resolve stage appends a point to a persistent
-> timeline — `<prefix>.progress.jsonl` (e.g. `pipeline_build.progress.jsonl`) —
-> every progress tick: `{ts, processed, total, resolved, unresolved, created}`.
-> It's append-only, so the curve **spans kills and resumes**. `pipeline --status`
-> reads it to show the recent **rate (records/min)**, an **ETA** (extrapolated from
-> the remaining loop) and the **elapsed** processing time; `pipeline --watch
-> [--interval <s>]` reprints that on a timer as a live monitor you can leave running
-> in another terminal. Rate and elapsed are summed over *active* intervals only —
-> a resume's rewind and a kill's idle gap are excluded — so neither is distorted by
-> a pause, wherever it falls. Both read straight off disk: they never touch or slow
-> the running job, and work from any terminal at any time, even after the run was
-> killed.
+> **Monitoring the evolution.** Every step that loops over records or groups
+> appends a point to a persistent timeline — `<step>.progress.jsonl` — each
+> progress tick. The resolve stages write `pipeline_build` /
+> `pipeline_final.progress.jsonl` with the full `{ts, processed, total, resolved,
+> unresolved, created}`; the `register` / `register-fallback` vet scans and the
+> `build-brand-lexicon` scan write `{ts, processed, total}`. A step clears its own
+> timeline when it starts fresh, so two runs never blur together, yet it's
+> append-only *within* a run, so the curve **spans kills and resumes**.
+> `pipeline --status` reads every step's timeline the same way — `N/total (pct%)`,
+> the recent **rate (per min)**, an **ETA** (extrapolated from the remaining loop)
+> and the **elapsed** processing time — while the steps with no record loop
+> (`instance`, `migrate`, `fallback-report`, `train-tier2`) show plain
+> `[done]` / `[running…]` / pending. `pipeline --watch [--interval <s>]` reprints
+> the whole view on a timer as a live monitor you can leave running in another
+> terminal. Rate and elapsed are summed over *active* intervals only — a resume's
+> rewind and a kill's idle gap are excluded — so neither is distorted by a pause,
+> wherever it falls. Both read straight off disk: they never touch or slow the
+> running job (a status check is read-only — it doesn't even write the checkpoint),
+> and work from any terminal at any time, even after the run was killed.
 
 ### 4.3 `register` — build the category register
 
@@ -704,8 +712,9 @@ Outputs are split by **lifecycle**:
   - *Run outputs `clean` always removes*: `<prefix>_resoluciones.csv` (every
     record + its resolution), `<prefix>_productos_genericos.csv` (the
     generic-product nodes, dry runs only), `<prefix>.checkpoint.json` (per-run
-    resolve resume marker), `<prefix>.progress.jsonl` (the append-only progress
-    timeline that feeds `pipeline --status`/`--watch`, §4.2),
+    resolve resume marker), `<step>.progress.jsonl` (the append-only per-step
+    progress timelines — the resolve stages plus the `register`/`register-fallback`
+    and `build-brand-lexicon` scans — that feed `pipeline --status`/`--watch`, §4.2),
     `pipeline.checkpoint.json` (stage-level `pipeline`
     resume marker), `register.checkpoint.json` / `register_fallback.checkpoint.json`
     (the `register` vet-scan resume markers, §4.3), `price_series_<cat>.csv`.
