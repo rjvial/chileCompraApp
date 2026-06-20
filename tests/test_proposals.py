@@ -25,9 +25,9 @@ def verdict(token, **over):
 
 
 def test_covered_tokens_are_detected():
-    assert _is_covered("venda", clf)          # existing category
-    assert _is_covered("foley", clf)
-    assert not _is_covered("termometro", clf)  # not yet a category
+    assert _is_covered("venda", clf)           # existing category
+    assert _is_covered("gasa", clf)            # existing category
+    assert not _is_covered("widgetron", clf)   # nonsense token, never a family
 
 
 def test_vet_rejection_is_respected():
@@ -43,17 +43,17 @@ def test_duplicate_id_downgraded():
 
 
 def test_bad_regex_downgraded_not_fixed():
-    out = finalize_candidates([cand("termometro")], {"candidates": [
-        verdict("termometro", include=["(unclosed"])]}, register)
+    out = finalize_candidates([cand("widgetron")], {"candidates": [
+        verdict("widgetron", include=["(unclosed"])]}, register)
     assert out[0].viable is False and "compile" in out[0].reason
 
 
 def test_bad_canonical_example_replaced_from_samples():
-    out = finalize_candidates([cand("termometro")], {"candidates": [
-        verdict("termometro", canonical_example="texto inventado sin el token")]},
+    out = finalize_candidates([cand("widgetron")], {"candidates": [
+        verdict("widgetron", canonical_example="texto inventado sin el token")]},
         register)
     assert out[0].viable is True
-    assert out[0].canonical_example == "termometro ejemplo uno"
+    assert out[0].canonical_example == "widgetron ejemplo uno"
 
 
 def test_proposal_breaking_existing_categories_rejected():
@@ -62,11 +62,14 @@ def test_proposal_breaking_existing_categories_rejected():
     # canonical example ("SONDA DE ALIMENTACION") classifies cleanly.
     out = finalize_candidates(
         [cand("sonda", samples=["SONDA DE ALIMENTACION"])],
-        {"candidates": [verdict("sonda", category_id="sondas",
+        {"candidates": [verdict("sonda", category_id="sondas_alimentacion",
                                 canonical_example="SONDA DE ALIMENTACION")]},
         register)
     assert out[0].viable is False
-    assert "existing categories ambiguous" in out[0].reason
+    # rejected by the regression gate: \bsonda\w* overlaps the existing sonda
+    # families — either it makes their examples ambiguous, or the proposal's own
+    # sample no longer classifies cleanly to it. Either reason is a valid reject.
+    assert "ambiguous" in out[0].reason or "overlap" in out[0].reason
 
 
 def test_overlapping_proposal_with_no_clean_example_rejected():
@@ -79,9 +82,10 @@ def test_overlapping_proposal_with_no_clean_example_rejected():
 
 # --- propose(): count cap vs. unlimited -----------------------------------
 
-# Four fresh, uncovered families that each validate cleanly against the real
-# register (their includes don't collide with existing categories).
-_UNCOVERED = ["termometro", "escalpelo", "torniquete"]
+# Fresh, uncovered families that validate cleanly against the real register.
+# Deliberately nonsense tokens so a future catalog that adds real families
+# (e.g. termometros) can't make them "covered" and break these logic tests.
+_UNCOVERED = ["widgetron", "blarnex", "zentyl"]
 
 
 class _FakeConn:

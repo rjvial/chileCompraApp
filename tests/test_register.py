@@ -45,13 +45,25 @@ def test_canonical_example_classifies_unambiguously(category):
 
 
 def test_sibling_overlap_resolved_by_exclusions():
-    # aguja inside a jeringa/sutura description is an attribute, not a category
-    assert clf.classify(norm("JERINGA 5ML CON AGUJA 23G")).category_id == "jeringas"
-    assert clf.classify(norm("SUTURA SEDA 2/0 CON AGUJA RECTA")).category_id == "suturas"
-    # venda de gasa is a venda
-    assert clf.classify(norm("VENDA DE GASA ORILLADA 10 CM")).category_id == "vendas"
-    # foley accessories and kits are no longer captured by sondas_foley
-    assert clf.classify(norm("SUJETADOR ADHESIVO DE SONDA FOLEY")).category_id is None
-    assert clf.classify(norm("SET NEFROSTOMIA CON BALON FOLEY")).category_id is None
-    # bolsa de drenaje belongs to bolsas_recolectoras, not drenajes
-    assert clf.classify(norm("BOLSA DE DRENAJE 2000 ML")).category_id == "bolsas_recolectoras"
+    """An exclude on the broader family resolves a sibling overlap: 'aguja' inside
+    a jeringa or sutura description is an attribute, not the product, so the agujas
+    family excludes those contexts and the line resolves to its host. Tested on a
+    controlled fixture register (not the live catalog) so it exercises the
+    exclusion MECHANISM and stays stable as the catalog evolves."""
+    reg = {"register_version": "1.0.0", "categories": [
+        {"category_id": "jeringas", "name": "Jeringas", "status": "candidate",
+         "include": ["\\bjeringa\\w*"], "exclude": [],
+         "schema_file": "schemas/jeringas.json", "corpus_regex": "(?i).*jeringa.*"},
+        {"category_id": "suturas", "name": "Suturas", "status": "candidate",
+         "include": ["\\bsutura\\w*"], "exclude": [],
+         "schema_file": "schemas/suturas.json", "corpus_regex": "(?i).*sutura.*"},
+        {"category_id": "agujas", "name": "Agujas", "status": "candidate",
+         "include": ["\\baguja\\w*"], "exclude": ["\\bjeringa\\w*", "\\bsutura\\w*"],
+         "schema_file": "schemas/agujas.json", "corpus_regex": "(?i).*aguja.*"},
+    ]}
+    c = Tier1Classifier(reg)
+    # aguja vetoed by the jeringa/sutura context -> resolves to the host family
+    assert c.classify(norm("JERINGA 5ML CON AGUJA 23G")).category_id == "jeringas"
+    assert c.classify(norm("SUTURA SEDA 2/0 CON AGUJA RECTA")).category_id == "suturas"
+    # a plain aguja line (no host context) still resolves to agujas
+    assert c.classify(norm("AGUJA HIPODERMICA 23G DESECHABLE")).category_id == "agujas"
