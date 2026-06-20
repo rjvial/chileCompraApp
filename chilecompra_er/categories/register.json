@@ -1,5 +1,5 @@
 {
-  "register_version": "0.107.0",
+  "register_version": "0.168.0",
   "notes": "Reset to empty on 2026-06-18 for a full from-scratch run. Categories are rebuilt from the raw corpus via `register` (Tier-1 include/exclude regexes over NORMALIZED text; exclusions resolve sibling overlaps). The previous hand-curated 120-category register is recoverable from git commit 9c6e10c. Each category carries corpus_regex (raw-text filter for the schema strawman) and a canonical_example golden fixture; schemas live as versioned JSON under schemas/.",
   "categories": [
     {
@@ -1831,6 +1831,1046 @@
       "schema_file": "schemas/cuchilletes_oftalmologicos.json",
       "corpus_regex": "(?i).*cuchillete.*",
       "canonical_example": "CUCHILLETE DE FACO 2,4 MM. CÓDIGO HOSPITAL OFT0032"
+    },
+    {
+      "category_id": "albumina_humana",
+      "name": "Albúmina humana",
+      "status": "candidate",
+      "include": [
+        "\\balbumina\\w*"
+      ],
+      "exclude": [
+        "\\bpaclitaxel\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/albumina_humana.json",
+      "corpus_regex": "(?i).*albumina.*",
+      "canonical_example": "ALBUMINA HUMANA 20% FC 50 ML"
+    },
+    {
+      "category_id": "dimeros_d_reactivos",
+      "name": "Reactivos/tests de Dímero D",
+      "status": "candidate",
+      "include": [
+        "\\bdimero\\s+d\\b",
+        "\\bd\\s*dimero\\b"
+      ],
+      "exclude": [
+        "\\bcontraste\\b",
+        "\\byodado\\b",
+        "\\bionico\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/dimeros_d_reactivos.json",
+      "corpus_regex": "(?i).*dimero.*d.*",
+      "canonical_example": "DIMERO D. DETERMINACION DE · EXAMENES DE LABORATORIO CLINICO"
+    },
+    {
+      "category_id": "oxigenadores",
+      "name": "Oxigenadores de membrana (ECMO)",
+      "status": "candidate",
+      "include": [
+        "\\boxigenador\\w*"
+      ],
+      "exclude": [
+        "\\bcanula\\w*",
+        "\\bkit\\b",
+        "\\bdilatador\\w*",
+        "\\bguia\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/oxigenadores.json",
+      "corpus_regex": "(?i).*oxigenador.*",
+      "canonical_example": "SET OXIGENADOR PARA ECMO, CON MEMBRANA DE DIFUSION DE POLIMETILPENE, UN SET DE TUBERIAS Y CONO DE LA BOMBA CENTRIFUGA, TODO EL SISTEMA RECUB"
+    },
+    {
+      "category_id": "cintas_adhesivas",
+      "name": "Cintas adhesivas y engomadas",
+      "status": "candidate",
+      "include": [
+        "\\bcinta\\w*"
+      ],
+      "exclude": [
+        "\\bcompresa\\w*",
+        "\\bgasa\\w*",
+        "\\bapanal\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cintas_adhesivas.json",
+      "corpus_regex": "(?i).*cinta.*",
+      "canonical_example": "CINTA EMBALAJE TRANSPARENTE 48MM X 40MTS. · CONVENIO DE SUMINISTRO DE ARTICULOS DESCARTABLES"
+    },
+    {
+      "category_id": "branulas",
+      "name": "Branulas / cateteres IV perifericos",
+      "status": "candidate",
+      "include": [
+        "\\bbranula\\w*",
+        "\\bcanula\\s+iv\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/branulas.json",
+      "corpus_regex": "(?i).*branula.*",
+      "canonical_example": "Branula intravenosa 18G"
+    },
+    {
+      "category_id": "antiacidos_aluminio_magnesio",
+      "name": "Antiácidos (hidróxido de aluminio/magnesio + dimeticona)",
+      "status": "candidate",
+      "include": [
+        "\\bmaalox\\w*",
+        "aluminio\\b.*magnesio\\b.*dimeticona"
+      ],
+      "exclude": [
+        "pulmocis",
+        "gamaaminobetahidroxibutirico",
+        "memorex"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/antiacidos_aluminio_magnesio.json",
+      "corpus_regex": "(?i).*(maalox|aluminio.*magnesio.*dimeticona).*",
+      "canonical_example": "ALUMINIO HIDROXIDO 200 MG + MAGNESIO HIDROXIDO 200 MG + DIMETICONA 25 MG COMPRIMIDO MASTICABLE SIMILAR A MAALOX"
+    },
+    {
+      "category_id": "papel_impresora",
+      "name": "Papel para impresora (térmico/autoclave)",
+      "status": "candidate",
+      "include": [
+        "\\bpapel\\b.*impresora",
+        "rollo\\b.*papel.*impresora"
+      ],
+      "exclude": [
+        "tinta",
+        "cartucho",
+        "etiqueta"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/papel_impresora.json",
+      "corpus_regex": "(?i).*papel.*impresora.*",
+      "canonical_example": "20-347-600-050-00 PAPEL P/IMPRESORA EQUIVALENTE A VESTEMATIC. · CONVENIO INSUMOS DESIERTOS EN 1057501-250-LE19"
+    },
+    {
+      "category_id": "radiovisiografos",
+      "name": "Radiovisiógrafos (sensor RX dental digital)",
+      "status": "candidate",
+      "include": [
+        "\\bradiovisiografo\\w*"
+      ],
+      "exclude": [
+        "mantencion",
+        "reparacion",
+        "servicio"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/radiovisiografos.json",
+      "corpus_regex": "(?i).*radiovisiografo.*",
+      "canonical_example": "Radiovisiografo, según Especificaciones Técnicas adjuntas."
+    },
+    {
+      "category_id": "cepillos_limpieza_instrumental",
+      "name": "Cepillos de limpieza de instrumental/lúmenes",
+      "status": "candidate",
+      "include": [
+        "\\bcepillo\\w*.*(limpieza|lumen)",
+        "\\bcepillo\\w*.*instrumental"
+      ],
+      "exclude": [
+        "dental",
+        "dientes",
+        "cito\\s*brush"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cepillos_limpieza_instrumental.json",
+      "corpus_regex": "(?i).*cepillo.*",
+      "canonical_example": "CEPILLO PARA LIMPIEZA DE INSTRUMENTAL"
+    },
+    {
+      "category_id": "indicadores_esterilizacion",
+      "name": "Indicadores de esterilización (químicos/biológicos)",
+      "status": "candidate",
+      "include": [
+        "indicador\\w*\\b.*(biologic|quimic)",
+        "indicador\\w*\\b.*esteriliz",
+        "tira\\w*\\b.*indicador.*esteriliz"
+      ],
+      "exclude": [
+        "vendaje",
+        "malla",
+        "presion",
+        "\\bph\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/indicadores_esterilizacion.json",
+      "corpus_regex": "(?i).*indicador.*esteriliz.*",
+      "canonical_example": "TIRAS INDICADORAS ESTERILIZACION CALOR SECO. UNIDAD"
+    },
+    {
+      "category_id": "brazaletes_presion",
+      "name": "Brazaletes de presión arterial (cuff)",
+      "status": "candidate",
+      "include": [
+        "\\bbrazalete\\w*",
+        "\\bcuff\\w*"
+      ],
+      "exclude": [
+        "identificacion",
+        "pulsera"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/brazaletes_presion.json",
+      "corpus_regex": "(?i).*brazalete.*",
+      "canonical_example": "BRAZALETES (CUFF) DE UNA (01) SALIDA PARA MONITORES DRAGER"
+    },
+    {
+      "category_id": "cateteres",
+      "name": "Catéteres",
+      "status": "candidate",
+      "include": [
+        "\\bcateter\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/cateteres.json",
+      "corpus_regex": "(?i).*cateter.*",
+      "canonical_example": "202-0717 CATETER VENOSO CENTRAL, TRANSITORIO, 2 LUMEN, 3 FR X 8 CM. GUÍA NO METALICA"
+    },
+    {
+      "category_id": "dializadores",
+      "name": "Dializadores",
+      "status": "candidate",
+      "include": [
+        "\\bdializador\\w*"
+      ],
+      "exclude": [
+        "desinfectante",
+        "reuso",
+        "\\bkit\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/dializadores.json",
+      "corpus_regex": "(?i).*dializador.*",
+      "canonical_example": "Dializador Polisulfona (2,0 - 2,1 mts2) PES 210"
+    },
+    {
+      "category_id": "dilatadores",
+      "name": "Dilatadores",
+      "status": "candidate",
+      "include": [
+        "\\bdilatador\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/dilatadores.json",
+      "corpus_regex": "(?i).*dilatador.*",
+      "canonical_example": "BALON DILATADOR BILIAR BALON CANAL 8 9 10 MM LONGITUD 240 CM"
+    },
+    {
+      "category_id": "portaobjetos",
+      "name": "Portaobjetos de vidrio",
+      "status": "candidate",
+      "include": [
+        "\\bporta\\s?objeto\\w*"
+      ],
+      "exclude": [
+        "porta\\s?aguja",
+        "portaclamp",
+        "porta\\s?punta"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/portaobjetos.json",
+      "corpus_regex": "(?i).*porta\\s?objeto.*",
+      "canonical_example": "2410213 PORTA OBJETO DE VIDRIO 26X76 MM. CJ X 50 UD"
+    },
+    {
+      "category_id": "arcos_ortodoncia",
+      "name": "Arcos de ortodoncia",
+      "status": "candidate",
+      "include": [
+        "\\barco\\w*"
+      ],
+      "exclude": [
+        "gafas",
+        "plomad",
+        "\\bmarco\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/arcos_ortodoncia.json",
+      "corpus_regex": "(?i).*\\barco\\w*.*",
+      "canonical_example": "252-1633\tARCOS POSTED 0.19 X 025 SUP E INF. (UD)"
+    },
+    {
+      "category_id": "curetas",
+      "name": "Curetas",
+      "status": "candidate",
+      "include": [
+        "\\bcureta\\w*"
+      ],
+      "exclude": [
+        "aceite",
+        "afilar"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/curetas.json",
+      "corpus_regex": "(?i).*cureta.*",
+      "canonical_example": "CURETA GRACEY 1-2 TIPO HU-FRIDIE, AMERICAN AGLE, MESEDY"
+    },
+    {
+      "category_id": "lineas_transferencia_dialisis_peritoneal",
+      "name": "Líneas de transferencia para diálisis peritoneal",
+      "status": "candidate",
+      "include": [
+        "\\blinea\\b.{0,25}transferencia",
+        "transferencia.{0,20}(dialisis|peritone)"
+      ],
+      "exclude": [
+        "cinta\\s+de\\s+transferencia",
+        "termica",
+        "bolsa\\s+de\\s+transferencia",
+        "matraz",
+        "frasco",
+        "dispositivo\\s+de\\s+transferencia"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/lineas_transferencia_dialisis_peritoneal.json",
+      "corpus_regex": "(?i).*l[ií]nea de transferencia.*|.*transferencia.*(di[áa]lisis|peritone).*",
+      "canonical_example": "LINEA TRANSFERENCIA DIALISIS PERITONEAL CON ADAPTADOR LUER LOCK 15 CM CODIGO 5C4482 (222-0003) · INSUMOS PARA PERITONEO DIÁLISIS"
+    },
+    {
+      "category_id": "tapones_nasales",
+      "name": "Tapones nasales",
+      "status": "candidate",
+      "include": [
+        "\\btapon\\w*\\s+nasal",
+        "taponamiento\\s+nasal"
+      ],
+      "exclude": [
+        "sistema\\s+cerrado",
+        "esponja",
+        "\\bset\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/tapones_nasales.json",
+      "corpus_regex": "(?i).*tapon.*nasal.*|.*taponamiento nasal.*",
+      "canonical_example": "TAPON NASAL 8 CMS."
+    },
+    {
+      "category_id": "separadores_bucales_dentales",
+      "name": "Separadores/retractores bucales dentales",
+      "status": "candidate",
+      "include": [
+        "separador\\w*\\s+(mejilla|molar|labio)",
+        "abreboca\\w*\\s+separador"
+      ],
+      "exclude": [
+        "gel\\s+separador",
+        "\\btubo\\b",
+        "retractor.{0,12}alexis",
+        "abdominal"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/separadores_bucales_dentales.json",
+      "corpus_regex": "(?i).*separador.*(mejilla|molar|labio).*|.*abreboca.*separador.*",
+      "canonical_example": "SEPARADOR MOLAR"
+    },
+    {
+      "category_id": "implantes_dentales",
+      "name": "Implantes dentales",
+      "status": "candidate",
+      "include": [
+        "\\bimplante\\w*\\s+dental"
+      ],
+      "exclude": [
+        "\\bpilar\\w*",
+        "\\bcalcinable\\b",
+        "\\bcicatrizacion\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/implantes_dentales.json",
+      "corpus_regex": "(?i).*implante.*dental.*",
+      "canonical_example": "Implante dental hexágono interno cónico Ø3.7. Dimensiones: Plataforma protésica de Ø3,5 mm.  con conexión de fricción  hexágono interna de Ø"
+    },
+    {
+      "category_id": "baterias",
+      "name": "Baterías para equipos médicos",
+      "status": "candidate",
+      "include": [
+        "\\bbateria\\w*"
+      ],
+      "exclude": [
+        "\\breparacion\\b",
+        "\\btepsi\\b",
+        "\\btermometro\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/baterias.json",
+      "corpus_regex": "(?i).*bateria.*",
+      "canonical_example": "BATERIA PARA DESFIBRILADOR PHYSIO CONTROL MODELO LIFEPAK-20 · Suministro de Insumos y Accesorios para E.Medicos"
+    },
+    {
+      "category_id": "cementos_dentales",
+      "name": "Cementos dentales",
+      "status": "candidate",
+      "include": [
+        "\\bcemento\\w*"
+      ],
+      "exclude": [
+        "\\bportland\\b",
+        "\\bobra\\b",
+        "\\balbanileria\\b",
+        "\\bhormigon\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cementos_dentales.json",
+      "corpus_regex": "(?i).*cemento.*",
+      "canonical_example": "CEMENTO IONOMERO DE VIDRIO P/CEMENTACION KETAC CEM · INSUMOS CLINICOS MES DICIEMBRE"
+    },
+    {
+      "category_id": "bastones_ortopedicos",
+      "name": "Bastones ortopédicos",
+      "status": "candidate",
+      "include": [
+        "\\bbaston\\w*"
+      ],
+      "exclude": [
+        "\\bgutapercha\\b",
+        "\\bregaton\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/bastones_ortopedicos.json",
+      "corpus_regex": "(?i).*baston.*",
+      "canonical_example": "BASTON ORTOPEDICO · INSUMOS CLINICOS AGOSTO PLAN DE COMPRA 2019"
+    },
+    {
+      "category_id": "electrocardiografos",
+      "name": "Electrocardiógrafos",
+      "status": "candidate",
+      "include": [
+        "\\belectrocardiografo\\w*"
+      ],
+      "exclude": [
+        "\\bcable\\b",
+        "\\bpapel\\b",
+        "\\brepuesto\\w*",
+        "\\bcaiman\\w*",
+        "\\barriendo\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/electrocardiografos.json",
+      "corpus_regex": "(?i).*electrocardiografo.*",
+      "canonical_example": "Electrocardiografo. Según especificaciones técnicas. · Adquisición equipos clínicos para SAR Boca Sur"
+    },
+    {
+      "category_id": "inmovilizadores",
+      "name": "Inmovilizadores y órtesis inmovilizadoras",
+      "status": "candidate",
+      "include": [
+        "\\binmovilizador\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/inmovilizadores.json",
+      "corpus_regex": "(?i).*inmovilizador.*",
+      "canonical_example": "INMOVILIZADOR DE HOMBRO TALLA S-M-L-XL (345-9810)"
+    },
+    {
+      "category_id": "alargadores_via",
+      "name": "Alargadores de vía venosa/arterial",
+      "status": "candidate",
+      "include": [
+        "\\balargador\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/alargadores_via.json",
+      "corpus_regex": "(?i).*alargador.*",
+      "canonical_example": "ALARGADOR ARTERIAL 100 CM MACHO/MACHO LUER LOCK Y LIBRE DE LATEX  (222-7949)"
+    },
+    {
+      "category_id": "sueros_hemoclasificadores",
+      "name": "Sueros reactivos de hemoclasificación (banco de sangre)",
+      "status": "candidate",
+      "include": [
+        "\\bsuero\\w*\\s+anti",
+        "\\bsuero\\w*\\s+(coombs|aglutinante)"
+      ],
+      "exclude": [
+        "fisiologic",
+        "\\bbajada\\b",
+        "\\btest\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sueros_hemoclasificadores.json",
+      "corpus_regex": "(?i).*suero.*",
+      "canonical_example": "SUERO ANTI RH FRASCO 10 ML (262-6625)"
+    },
+    {
+      "category_id": "limpiadores_superficie",
+      "name": "Limpiadores de piso y superficies (aseo)",
+      "status": "candidate",
+      "include": [
+        "\\blimpiador\\w*",
+        "\\blimpia\\s*pisos?"
+      ],
+      "exclude": [
+        "herida",
+        "dental",
+        "pieza",
+        "optica",
+        "antiempanante",
+        "desincrustante"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/limpiadores_superficie.json",
+      "corpus_regex": "(?i).*limpiador.*",
+      "canonical_example": "LIMPIADOR DE PISO POETT O EQUIVALENTE  900 CC ANTIBACTERIAL (AROMAS: AGUA MARINA, LAVANDA)"
+    },
+    {
+      "category_id": "aceites_lubricantes_dentales",
+      "name": "Aceites lubricantes para piezas de mano/instrumental dental",
+      "status": "candidate",
+      "include": [
+        "\\baceite\\w*\\s+lubricante",
+        "\\baceite\\b.*\\bspray"
+      ],
+      "exclude": [
+        "afilar",
+        "mineral",
+        "alimento",
+        "oxigenada"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/aceites_lubricantes_dentales.json",
+      "corpus_regex": "(?i).*aceite.*",
+      "canonical_example": "ACEITE LUBRICANTE PANA SPRAY CON BOQUILLA"
+    },
+    {
+      "category_id": "composites_dentales",
+      "name": "Composite (resina dental de obturación)",
+      "status": "candidate",
+      "include": [
+        "\\bcomposite\\w*"
+      ],
+      "exclude": [
+        "espatula",
+        "\\bportacomposite\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/composites_dentales.json",
+      "corpus_regex": "(?i).*composite.*",
+      "canonical_example": "COMPOSITE IGUAL O SIMILAR 3M FILTEK Z250 JERINGA 4 GR A2"
+    },
+    {
+      "category_id": "propanolol",
+      "name": "Propanolol",
+      "status": "candidate",
+      "include": [
+        "\\bpropanolol\\w*"
+      ],
+      "exclude": [
+        "panoramica",
+        "panoptica"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/propanolol.json",
+      "corpus_regex": "(?i).*propanolol.*",
+      "canonical_example": "PROPANOLOL 40 MG ORAL"
+    },
+    {
+      "category_id": "especulos",
+      "name": "Espéculos vaginales",
+      "status": "candidate",
+      "include": [
+        "\\bespeculo\\w*"
+      ],
+      "exclude": [
+        "otoscopio"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/especulos.json",
+      "corpus_regex": "(?i).*especulo.*",
+      "canonical_example": "ESPECULOS ESTERIL VAGINAL M"
+    },
+    {
+      "category_id": "medicamentos_oftalmicos",
+      "name": "Medicamentos oftálmicos",
+      "status": "candidate",
+      "include": [
+        "\\boftalmic\\w*"
+      ],
+      "exclude": [
+        "\\boral\\b",
+        "jarabe"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/medicamentos_oftalmicos.json",
+      "corpus_regex": "(?i).*oftalmic.*",
+      "canonical_example": "LATANOPROST 0,005 %/3ML SOLUCIÓN OFTÁLMICA"
+    },
+    {
+      "category_id": "pantalones",
+      "name": "Pantalones",
+      "status": "candidate",
+      "include": [
+        "\\bpantalon\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/pantalones.json",
+      "corpus_regex": "(?i).*pantalon.*",
+      "canonical_example": "PANTALON HOMBRE UV"
+    },
+    {
+      "category_id": "gel_ecografia",
+      "name": "Gel para ecografia",
+      "status": "candidate",
+      "include": [
+        "\\bgel\\b.*ecograf",
+        "gel\\b.*(conductor|ultrasonido)"
+      ],
+      "exclude": [
+        "funda",
+        "examen",
+        "ecotomografia",
+        "doppler",
+        "obstetr"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/gel_ecografia.json",
+      "corpus_regex": "(?i).*gel.*ecograf.*",
+      "canonical_example": "GEL P/ECOGRAFIA FRASCO 250 ML"
+    },
+    {
+      "category_id": "shunts",
+      "name": "Shunts vasculares",
+      "status": "candidate",
+      "include": [
+        "\\bshunt\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/shunts.json",
+      "corpus_regex": "(?i).*shunt.*",
+      "canonical_example": "SHUNT CAROTIDA 3 X 4 MM (222-0341-2)"
+    },
+    {
+      "category_id": "microesferas_embolizacion",
+      "name": "Microesferas para embolización",
+      "status": "candidate",
+      "include": [
+        "microesferas?.*emboliz",
+        "emboliz\\w*.*microesferas?"
+      ],
+      "exclude": [
+        "somatostatina",
+        "octreotide",
+        "sandostatin",
+        "suspension\\s+inyectable",
+        "frasco\\s+ampolla"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/microesferas_embolizacion.json",
+      "corpus_regex": "(?i).*microesfera.*emboliz.*",
+      "canonical_example": "Microesferas para embolización polivinilalcohol 200-500 micrómetro x frasco."
+    },
+    {
+      "category_id": "termometros",
+      "name": "Termómetros",
+      "status": "candidate",
+      "include": [
+        "\\btermometro\\w*",
+        "\\bhidrotermometro\\w*"
+      ],
+      "exclude": [
+        "\\bvaina\\w*",
+        "cobertora?",
+        "funda"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/termometros.json",
+      "corpus_regex": "(?i).*termometro.*",
+      "canonical_example": "TERMOMETRO MAXIMA Y MINIMA DIGITAL. UNIDAD"
+    },
+    {
+      "category_id": "stents",
+      "name": "Stents",
+      "status": "candidate",
+      "include": [
+        "\\bstent\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/stents.json",
+      "corpus_regex": "(?i).*stent.*",
+      "canonical_example": "222-0507 STENTS CON DROGA SIROLIMUS"
+    },
+    {
+      "category_id": "posicionadores_radiograficos",
+      "name": "Posicionadores radiográficos",
+      "status": "candidate",
+      "include": [
+        "posicionador\\w*.*radiograf",
+        "posicionador\\w*.*bitewing",
+        "posicionador\\w*.*\\brx\\b"
+      ],
+      "exclude": [
+        "cardio",
+        "decubito",
+        "prono",
+        "paciente"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/posicionadores_radiograficos.json",
+      "corpus_regex": "(?i).*posicionador.*(radiograf|bitewing|rx).*",
+      "canonical_example": "POSICIONADOR RADIOGRÁFICO DIGITAL"
+    },
+    {
+      "category_id": "balanzas",
+      "name": "Balanzas",
+      "status": "candidate",
+      "include": [
+        "\\bbalanza\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/balanzas.json",
+      "corpus_regex": "(?i).*balanza.*",
+      "canonical_example": "Balanza Digital Hasta 150 Kg. Se Sugiere Seca-Omron-Avanutri o Equivalente."
+    },
+    {
+      "category_id": "hidrogeles",
+      "name": "Hidrogel para curación de heridas",
+      "status": "candidate",
+      "include": [
+        "\\bhidrogel\\w*"
+      ],
+      "exclude": [
+        "panal",
+        "\\bespuma\\b",
+        "silicona"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/hidrogeles.json",
+      "corpus_regex": "(?i).*hidrogel.*",
+      "canonical_example": "Hidrogel con plata de 15 grs. Como gel amorfo similar a Askina Gel."
+    },
+    {
+      "category_id": "collares_cervicales",
+      "name": "Collar cervical / inmovilizador",
+      "status": "candidate",
+      "include": [
+        "\\bcollar(in)?\\b.{0,40}(cervical|extricacion|filadelphia|miami|cervico)",
+        "(cervical|extricacion|filadelphia|miami).{0,40}\\bcollar"
+      ],
+      "exclude": [
+        "isabelino",
+        "perro",
+        "mascota",
+        "nylon para perro",
+        "plomad",
+        "tiroide"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/collares_cervicales.json",
+      "corpus_regex": "(?i).*collar.*",
+      "canonical_example": "COLLAR CERVICAL MIAMI (TALLA UNICA) (347-0300)"
+    },
+    {
+      "category_id": "compresores_dentales",
+      "name": "Compresor dental de aire",
+      "status": "candidate",
+      "include": [
+        "\\bcompresor\\w*.{0,40}dental",
+        "dental.{0,30}compresor",
+        "\\bcompresor\\w* de aire"
+      ],
+      "exclude": [
+        "radial",
+        "hemodinamia",
+        "mantencion",
+        "mantenci"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/compresores_dentales.json",
+      "corpus_regex": "(?i).*compresor.*",
+      "canonical_example": "COMPRESOR DENTAL CARTER SECO 1HP, 30 A 40 LTS"
+    },
+    {
+      "category_id": "laringoscopios",
+      "name": "Laringoscopio",
+      "status": "candidate",
+      "include": [
+        "\\blaringoscopi\\w*"
+      ],
+      "exclude": [
+        "ampolleta",
+        "\\btrocar\\b",
+        "hojas? para"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/laringoscopios.json",
+      "corpus_regex": "(?i).*laringoscopi.*",
+      "canonical_example": "LARINGOSCOPIO URGENCIA."
+    },
+    {
+      "category_id": "bolsos_de_transporte",
+      "name": "Bolso de transporte de insumos/muestras",
+      "status": "candidate",
+      "include": [
+        "\\bbolso\\w*.{0,40}(transporte|muestras|insumos)",
+        "(transporte|muestras|insumos).{0,40}\\bbolso"
+      ],
+      "exclude": [
+        "medidor",
+        "glucosa",
+        "kit ferula",
+        "detector fetal",
+        "porta balones",
+        "balones"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/bolsos_de_transporte.json",
+      "corpus_regex": "(?i).*bolso.*",
+      "canonical_example": "BOLSO TRANSPORTE DE MUESTRAS GRANDE"
+    },
+    {
+      "category_id": "infusores_elastomericos",
+      "name": "Infusor elastomérico desechable",
+      "status": "candidate",
+      "include": [
+        "infusor\\w*.{0,30}elastomeric",
+        "elastomeric.{0,30}infusor"
+      ],
+      "exclude": [
+        "bajada",
+        "presion",
+        "apresurador",
+        "vacuum",
+        "vacum"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/infusores_elastomericos.json",
+      "corpus_regex": "(?i).*infusor.*elastomeric.*",
+      "canonical_example": "INFUSOR ELASTOMERICO 100 ML 0.5 ML X HORA PORTATIL DESECHABLE (7 DIAS)CONTENDEOR PVC COLAPSABLE, CAPA INTERNA ELASTOMERO, CON FILTRO DE PART"
+    },
+    {
+      "category_id": "limas_endodonticas",
+      "name": "Limas endodónticas dentales",
+      "status": "candidate",
+      "include": [
+        "\\blimas?\\b",
+        "\\blimas?\\b.*\\b(k|hedstroem|niquel\\s+titanio|flexofile|torpan)\\b"
+      ],
+      "exclude": [
+        "\\blima\\s+de\\s+u\\w*a",
+        "pulir",
+        "\\blimatones?\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/limas_endodonticas.json",
+      "corpus_regex": "(?i).*\\blimas?\\b.*",
+      "canonical_example": "LIMAS K FLEXOFILE 15-40 25MM"
+    },
+    {
+      "category_id": "mangueras",
+      "name": "Mangueras y tubos flexibles",
+      "status": "candidate",
+      "include": [
+        "\\bmanguera\\w*\\b"
+      ],
+      "exclude": [
+        "\\bkit\\s+lactaset\\b",
+        "\\bset\\s+de\\s+conectores\\b",
+        "\\bfrasco\\s+humidificador\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/mangueras.json",
+      "corpus_regex": "(?i).*manguera.*",
+      "canonical_example": "MANGUERA 1/2 PULGADAS REFORZADA 100 MTRS"
+    },
+    {
+      "category_id": "hemofiltros",
+      "name": "Hemofiltros para diálisis",
+      "status": "candidate",
+      "include": [
+        "\\bhemofiltros?\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/hemofiltros.json",
+      "corpus_regex": "(?i).*hemofiltro.*",
+      "canonical_example": "HEMOFILTRO LARGE (DIACAP ACUTE L)  cod 10-30-349-341-6 (222-9672)"
+    },
+    {
+      "category_id": "removedores_oxido",
+      "name": "Removedores de óxido para instrumental",
+      "status": "candidate",
+      "include": [
+        "\\bremovedor\\w*\\b.*\\boxido\\b",
+        "\\bremovedor\\w*\\b.*\\binstrumental\\b"
+      ],
+      "exclude": [
+        "\\bpinza\\b",
+        "\\bcera\\b",
+        "tela\\s+adhesiva",
+        "\\bsarro\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/removedores_oxido.json",
+      "corpus_regex": "(?i).*removedor.*oxido.*",
+      "canonical_example": "REMOVEDOR OXIDO PARA LAVADO INSTRUMENTAL QUIRÚRGICO LÍQUIDO FRASCO 1 LITRO"
+    },
+    {
+      "category_id": "reguladores_oxigeno",
+      "name": "Reguladores de oxígeno/gas medicinal",
+      "status": "candidate",
+      "include": [
+        "\\bregulador\\w*\\b.*(oxigeno|o 2|gas|flujometro|presion)",
+        "\\bregulador\\w* (de )?(oxigeno|o 2|gas)"
+      ],
+      "exclude": [
+        "equipo de administracion",
+        "compresor",
+        "reparacion",
+        "ventilador"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/reguladores_oxigeno.json",
+      "corpus_regex": "(?i).*regulador.*",
+      "canonical_example": "REGULADOR O2 C/FRASCO Y FLUJOMETRO · INSUMOS CLINICOS MES DICIEMBRE"
+    },
+    {
+      "category_id": "ligaduras_dentales",
+      "name": "Ligaduras dentales/ortodóncicas",
+      "status": "candidate",
+      "include": [
+        "\\bligadura\\w*",
+        "\\bligadura\\w* (elastica|metalica|preformada|dental)"
+      ],
+      "exclude": [
+        "vacutainer",
+        "clips? para marcacion",
+        "titanio",
+        "latex p ?/ ?vacutainer"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/ligaduras_dentales.json",
+      "corpus_regex": "(?i).*ligadura.*",
+      "canonical_example": "LIGADURA ELASTICA SURTIDA BOLSA X 1000 UND · CONVENIO PAC INSUMOS ODONTOLOGICOS"
+    },
+    {
+      "category_id": "pasadores_sutura",
+      "name": "Pasadores de sutura (artroscopía)",
+      "status": "candidate",
+      "include": [
+        "\\bpasador\\w*\\b.*sutura",
+        "\\bpasador\\w*\\b.*lasso"
+      ],
+      "exclude": [
+        "ruedas?",
+        "eje",
+        "rodamiento",
+        "camilla"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/pasadores_sutura.json",
+      "corpus_regex": "(?i).*pasador.*",
+      "canonical_example": "Pasador de Sutura · Convenio Suministro de Ligamento Cruzado para el HDS."
+    },
+    {
+      "category_id": "sierras_quirurgicas",
+      "name": "Sierras y hojas de sierra quirúrgicas",
+      "status": "candidate",
+      "include": [
+        "\\bsierra\\w*",
+        "hoja de sierra"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/sierras_quirurgicas.json",
+      "corpus_regex": "(?i).*sierra.*",
+      "canonical_example": "204-0645 SIERRA CORTA ANILLOS · SUMINISTRO DE INSUMOS DE VARIOS PABELLON CENTRAL"
+    },
+    {
+      "category_id": "trampas_agua",
+      "name": "Trampas de agua para equipos respiratorios",
+      "status": "candidate",
+      "include": [
+        "\\btrampa\\w* (de )?agua",
+        "\\btrampa\\w* (de )?humedad"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/trampas_agua.json",
+      "corpus_regex": "(?i).*trampa.*agua.*",
+      "canonical_example": "TRAMPA DE AGUA MAQUINA ANESTESIA DRAGGER · INSUMOS CLINICOS MES DICIEMBRE"
+    },
+    {
+      "category_id": "sensidiscos",
+      "name": "Sensidiscos (antibiograma)",
+      "status": "candidate",
+      "include": [
+        "\\bsensidisco\\w*",
+        "sensi disco"
+      ],
+      "exclude": [
+        "carburundum",
+        "discofix",
+        "disco de carburundum"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/sensidiscos.json",
+      "corpus_regex": "(?i).*sensi ?disco.*",
+      "canonical_example": "2430378 SENSIDISCO DE CLINDAMICINA · Adquisición Insumos Laboratorio, Hospital San Luis"
+    },
+    {
+      "category_id": "valvulotomos",
+      "name": "Valvulótomos venosos",
+      "status": "candidate",
+      "include": [
+        "\\bvalvulotomo\\w*"
+      ],
+      "exclude": [
+        "tubo endotraqueal",
+        "drenaje",
+        "parche",
+        "surfactante"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/valvulotomos.json",
+      "corpus_regex": "(?i).*valvulotomo.*",
+      "canonical_example": "[2220121] Valvulotomo venoso para By-pass in situ 2.0 MM SIMILAR A INSITUCAT 2.0 MM (VALVULOTOMO ATRAUMATICO 2.0 MM PARA LA ESCISION DE LAS"
+    },
+    {
+      "category_id": "ferulas",
+      "name": "Ferulas (ortesis inmovilizadoras)",
+      "status": "candidate",
+      "include": [
+        "\\bferula\\w*"
+      ],
+      "exclude": [
+        "ferula de arroz",
+        "\\balambre\\b",
+        "\\bguantes?\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/ferulas.json",
+      "corpus_regex": "(?i).*ferula.*",
+      "canonical_example": "FERULA DIGITAL MOLTOPREN 1 CM X 30 CM P/NIÑO"
+    },
+    {
+      "category_id": "valvulas_hidrocefalia",
+      "name": "Valvulas para hidrocefalia",
+      "status": "candidate",
+      "include": [
+        "valvula\\w*.{0,20}hidrocefalia",
+        "\\bhidrocefalia\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/valvulas_hidrocefalia.json",
+      "corpus_regex": "(?i).*hidrocefalia.*",
+      "canonical_example": "Válvula para hidrocefalia tamaño regular de presión media, estéril, desechable."
     }
   ]
 }
