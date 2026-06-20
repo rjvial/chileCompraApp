@@ -5,8 +5,10 @@
 (7) persist :SourceRecord + versioned :RESOLVED_TO.
 
 Each step gates the next; an unclassified description stops at (2) and is
-persisted as explicitly unresolved. Branded (:Product) resolution is an M3
-workstream — it needs the written "branded enough" rule first.
+persisted as explicitly unresolved. Offers are bound as :Product price-point
+variants of their item's node (runner._bind_offers); the further "branded
+enough" rule that would promote a variant to its own branded entity is still
+future work.
 """
 
 from __future__ import annotations
@@ -135,7 +137,7 @@ class Resolver:
                 normalized=normalized,
                 classification=Classification(None, "unclassified"),
                 status=STATUS_UNRESOLVED,
-                unresolved_reason="boilerplate_rubric",
+                unresolved_reason=REASON_BOILERPLATE,
             )
             if source is not None:
                 self.catalog.persist_resolution(source, STATUS_UNRESOLVED, None)
@@ -226,8 +228,8 @@ class Resolver:
         rescues terse/boilerplate buyer lines), then the tender title. The
         winning text drives attribute extraction; the buyer line fills the
         attributes it omits. Because the item resolves once, all of its offers
-        share this single node (the intra-item invariant) — binding them as
-        :Product variants is a later step. With fallback="unspsc", an item no
+        share this single node (the intra-item invariant); they are bound as
+        :Product price-point variants by runner._bind_offers. With fallback="unspsc", an item no
         curated family matches links to a coarse GenericProduct keyed by its
         UNSPSC commodity code instead of being left unresolved."""
         b_norm, b_cls, b_boiler = self._prepare(buyer_text)

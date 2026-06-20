@@ -470,8 +470,10 @@ def cmd_resolve(args) -> int:
             writer.close()
 
         checkpoint(stats, done=True)  # final: writes products CSV (with retries)
-        # Final point on the timeline (status reads this to mark the stage done
-        # and to anchor the last rate sample at the true end).
+        # Final point on the timeline: anchors the last rate sample at the true
+        # end and lands the row at 100%. (Whether a step shows [done] is decided
+        # by the pipeline checkpoint's done-set, not this flag — the `done` field
+        # stays for human/debug inspection of the timeline.)
         append_progress(prog_path, {
             "ts": time.time(), "processed": stats.total, "total": loop_total,
             "resolved": stats.by_status.get("resolved_generic", 0),
@@ -506,6 +508,14 @@ def _progress_writer(path, *, every: float = 1.0):
     if path is None:
         return None
     from .ingest.resume import append_progress
+    # One writer == one step run: clear any prior run's timeline so `--status`
+    # never mixes two runs' samples (resolve steps clear theirs in cmd_resolve;
+    # the loop steps clear here). A within-run resume just re-fills from the
+    # resume point.
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
     last = [0.0]
 
     def write(processed, total) -> None:
@@ -641,10 +651,11 @@ def cmd_pipeline(args) -> int:
         if cp is None:
             print(f"no pipeline checkpoint at {cp_path} — nothing established yet")
             return "absent"
-        # Backfill a checkpoint that predates loop_sizes (e.g. a run started by
-        # an older build) so the view can show the %; best-effort, computed once.
-        if not cp.loop_sizes and STEP_MIGRATE in cp.done:
-            compute_loop_sizes(cp)
+        # NB: status is read-only — it does NOT backfill loop_sizes (that needs a
+        # DB count and a checkpoint write, which would race a running pipeline).
+        # The running pipeline fills loop_sizes right after migrate; until then a
+        # resolve step simply shows no % (its timeline carries the count once it
+        # starts).
         done = set(cp.done)
         todo = [s for s in PIPELINE_STEPS if s not in done]
         current = todo[0] if todo else None
@@ -678,6 +689,11 @@ def cmd_pipeline(args) -> int:
         if is_done:
             return "  [done]"
         if is_current:
+            # The first not-done step. "current" means next-to-run; with no
+            # liveness signal, status can't tell a running pipeline from a paused
+            # one here — a step with a timeline self-corrects (its samples show
+            # real progress), but a timeline-less step (e.g. train-tier2) reads
+            # [running…] even when nothing is running.
             return "  [running…]"
         if size:  # a resolve step that hasn't started, but whose size is known
             return f"  loop size {size:,}  [not started]"

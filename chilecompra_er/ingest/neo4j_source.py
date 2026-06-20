@@ -284,7 +284,10 @@ def fetch_offers(conn, contains: str | None = None, awarded_only: bool = False,
 
 def fetch_oc_items(conn, contains: str | None = None,
                    limit: int | None = None, skip: int = 0) -> Iterator[SourceItem]:
-    """Purchase-order lines: award-side records with firm prices."""
+    """Purchase-order lines: award-side records with firm prices. No global
+    ORDER BY — like the other fetchers, paging rides the read-only source's
+    stable scan order, so the single streamed scan never sorts/materializes the
+    whole result before the first row."""
     cypher = """
         MATCH (oc:OrdenCompra)-[:CONTIENE_ITEM_OC]->(it:ItemOC)
         WHERE it.especificacion_comprador IS NOT NULL
@@ -296,7 +299,6 @@ def fetch_oc_items(conn, contains: str | None = None,
                it.precio_neto AS unit_price, it.total_linea_neto AS total,
                it.moneda_item AS currency, it.unidad_medida AS uom,
                oc.fecha_envio AS date
-        ORDER BY oc_id, item_id
         SKIP $skip LIMIT $limit
     """
 

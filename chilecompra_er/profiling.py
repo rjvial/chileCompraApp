@@ -197,7 +197,10 @@ def fetch_item_spend(conn, unspsc_segment: int | None = None,
                coalesce({TENDER_NAME}, '') AS context,
                reduce(t = 0.0,
                       p IN [(i)<-[:PARA_ITEM]-(o:Oferta) WHERE o.es_adjudicada = true
-                            | coalesce(o.precio_total_clp, 0.0)]
+                            -- toFloat() so a dirty non-numeric precio_total_clp
+                            -- nulls out to 0.0 instead of crashing the sum (same
+                            -- hardening as fallback.fetch_fallback_items)
+                            | coalesce(toFloat(o.precio_total_clp), 0.0)]
                       | t + p) AS spend_clp
         {limit_clause}
     """

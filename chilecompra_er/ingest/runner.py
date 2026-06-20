@@ -88,10 +88,14 @@ _TIER2_BATCH = 2000  # chunk size for batched Tier-2 priming (see _prime_ahead)
 
 
 def _item_texts(item):
-    """Every raw text an item gets classified on: buyer line, tender title, and
-    each offer description (resolve_item._prepare classifies all of them)."""
+    """Every raw text an item gets classified on, across all modes: the buyer/
+    offer line (raw_text), the tender title (item mode), the buyer line (joint
+    mode), and each offer description. Keys absent for a given mode yield None
+    and are filtered by the caller — so priming covers whatever the resolver
+    will classify, never leaving a cold cache."""
     yield item.raw_text
     yield item.extra.get("tender_text")
+    yield item.extra.get("buyer_text")  # joint mode's secondary text
     for o in (item.extra.get("offers") or []):
         yield o.get("text")
 
