@@ -92,3 +92,31 @@ def test_versioned_resolutions_never_overwrite():
     versions = [r for r in cat.resolutions if r["record_key"] == src.record_key]
     assert [r["version"] for r in versions] == [1, 2]
     assert [r["current"] for r in versions] == [False, True]
+
+
+def test_same_target_refreshes_in_place_no_new_version():
+    from chilecompra_er.resolve import SourceRef
+
+    cat = InMemoryCatalog()
+    src = SourceRef("mp", "T-1", "1", "SONDA FOLEY 16")
+    cat.persist_resolution(src, "resolved_generic", "gp_x", extractor_version="v1")
+    cat.persist_resolution(src, "resolved_generic", "gp_x", extractor_version="v2")  # re-resolve, same target
+    versions = [r for r in cat.resolutions if r["record_key"] == src.record_key]
+    # no redundant version: one edge, provenance refreshed to the latest run
+    assert [r["version"] for r in versions] == [1]
+    assert versions[0]["current"] is True
+    assert versions[0]["extractor_version"] == "v2"
+
+
+def test_retarget_after_refresh_bumps_version_once():
+    from chilecompra_er.resolve import SourceRef
+
+    cat = InMemoryCatalog()
+    src = SourceRef("mp", "T-1", "1", "SONDA FOLEY 16")
+    cat.persist_resolution(src, "resolved_generic", "gp_x")
+    cat.persist_resolution(src, "resolved_generic", "gp_x")  # refresh in place (no bump)
+    cat.persist_resolution(src, "resolved_generic", "gp_y")  # real change -> v2
+    versions = [r for r in cat.resolutions if r["record_key"] == src.record_key]
+    assert [r["version"] for r in versions] == [1, 2]
+    assert [r["current"] for r in versions] == [False, True]
+    assert [r["target_id"] for r in versions] == ["gp_x", "gp_y"]

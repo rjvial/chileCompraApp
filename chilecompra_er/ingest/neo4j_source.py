@@ -233,6 +233,95 @@ def fetch_items(conn, contains: str | None = None,
                   extra_params={"seg_low": seg_low, "seg_high": seg_high})
 
 
+# Composite content hash for an item: its own record_hash plus the SORTED set of
+# its offers' record_hashes. Changes iff the item content OR its offer set changes
+# — the single signal that drives the incremental skip (new item / edited item /
+# new-or-changed bid all flip it). Defined once so the fetcher and counter agree.
+_CONTENT_HASH = ("apoc.util.md5([coalesce(i.record_hash,'')] + "
+                 "apoc.coll.sort([o IN offer_nodes | coalesce(o.record_hash,'')]))")
+
+# Candidate items for an incremental pass: items from a new ingestion run, UNION
+# items that merely GAINED an offer from a new run (item itself unchanged). Each
+# branch is index-backed (item_run_id / oferta_run_id), so the corpus is never
+# fully scanned — only the delta runs are touched.
+_INCREMENTAL_CANDIDATES = """
+    CALL {
+        MATCH (i:ItemLicitacion)
+        WHERE i.run_id IN $new_runs AND i.descripcion_comprador IS NOT NULL
+        RETURN i
+      UNION
+        MATCH (o:Oferta) WHERE o.run_id IN $new_runs
+        MATCH (o)-[:PARA_ITEM]->(i:ItemLicitacion)
+        WHERE i.descripcion_comprador IS NOT NULL
+        RETURN i
+    }
+    WITH DISTINCT i
+    MATCH (l:Licitacion)-[:TIENE_ITEM]->(i)
+    WHERE ($contains IS NULL OR toLower(i.descripcion_comprador) CONTAINS $contains)
+"""
+
+
+def fetch_items_incremental(conn, new_runs, contains: str | None = None):
+    """Item-centric corpus, INCREMENTAL: only items that are new, content-changed,
+    or gained a new/changed offer since the last run (design: incremental delta).
+
+    Same `SourceItem` shape as fetch_items (one record per ItemLicitacion carrying
+    buyer line + tender title + UNSPSC + all offers), plus a composite `content_hash`
+    on the SourceRef. Items whose stored SourceRecord.content_hash already matches are
+    skipped in the query, so the stream is the true delta. `new_runs` is the set of
+    ingestion run_ids not yet incorporated (resolve.lineage.compute_new_runs)."""
+    cypher = f"""
+        {_INCREMENTAL_CANDIDATES}
+        WITH l, i,
+             [(i)<-[:PARA_ITEM]-(o:Oferta) WHERE o.descripcion_proveedor IS NOT NULL | o]
+               AS offer_nodes
+        WITH l, i, offer_nodes, {_CONTENT_HASH} AS content_hash
+        OPTIONAL MATCH (s:SourceRecord {{record_key:
+            '{SOURCE_TENDER_ITEM}|' + toString(i.id_licitacion) + '|' + toString(i.id_item)}})
+        WITH l, i, offer_nodes, content_hash, s
+        WHERE s IS NULL OR s.content_hash IS NULL OR s.content_hash <> content_hash
+        RETURN i.id_licitacion AS tender_id, i.id_item AS item_id,
+               i.descripcion_comprador AS text, i.codigo_unspsc_producto AS unspsc,
+               i.cantidad AS quantity, i.moneda_item AS currency,
+               coalesce({TENDER_NAME}, '') AS tender_text,
+               l.fecha_publicacion AS date, content_hash AS content_hash,
+               [o IN offer_nodes | {{offer_id: o.id_oferta, text: o.descripcion_proveedor,
+                  awarded: o.es_adjudicada,
+                  unit_price: coalesce(o.precio_unitario_clean, o.precio_unitario),
+                  quantity: coalesce(o.cantidad_clean, o.cantidad_ofertada),
+                  total_clp: o.precio_total_clp, currency: o.moneda, date: o.fecha}}] AS offers
+    """
+
+    def build(rec) -> SourceItem:
+        return SourceItem(
+            ref=SourceRef(SOURCE_TENDER_ITEM, str(rec["tender_id"]),
+                          str(rec["item_id"]), rec["text"],
+                          content_hash=rec["content_hash"]),
+            kind="item",
+            raw_text=rec["text"],
+            unspsc=rec["unspsc"],
+            quantity=rec["quantity"],
+            currency=rec["currency"],
+            date=rec["date"],
+            extra={"tender_text": rec["tender_text"], "offers": rec["offers"]},
+        )
+
+    return _paged(conn, cypher, build, contains, limit=None,
+                  extra_params={"new_runs": sorted(new_runs)})
+
+
+def count_incremental_items(conn, new_runs, contains: str | None = None) -> int:
+    """Upper-bound loop size for an incremental run: the number of CANDIDATE items
+    (pre content_hash skip). Cheap (no hashing / SourceRecord lookup); the actual
+    processed count is reported by the run's stats. Used only as a progress
+    denominator, so an upper bound is fine."""
+    rows = conn.query(
+        _INCREMENTAL_CANDIDATES + "\n    RETURN count(DISTINCT i) AS n",
+        parameters={"new_runs": sorted(new_runs),
+                    "contains": contains.lower() if contains else None})
+    return int(rows[0]["n"]) if rows else 0
+
+
 def fetch_offers(conn, contains: str | None = None, awarded_only: bool = False,
                  limit: int | None = None, skip: int = 0,
                  unspsc_segment: int | None = None) -> Iterator[SourceItem]:

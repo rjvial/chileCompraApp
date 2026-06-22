@@ -153,6 +153,9 @@ class SourceRef:
     tender_id: str
     line_no: str
     raw_text: str        # stored verbatim on the SourceRecord node
+    content_hash: str | None = None  # composite hash of the source content (item
+                                     # + its offers); the incremental skip key
+                                     # stored on :SourceRecord. None for offers.
 
     @property
     def record_key(self) -> str:
@@ -167,11 +170,14 @@ STATUS_UNRESOLVED = "unresolved"
 class InMemoryCatalog:
     """Same contract as Neo4jCatalog, for tests and dry runs."""
 
-    def __init__(self):
+    def __init__(self, run_uid: str | None = None):
         self.nodes: dict[str, NodeView] = {}
         self.specs: dict[str, NodeSpec] = {}
         self.resolutions: list[dict] = []
         self.products: dict[str, dict] = {}
+        self.events: list[dict] = []   # append-only lineage, one per persist touch
+        self.run_uid = run_uid
+        self._tick = 0                 # monotonic stamp (deterministic for tests)
 
     def bind_product(self, product_id: str, generic_id: str, props: dict) -> None:
         self.products[product_id] = {"generic_id": generic_id, **props}
@@ -199,18 +205,61 @@ class InMemoryCatalog:
 
     def persist_resolution(self, source: SourceRef, status: str, target_id: str | None,
                            target_label: str = GENERIC_LABEL, **edge_props) -> None:
-        version = 1 + sum(1 for r in self.resolutions if r["record_key"] == source.record_key)
-        for r in self.resolutions:
-            if r["record_key"] == source.record_key:
-                r["current"] = False
-        self.resolutions.append({
-            "record_key": source.record_key,
-            "status": status,
-            "target_id": target_id,
-            "target_label": target_label,
-            "version": version,
-            "current": True,
-            **edge_props,
+        # Refresh-in-place: a re-resolution to the SAME (target, label) updates the
+        # current edge's provenance instead of appending a redundant version; a new
+        # version is added only when the resolution actually changes the target.
+        # Every touch also appends an immutable lineage event (event-level audit).
+        self._tick += 1
+        ts = self._tick
+        content_hash = source.content_hash
+        cur = next((r for r in self.resolutions
+                    if r["record_key"] == source.record_key and r["current"]), None)
+        same = (cur is not None and target_id is not None
+                and cur.get("target_id") == target_id
+                and cur.get("target_label") == target_label)
+        if target_id is None:
+            event_kind = "unresolved"
+        elif cur is None:
+            event_kind = "new"
+        elif same:
+            event_kind = "confirm"
+        else:
+            event_kind = "retarget"
+
+        if target_id is None:
+            # Unresolved: no edge row (mirrors the graph's "no RESOLVED_TO"), only
+            # the lineage event below.
+            version = 0
+        elif same:
+            cur.update({"status": status, "last_confirmed_at": ts,
+                        "content_hash": content_hash, **edge_props})
+            version = cur["version"]
+        else:
+            version = 1 + sum(1 for r in self.resolutions if r["record_key"] == source.record_key)
+            for r in self.resolutions:
+                if r["record_key"] == source.record_key:
+                    r["current"] = False
+            self.resolutions.append({
+                "record_key": source.record_key,
+                "status": status,
+                "target_id": target_id,
+                "target_label": target_label,
+                "version": version,
+                "current": True,
+                "first_resolved_at": ts,
+                "last_confirmed_at": ts,
+                "content_hash": content_hash,
+                **edge_props,
+            })
+
+        self.events.append({
+            "ts": ts, "record_key": source.record_key, "target_id": target_id,
+            "target_label": target_label, "status": status, "event_kind": event_kind,
+            "version": version, "content_hash": content_hash, "run_uid": self.run_uid,
+            "evidence": edge_props.get("evidence"),
+            "extractor_version": edge_props.get("extractor_version"),
+            "schema_version": edge_props.get("schema_version"),
+            "normalizer_version": edge_props.get("normalizer_version"),
         })
 
 
@@ -222,8 +271,9 @@ class Neo4jCatalog:
     this process is the only writer (the batch runner); drop the instance to
     refresh."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, run_uid: str | None = None):
         self.conn = conn
+        self.run_uid = run_uid   # :ResolveRun this persist run's events link to
         self._categories_synced: set[str] = set()
         self._snapshots: dict[str, dict[str, NodeView]] = {}
         # Raw preloaded GenericProduct rows grouped by category (filled by
@@ -388,56 +438,86 @@ class Neo4jCatalog:
 
     def persist_resolution(self, source: SourceRef, status: str, target_id: str | None,
                            target_label: str = GENERIC_LABEL, **edge_props) -> None:
-        """Upsert :SourceRecord, retire the current :RESOLVED_TO edge, add the
-        next version. Unresolved records get the status on the node and no
-        edge — still total and explicit, nothing silently dropped."""
+        """Upsert :SourceRecord (carrying the incremental content_hash), refresh
+        or version the :RESOLVED_TO edge, and append an immutable :ResolutionEvent
+        for the touch. Unresolved records get the status + an 'unresolved' event,
+        no edge — still total and explicit, nothing silently dropped."""
+        params = {
+            "rk": source.record_key, "src": source.source, "tid": source.tender_id,
+            "line": source.line_no, "text": source.raw_text, "status": status,
+            "chash": source.content_hash, "run_uid": self.run_uid,
+            "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
+            "extractor_version": edge_props.get("extractor_version", ""),
+            "schema_version": edge_props.get("schema_version", ""),
+            "normalizer_version": edge_props.get("normalizer_version", ""),
+        }
         self.conn.query(
             """
             MERGE (s:SourceRecord {record_key: $rk})
             ON CREATE SET s.source = $src, s.tender_id = $tid, s.line_no = $line
-            SET s.raw_text = $text, s.resolution_status = $status
+            SET s.raw_text = $text, s.resolution_status = $status, s.content_hash = $chash
             """,
-            parameters={
-                "rk": source.record_key,
-                "src": source.source,
-                "tid": source.tender_id,
-                "line": source.line_no,
-                "text": source.raw_text,
-                "status": status,
-            },
+            parameters=params,
         )
         if target_id is None:
+            # Unresolved touch: no edge, but still an auditable lineage event.
+            self.conn.query(
+                """
+                MATCH (s:SourceRecord {record_key: $rk})
+                OPTIONAL MATCH (run:ResolveRun {run_uid: $run_uid})
+                CREATE (s)-[:HAS_EVENT]->(ev:ResolutionEvent {
+                    ts: datetime(), record_key: $rk, status: $status,
+                    event_kind: 'unresolved', content_hash: $chash, evidence: $evidence,
+                    extractor_version: $extractor_version,
+                    schema_version: $schema_version, normalizer_version: $normalizer_version})
+                FOREACH (r IN CASE WHEN run IS NOT NULL THEN [run] ELSE [] END |
+                    CREATE (r)-[:EMITTED]->(ev))
+                """,
+                parameters=params,
+            )
             return
         if target_label not in (GENERIC_LABEL, PRODUCT_LABEL):
             raise ValueError(f"invalid resolution target label {target_label!r}")
-        # Single round trip: retire current edges, compute next version, and
-        # create the new versioned edge in one statement.
+        # Single round trip: refresh-in-place when the current edge already points
+        # at this target (no new version), else retire + version; then emit the event.
+        params["target"] = target_id
+        params["label"] = target_label
         self.conn.query(
             f"""
             MATCH (s:SourceRecord {{record_key: $rk}})
-            OPTIONAL MATCH (s)-[old:RESOLVED_TO]->()
-            WITH s, collect(old) AS olds, coalesce(max(old.version), 0) AS maxv
-            FOREACH (o IN [x IN olds WHERE x.current] | SET o.current = false)
-            WITH s, maxv
             MATCH (t:{target_label} {{id: $target}})
-            CREATE (s)-[r:RESOLVED_TO {{
-                current: true,
-                version: maxv + 1,
-                resolved_at: datetime(),
-                evidence: $evidence,
-                extractor_version: $extractor_version,
-                schema_version: $schema_version,
-                normalizer_version: $normalizer_version
-            }}]->(t)
+            OPTIONAL MATCH (run:ResolveRun {{run_uid: $run_uid}})
+            OPTIONAL MATCH (s)-[cur:RESOLVED_TO {{current: true}}]->(curt)
+            WITH s, t, run, cur, (curt IS NULL) AS isnew,
+                 (curt IS NOT NULL AND curt.id = t.id) AS same,
+                 [(s)-[e:RESOLVED_TO]->() | e.version] AS versions
+            WITH s, t, run, cur, isnew, same,
+                 reduce(m = 0, v IN versions | CASE WHEN v > m THEN v ELSE m END) AS maxv
+            FOREACH (r IN CASE WHEN same THEN [cur] ELSE [] END |
+                SET r.resolved_at = datetime(), r.last_confirmed_at = datetime(),
+                    r.evidence = $evidence, r.extractor_version = $extractor_version,
+                    r.schema_version = $schema_version, r.normalizer_version = $normalizer_version)
+            FOREACH (r IN CASE WHEN (NOT same) AND cur IS NOT NULL THEN [cur] ELSE [] END |
+                SET r.current = false)
+            FOREACH (_x IN CASE WHEN same THEN [] ELSE [1] END |
+                CREATE (s)-[:RESOLVED_TO {{
+                    current: true, version: maxv + 1, resolved_at: datetime(),
+                    first_resolved_at: datetime(), last_confirmed_at: datetime(),
+                    evidence: $evidence, extractor_version: $extractor_version,
+                    schema_version: $schema_version, normalizer_version: $normalizer_version
+                }}]->(t))
+            WITH s, t, run, same, isnew,
+                 CASE WHEN same THEN maxv ELSE maxv + 1 END AS version
+            CREATE (s)-[:HAS_EVENT]->(ev:ResolutionEvent {{
+                ts: datetime(), record_key: $rk, target_id: $target, target_label: $label,
+                status: $status, version: version, content_hash: $chash, evidence: $evidence,
+                event_kind: CASE WHEN isnew THEN 'new' WHEN same THEN 'confirm' ELSE 'retarget' END,
+                extractor_version: $extractor_version, schema_version: $schema_version,
+                normalizer_version: $normalizer_version}})
+            FOREACH (r IN CASE WHEN run IS NOT NULL THEN [run] ELSE [] END |
+                CREATE (r)-[:EMITTED]->(ev))
             """,
-            parameters={
-                "rk": source.record_key,
-                "target": target_id,
-                "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
-                "extractor_version": edge_props.get("extractor_version", ""),
-                "schema_version": edge_props.get("schema_version", ""),
-                "normalizer_version": edge_props.get("normalizer_version", ""),
-            },
+            parameters=params,
         )
 
     def flush(self) -> None:
@@ -459,8 +539,8 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
     each checkpoint and at the end). MERGE keys make every flush idempotent, so
     a kill + --resume re-merges safely."""
 
-    def __init__(self, conn, batch_size: int = 10_000):
-        super().__init__(conn)
+    def __init__(self, conn, batch_size: int = 10_000, run_uid: str | None = None):
+        super().__init__(conn, run_uid=run_uid)
         self.batch_size = batch_size
         self._cat_buf: list[dict] = []
         self._gp_buf: list[dict] = []
@@ -513,7 +593,7 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
         self._res_buf.append({
             "rk": source.record_key, "src": source.source, "tid": source.tender_id,
             "line": source.line_no, "text": source.raw_text, "status": status,
-            "target": target_id, "label": target_label,
+            "target": target_id, "label": target_label, "chash": source.content_hash,
             "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
             "extractor": edge_props.get("extractor_version", ""),
             "schema": edge_props.get("schema_version", ""),
@@ -579,31 +659,80 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
             self._res_buf = []
 
     def _flush_resolutions(self, rows: list[dict]) -> None:
-        # SourceRecord upserts always; the versioned RESOLVED_TO edge only when a
-        # target exists, split by target label so the MATCH uses the right index.
+        # Collapse duplicate source rows (same record_key) to their last occurrence
+        # before writing. Within a run such duplicates carry the SAME target (a
+        # record resolves deterministically once); UNWIND has no reliable
+        # read-your-writes, so two identical rows would otherwise each append an
+        # edge. Last wins — same "latest run" semantics as the single-write path.
+        rows = list({r["rk"]: r for r in rows}.values())
+        # SourceRecord upserts always (carrying the incremental content_hash); the
+        # versioned RESOLVED_TO edge + its event only when a target exists, split by
+        # target label so the MATCH uses the right index.
         self.conn.query(
             """
             UNWIND $rows AS row
             MERGE (s:SourceRecord {record_key: row.rk})
               ON CREATE SET s.source = row.src, s.tender_id = row.tid, s.line_no = row.line
-            SET s.raw_text = row.text, s.resolution_status = row.status
+            SET s.raw_text = row.text, s.resolution_status = row.status,
+                s.content_hash = row.chash
             """, parameters={"rows": rows})
+        # Unresolved touches emit an 'unresolved' lineage event (no edge).
+        unresolved = [r for r in rows if r["target"] is None]
+        if unresolved:
+            self.conn.query(
+                """
+                OPTIONAL MATCH (run:ResolveRun {run_uid: $run_uid})
+                UNWIND $rows AS row
+                MATCH (s:SourceRecord {record_key: row.rk})
+                CREATE (s)-[:HAS_EVENT]->(ev:ResolutionEvent {
+                    ts: datetime(), record_key: row.rk, status: row.status,
+                    event_kind: 'unresolved', content_hash: row.chash, evidence: row.evidence,
+                    extractor_version: row.extractor, schema_version: row.schema,
+                    normalizer_version: row.norm})
+                FOREACH (r IN CASE WHEN run IS NOT NULL THEN [run] ELSE [] END |
+                    CREATE (r)-[:EMITTED]->(ev))
+                """, parameters={"rows": unresolved, "run_uid": self.run_uid})
         for label in (GENERIC_LABEL, PRODUCT_LABEL):
             targeted = [r for r in rows if r["target"] is not None and r["label"] == label]
             if not targeted:
                 continue
+            # Refresh-in-place: re-resolution to the same target updates the current
+            # edge's provenance; a new version is created only when the target changes.
+            # Every touch appends an immutable :ResolutionEvent linked to the run.
             self.conn.query(
                 f"""
+                OPTIONAL MATCH (run:ResolveRun {{run_uid: $run_uid}})
                 UNWIND $rows AS row
                 MATCH (s:SourceRecord {{record_key: row.rk}})
-                OPTIONAL MATCH (s)-[old:RESOLVED_TO]->()
-                WITH s, row, collect(old) AS olds, coalesce(max(old.version), 0) AS maxv
-                FOREACH (o IN [x IN olds WHERE x.current] | SET o.current = false)
-                WITH s, row, maxv
                 MATCH (t:{label} {{id: row.target}})
-                CREATE (s)-[:RESOLVED_TO {{
-                    current: true, version: maxv + 1, resolved_at: datetime(),
-                    evidence: row.evidence, extractor_version: row.extractor,
-                    schema_version: row.schema, normalizer_version: row.norm
-                }}]->(t)
-                """, parameters={"rows": targeted})
+                OPTIONAL MATCH (s)-[cur:RESOLVED_TO {{current: true}}]->(curt)
+                WITH run, row, s, t, cur, (curt IS NULL) AS isnew,
+                     (curt IS NOT NULL AND curt.id = t.id) AS same,
+                     [(s)-[e:RESOLVED_TO]->() | e.version] AS versions
+                WITH run, row, s, t, cur, isnew, same,
+                     reduce(m = 0, v IN versions | CASE WHEN v > m THEN v ELSE m END) AS maxv
+                FOREACH (r IN CASE WHEN same THEN [cur] ELSE [] END |
+                    SET r.resolved_at = datetime(), r.last_confirmed_at = datetime(),
+                        r.evidence = row.evidence, r.extractor_version = row.extractor,
+                        r.schema_version = row.schema, r.normalizer_version = row.norm)
+                FOREACH (r IN CASE WHEN (NOT same) AND cur IS NOT NULL THEN [cur] ELSE [] END |
+                    SET r.current = false)
+                FOREACH (_x IN CASE WHEN same THEN [] ELSE [1] END |
+                    CREATE (s)-[:RESOLVED_TO {{
+                        current: true, version: maxv + 1, resolved_at: datetime(),
+                        first_resolved_at: datetime(), last_confirmed_at: datetime(),
+                        evidence: row.evidence, extractor_version: row.extractor,
+                        schema_version: row.schema, normalizer_version: row.norm
+                    }}]->(t))
+                WITH run, row, s, isnew, same,
+                     CASE WHEN same THEN maxv ELSE maxv + 1 END AS version
+                CREATE (s)-[:HAS_EVENT]->(ev:ResolutionEvent {{
+                    ts: datetime(), record_key: row.rk, target_id: row.target,
+                    target_label: row.label, status: row.status, version: version,
+                    content_hash: row.chash, evidence: row.evidence,
+                    event_kind: CASE WHEN isnew THEN 'new' WHEN same THEN 'confirm' ELSE 'retarget' END,
+                    extractor_version: row.extractor, schema_version: row.schema,
+                    normalizer_version: row.norm}})
+                FOREACH (r IN CASE WHEN run IS NOT NULL THEN [run] ELSE [] END |
+                    CREATE (r)-[:EMITTED]->(ev))
+                """, parameters={"rows": targeted, "run_uid": self.run_uid})

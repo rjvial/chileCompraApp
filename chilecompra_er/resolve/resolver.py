@@ -140,7 +140,10 @@ class Resolver:
                 unresolved_reason=REASON_BOILERPLATE,
             )
             if source is not None:
-                self.catalog.persist_resolution(source, STATUS_UNRESOLVED, None)
+                self.catalog.persist_resolution(
+                    source, STATUS_UNRESOLVED, None,
+                    evidence={"unresolved_reason": REASON_BOILERPLATE,
+                              "normalized": normalized})
             return report
 
         normalized = self.normalizer(raw_text)
@@ -155,7 +158,12 @@ class Resolver:
                 unresolved_reason=classification.status,
             )
             if source is not None:
-                self.catalog.persist_resolution(source, STATUS_UNRESOLVED, None)
+                self.catalog.persist_resolution(
+                    source, STATUS_UNRESOLVED, None,
+                    evidence={"unresolved_reason": classification.status,
+                              "normalized": normalized,
+                              "classifier": {"tier": classification.tier,
+                                             "matched": list(classification.matched)}})
             return report
 
         schema = self.schema(classification.category_id)
@@ -181,6 +189,7 @@ class Resolver:
         evidence = {
             "normalized": normalized,
             "classifier": {"tier": classification.tier, "matched": list(classification.matched)},
+            "attribute_values": extraction.values,
             "attributes": extraction.provenance,
             "illegal": extraction.illegal,
             "price_basis": {"basis": basis.basis, "pack_size": basis.pack_size,
@@ -291,7 +300,9 @@ class Resolver:
                 evidence=base_evidence,
             )
             if source is not None:
-                self.catalog.persist_resolution(source, STATUS_UNRESOLVED, None)
+                self.catalog.persist_resolution(
+                    source, STATUS_UNRESOLVED, None,
+                    evidence={**base_evidence, "unresolved_reason": reason})
             return report
 
         schema = self.schema(chosen_cat)
@@ -324,6 +335,7 @@ class Resolver:
         evidence = {
             **base_evidence,
             "category_source": category_source,
+            "attribute_values": extraction.values,
             "attributes": extraction.provenance,
             "illegal": extraction.illegal,
             "price_basis": {"basis": basis.basis, "pack_size": basis.pack_size,
@@ -473,7 +485,9 @@ class Resolver:
                 evidence=base_evidence,
             )
             if source is not None:
-                self.catalog.persist_resolution(source, STATUS_UNRESOLVED, None)
+                self.catalog.persist_resolution(
+                    source, STATUS_UNRESOLVED, None,
+                    evidence={**base_evidence, "unresolved_reason": reason})
             return report
 
         schema = self.schema(chosen.category_id)
@@ -506,6 +520,7 @@ class Resolver:
             **base_evidence,
             "category_source": category_source,
             "classifier": {"tier": chosen.tier, "matched": list(chosen.matched)},
+            "attribute_values": extraction.values,
             "attributes": extraction.provenance,
             "illegal": extraction.illegal,
             "price_basis": {"basis": basis.basis, "pack_size": basis.pack_size,
