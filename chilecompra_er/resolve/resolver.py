@@ -253,19 +253,23 @@ class Resolver:
 
         chosen_cat: str | None = None
         category_source: str | None = None
+        chosen_cls: Classification | None = None  # winning verdict, for its tier
         win_norm = ""
         if b_cls.status == CLASSIFIED:
-            chosen_cat, category_source, win_norm = b_cls.category_id, "buyer", b_norm
+            chosen_cat, category_source, win_norm, chosen_cls = \
+                b_cls.category_id, "buyer", b_norm, b_cls
         elif votes:
             chosen_cat = votes.most_common(1)[0][0]
             category_source = "offer"
             # extract from a representative offer for that category, awarded first
-            reps = [(o, n) for o, n, c in offer_sig
+            reps = [(o, n, c) for o, n, c in offer_sig
                     if c.status == CLASSIFIED and c.category_id == chosen_cat]
-            reps.sort(key=lambda on: 0 if on[0].get("awarded") else 1)
-            win_norm = reps[0][1] if reps else ""
+            reps.sort(key=lambda onc: 0 if onc[0].get("awarded") else 1)
+            if reps:
+                win_norm, chosen_cls = reps[0][1], reps[0][2]
         elif t_cls.status == CLASSIFIED:
-            chosen_cat, category_source, win_norm = t_cls.category_id, "tender", t_norm
+            chosen_cat, category_source, win_norm, chosen_cls = \
+                t_cls.category_id, "tender", t_norm, t_cls
 
         base_evidence = {
             "buyer_normalized": b_norm,
@@ -335,6 +339,10 @@ class Resolver:
         evidence = {
             **base_evidence,
             "category_source": category_source,
+            # which classifier tier produced the winning category (tier1 | brand |
+            # tier2) — lets an audit count each tier's marginal contribution.
+            "classifier": {"tier": chosen_cls.tier,
+                           "matched": list(chosen_cls.matched)} if chosen_cls else None,
             "attribute_values": extraction.values,
             "attributes": extraction.provenance,
             "illegal": extraction.illegal,
@@ -356,7 +364,8 @@ class Resolver:
         return ResolutionReport(
             raw_text=buyer_text or "",
             normalized=win_norm or b_norm,
-            classification=Classification(chosen_cat, CLASSIFIED),
+            classification=Classification(chosen_cat, CLASSIFIED,
+                                          tier=chosen_cls.tier if chosen_cls else "tier1"),
             status=STATUS_GENERIC,
             extraction=extraction,
             price_basis=basis,

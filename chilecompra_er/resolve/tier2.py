@@ -24,6 +24,27 @@ DEFAULT_THRESHOLD = 0.60
 TIER2_MODEL_PATH = Path("data/tier2_model.joblib")
 
 
+def unspsc_tokens(code) -> str:
+    """The buyer's UNSPSC commodity code -> hierarchical tokens (segment / family /
+    class) to append to the text, so the linear model can use the code as a coarse
+    category prior. Empty when the code is missing or unparseable — the model then
+    just sees the text (a missing feature is fine for a linear model)."""
+    if code is None or code == "":
+        return ""
+    try:
+        s = str(int(code)).zfill(8)
+    except (TypeError, ValueError):
+        return ""
+    return f" unspscseg{s[:2]} unspscfam{s[:4]} unspsccls{s[:6]}"
+
+
+def augment(text: str, code=None) -> str:
+    """Text the Tier-2 vectorizer actually sees: the normalized description plus the
+    UNSPSC tokens. Used identically at train and eval/inference time so the feature
+    space matches. `code=None` => plain text (backward-compatible)."""
+    return (text or "") + unspsc_tokens(code)
+
+
 def train_pipeline(texts: list[str], labels: list[str]):
     """Fit a TF-IDF + logistic-regression pipeline on NORMALIZED texts -> labels.
     word 1-2 grams + char 3-5 grams (char grams catch terse/typo'd lines and
@@ -121,12 +142,18 @@ def train(texts: list[str], labels: list[str],
     return Tier2Classifier(train_pipeline(texts, labels), threshold=threshold)
 
 
-def fetch_training_rows(conn) -> list[tuple[str, str]]:
-    """(raw_text, category_id) for every item resolved to a CURATED family
-    (not a UNSPSC fallback bucket) — the Tier-1 labels to learn from."""
+def fetch_training_rows(conn) -> list[tuple[str, str, object]]:
+    """(raw_text, category_id, unspsc) for every item resolved to a CURATED family
+    (not a UNSPSC fallback bucket) — the Tier-1 labels to learn from. The UNSPSC
+    commodity code is joined back from the ItemLicitacion (the record_key encodes
+    its id_licitacion|id_item) so it can be used as a feature; null when the item
+    can't be matched."""
     rows = conn.query(
         "MATCH (s:SourceRecord)-[:RESOLVED_TO]->(g:GenericProduct) "
         "WHERE NOT g.category_id STARTS WITH $p AND s.raw_text IS NOT NULL "
-        "RETURN s.raw_text AS text, g.category_id AS label",
+        "OPTIONAL MATCH (i:ItemLicitacion {id_licitacion: s.tender_id, "
+        "                                  id_item: toInteger(s.line_no)}) "
+        "RETURN s.raw_text AS text, g.category_id AS label, "
+        "       i.codigo_unspsc_producto AS unspsc",
         parameters={"p": UNSPSC_PREFIX})
-    return [(r["text"], r["label"]) for r in rows]
+    return [(r["text"], r["label"], r["unspsc"]) for r in rows]

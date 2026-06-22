@@ -229,8 +229,8 @@ def cmd_train_tier2(args) -> int:
         return 1
 
     norm = Normalizer()
-    texts = [norm(t) for t, _ in rows]
-    labels = [lab for _, lab in rows]
+    texts = [norm(t) for t, _lab, _u in rows]
+    labels = [lab for _t, lab, _u in rows]
     # Cap the training set: a saga fit over the full ~300k+ curated rows takes
     # ~20 min, and 80k rows is already ample signal for a fallback classifier
     # that only fires above a confidence threshold. Seeded for reproducibility.
@@ -256,6 +256,123 @@ def cmd_train_tier2(args) -> int:
     clf.save(out)
     print(f"saved Tier-2 model to {out} (threshold {args.threshold})")
     print("use it: chilecompra-er resolve --kind item --tier2 [--brands] ...")
+    return 0
+
+
+def cmd_tier2_eval(args) -> int:
+    """Held-out coverage/precision curve for Tier-2 — TEXT-ONLY vs +UNSPSC feature,
+    so the feature's lift is visible before wiring it into production. With --gold,
+    also score a human-labeled CSV (true precision, incl. residue-only)."""
+    import random
+
+    from .graphdb import get_connection
+    from .normalize import Normalizer
+    from .resolve import tier2_eval
+    from .resolve.tier2 import fetch_training_rows
+
+    conn = get_connection()
+    try:
+        rows = fetch_training_rows(conn)
+    finally:
+        conn.close()
+    if len(rows) < args.min_rows:
+        print(f"only {len(rows)} curated rows (need >= {args.min_rows}) — "
+              "resolve some curated items first")
+        return 1
+    if len(rows) > args.cap:
+        rows = random.Random(0).sample(rows, args.cap)
+        print(f"sampled {args.cap:,} rows for the eval")
+
+    norm = Normalizer()
+    texts = [norm(t) for t, _l, _u in rows]
+    labels = [lab for _t, lab, _u in rows]
+    unspsc = [u for _t, _l, u in rows]
+
+    base = tier2_eval.evaluate_holdout(texts, labels, None, test_size=args.test_size)
+    withu = tier2_eval.evaluate_holdout(texts, labels, unspsc, test_size=args.test_size)
+    print(tier2_eval.format_curve(base))
+    print()
+    print(tier2_eval.format_curve(withu))
+
+    def at(res, t):
+        return next((r for r in res["curve"] if abs(r["threshold"] - t) < 1e-9), None)
+
+    b, w = at(base, 0.60), at(withu, 0.60)
+    if b and w and b["precision"] is not None and w["precision"] is not None:
+        print(f"\nUNSPSC lift @0.60:  coverage {b['coverage']:.1%} -> {w['coverage']:.1%}   "
+              f"precision {b['precision']:.1%} -> {w['precision']:.1%}")
+
+    if args.gold:
+        import csv
+
+        from .resolve.tier2 import TIER2_MODEL_PATH, Tier2Classifier
+        path = args.tier2_model or TIER2_MODEL_PATH
+        if not path.exists():
+            print(f"no model at {path} for the gold eval — train one first")
+            return 1
+        clf = Tier2Classifier.load(path, threshold=args.tier2_threshold)
+        with open(args.gold, encoding="utf-8-sig", newline="") as f:
+            grows = [{"text": norm(r["text"]), "true_category": r["true_category"].strip(),
+                      "residue": str(r.get("residue", "")).strip().lower() in ("1", "true", "yes")}
+                     for r in csv.DictReader(f) if r.get("true_category", "").strip()]
+        print()
+        print(f"gold rows: {len(grows)}")
+        print(tier2_eval.format_gold(tier2_eval.evaluate_gold(clf, grows)))
+    return 0
+
+
+def cmd_tier2_label_sample(args) -> int:
+    """Export a sample of items + the current classifier's predictions to a CSV for
+    human labeling — fill `true_category` to build a gold set. --residue-only keeps
+    only items Tier-1 misses (what Tier-2 is actually judged on)."""
+    import csv
+
+    from .graphdb import get_connection
+    from .ingest.neo4j_source import fetch_tender_items
+    from .normalize import Normalizer
+    from .resolve.classifier import CLASSIFIED, Tier1Classifier
+    from .resolve.tier2 import TIER2_MODEL_PATH, Tier2Classifier
+
+    norm = Normalizer()
+    tier1 = Tier1Classifier()
+    path = args.tier2_model or TIER2_MODEL_PATH
+    tier2 = Tier2Classifier.load(path, threshold=args.tier2_threshold) if path.exists() else None
+
+    conn = get_connection()
+    try:
+        fetch_n = args.n * (8 if args.residue_only else 2)
+        items = list(fetch_tender_items(conn, limit=fetch_n, unspsc_segment=args.segment))
+    finally:
+        conn.close()
+
+    out_rows = []
+    for it in items:
+        normalized = norm(it.raw_text)
+        t1 = tier1.classify(normalized)
+        t1_hit = t1.category_id if t1.status == CLASSIFIED else ""
+        if args.residue_only and t1_hit:
+            continue
+        t2_pred = t2_p = ""
+        if tier2 is not None:
+            v = tier2.classify(normalized)
+            t2_pred = v.category_id or ""
+            t2_p = v.matched[0].split("=")[1] if v.matched else ""
+        out_rows.append({
+            "text": normalized, "raw_text": it.raw_text, "unspsc": it.unspsc,
+            "tier1": t1_hit, "tier2_pred": t2_pred, "tier2_proba": t2_p,
+            "residue": "0" if t1_hit else "1", "true_category": ""})
+        if len(out_rows) >= args.n:
+            break
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    with open(args.out, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["text", "raw_text", "unspsc", "tier1",
+                                          "tier2_pred", "tier2_proba", "residue",
+                                          "true_category"])
+        w.writeheader()
+        w.writerows(out_rows)
+    print(f"wrote {len(out_rows)} rows to {args.out}")
+    print(f"fill 'true_category', then: chilecompra-er tier2-eval --gold {args.out}")
     return 0
 
 
@@ -1450,6 +1567,38 @@ def build_parser() -> argparse.ArgumentParser:
                         "uses so it trains only when there is no .joblib; off here, "
                         "so a direct run always retrains)")
     p.set_defaults(func=cmd_train_tier2)
+
+    p = sub.add_parser("tier2-eval",
+                       help="held-out coverage/precision curve for Tier-2 (text-only "
+                            "vs +UNSPSC feature); optional gold-set scoring")
+    p.add_argument("--gold", type=Path, default=None,
+                   help="CSV of human labels (text,true_category[,residue]) to score "
+                        "the saved model on — true precision, not agreement-with-Tier-1")
+    p.add_argument("--min-rows", type=int, default=500,
+                   help="minimum curated rows required (default 500)")
+    p.add_argument("--cap", type=int, default=80_000,
+                   help="subsample curated rows to this many for a fast eval (default 80k)")
+    p.add_argument("--test-size", type=float, default=0.1,
+                   help="held-out fraction (default 0.1)")
+    p.add_argument("--tier2-model", type=Path, default=None,
+                   help="model path for --gold (default data\\tier2_model.joblib)")
+    p.add_argument("--tier2-threshold", type=float, default=None,
+                   help="override the abstain threshold for the gold eval")
+    p.set_defaults(func=cmd_tier2_eval)
+
+    p = sub.add_parser("tier2-label-sample",
+                       help="export items + classifier predictions to a CSV for human "
+                            "labeling (build a gold set for tier2-eval --gold)")
+    p.add_argument("--n", type=int, default=300, help="rows to export (default 300)")
+    p.add_argument("--segment", type=int, default=None,
+                   help="UNSPSC segment filter, e.g. 42")
+    p.add_argument("--residue-only", action="store_true",
+                   help="keep only items Tier-1 misses — the rows Tier-2 is judged on")
+    p.add_argument("--out", type=Path, default=Path("data/tier2_gold_template.csv"),
+                   help="output CSV (default data\\tier2_gold_template.csv)")
+    p.add_argument("--tier2-model", type=Path, default=None)
+    p.add_argument("--tier2-threshold", type=float, default=None)
+    p.set_defaults(func=cmd_tier2_label_sample)
 
     p = sub.add_parser("register", help="profile the spend ranking, vet families, and register them + draft schemas (all viable families by default)")
     mode = p.add_mutually_exclusive_group()

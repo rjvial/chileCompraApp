@@ -28,6 +28,8 @@ class ResolutionStats:
     by_category: Counter = field(default_factory=Counter)
     by_basis: Counter = field(default_factory=Counter)
     by_unresolved_reason: Counter = field(default_factory=Counter)
+    by_tier: Counter = field(default_factory=Counter)  # curated resolutions by
+                                                        # winning tier (tier1/brand/tier2)
     resolved_without_attributes: int = 0  # anchored on a category root
     resolved_via_fallback: int = 0        # linked to a UNSPSC commodity bucket
     offers_bound: int = 0                 # offers tied to their item's node as :Product
@@ -41,6 +43,7 @@ class ResolutionStats:
             "by_category": dict(self.by_category),
             "by_basis": dict(self.by_basis),
             "by_unresolved_reason": dict(self.by_unresolved_reason),
+            "by_tier": dict(self.by_tier),
             "resolved_without_attributes": self.resolved_without_attributes,
             "resolved_via_fallback": self.resolved_via_fallback,
             "offers_bound": self.offers_bound,
@@ -56,6 +59,7 @@ class ResolutionStats:
             by_category=Counter(d.get("by_category", {})),
             by_basis=Counter(d.get("by_basis", {})),
             by_unresolved_reason=Counter(d.get("by_unresolved_reason", {})),
+            by_tier=Counter(d.get("by_tier", {})),
             resolved_without_attributes=d.get("resolved_without_attributes", 0),
             resolved_via_fallback=d.get("resolved_via_fallback", 0),
             offers_bound=d.get("offers_bound", 0),
@@ -74,6 +78,8 @@ class ResolutionStats:
             f"by status         : {dict(self.by_status)}",
             f"unresolved reasons: {dict(self.by_unresolved_reason)}",
             f"by category       : {dict(self.by_category)}",
+            f"curated by tier   : {dict(self.by_tier)} "
+            "(which classifier rescued each curated item — tier2's marginal lift)",
             f"price basis mix   : {dict(self.by_basis)}",
             f"resolved w/o attrs: {self.resolved_without_attributes} "
             "(anchored on category roots — honest partials, no product info)",
@@ -194,6 +200,9 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
             stats.by_basis[report.price_basis.basis] += 1
         if report.evidence.get("category_source") == "unspsc_fallback":
             stats.resolved_via_fallback += 1
+        elif report.status == "resolved_generic":
+            # curated (non-fallback) resolution: credit the winning classifier tier
+            stats.by_tier[report.classification.tier] += 1
         # Bind the item's offers to its single resolved node (the intra-item
         # invariant). Counted always (coverage metric); written only when
         # persisting — as :Product variants carrying the offer's price point.

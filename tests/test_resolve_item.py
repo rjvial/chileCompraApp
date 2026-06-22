@@ -23,6 +23,38 @@ def test_buyer_line_wins_when_it_classifies():
     assert rep.evidence["category_source"] == "buyer"
 
 
+def test_records_winning_tier_tier1():
+    # a Tier-1 (regex) win is tagged tier1 on both the report and the evidence
+    rep = r().resolve_item("SONDA FOLEY CH16 SILICONA 2 VIAS", tender_text=None, offers=[])
+    assert rep.classification.tier == "tier1"
+    assert rep.evidence["classifier"]["tier"] == "tier1"
+
+
+def test_records_winning_tier_tier2():
+    # when a lower tier (here a stubbed Tier-2) produces the category, the item-mode
+    # evidence/report carry that tier — the audit hook for Tier-2's contribution
+    from chilecompra_er.resolve.classifier import CLASSIFIED, Classification
+
+    class StubTier2:
+        register_version = "t"
+
+        def classify(self, _text):
+            return Classification("sondas", CLASSIFIED, matched=("p=0.91",), tier="tier2")
+
+    resolver = Resolver(InMemoryCatalog(), classifier=StubTier2())
+    rep = resolver.resolve_item("una sonda de descripcion atipica", tender_text=None, offers=[])
+    assert rep.classification.tier == "tier2"
+    assert rep.evidence["classifier"]["tier"] == "tier2"
+
+
+def test_by_tier_stat_credits_curated_resolution():
+    item = SourceItem(ref=SourceRef("mp", "T", "1", "SONDA FOLEY CH16 2 VIAS"),
+                      kind="item", raw_text="SONDA FOLEY CH16 2 VIAS",
+                      extra={"offers": []})
+    stats, _ = resolve_items(r(), [item], persist=False, item_mode=True, fallback="none")
+    assert stats.by_tier["tier1"] == 1
+
+
 def test_offer_consensus_recovers_rubric_buyer_line():
     # buyer text is a useless rubric path; the offers carry the product.
     rep = r().resolve_item(RUBRIC, tender_text=None,
