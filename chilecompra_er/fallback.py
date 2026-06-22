@@ -54,10 +54,10 @@ def fetch_fallback_items(conn) -> list[dict]:
     [{"text", "spend_clp", "code"}].
 
     Items resolve (RESOLVED_TO) to the fallback GenericProduct; their offers bind
-    as Products VARIANT_OF the same node (item-centric invariant), so the bucket's
-    awarded spend is the sum over those Products. Per-item spend is the bucket
-    spend attributed uniformly across its items — enough signal to rank families
-    without an item<->offer join.
+    as branded Products (VARIANT_OF the same node) with the price on the
+    (:Oferta)-[:OFFERS]->(:Product) edge, so the bucket's awarded spend is the sum
+    over those edges. Per-item spend is the bucket spend attributed uniformly across
+    its items — enough signal to rank families without an item<->offer join.
     """
     items = conn.query(
         "MATCH (s:SourceRecord)-[:RESOLVED_TO]->(g:GenericProduct) "
@@ -65,12 +65,12 @@ def fetch_fallback_items(conn) -> list[dict]:
         "RETURN g.category_id AS code, s.raw_text AS text",
         parameters={"p": FALLBACK_PREFIX})
     spend = conn.query(
-        "MATCH (p:Product)-[:VARIANT_OF]->(g:GenericProduct) "
-        "WHERE g.category_id STARTS WITH $p AND p.awarded = true "
+        "MATCH (:Oferta)-[r:OFFERS]->(p:Product)-[:VARIANT_OF]->(g:GenericProduct) "
+        "WHERE g.category_id STARTS WITH $p AND r.awarded = true "
         # toFloat() coerces numeric strings and nulls out non-numeric junk, so
         # SUM never trips over a dirty source price (precio_total_clp can arrive
         # as a string); IS NOT NULL alone let those through and crashed the query.
-        "RETURN g.category_id AS code, sum(toFloat(p.total_clp)) AS spend",
+        "RETURN g.category_id AS code, sum(toFloat(r.total_clp)) AS spend",
         parameters={"p": FALLBACK_PREFIX})
     bucket_spend = {r["code"]: float(r["spend"] or 0) for r in spend}
     counts: Counter[str] = Counter(r["code"] for r in items)

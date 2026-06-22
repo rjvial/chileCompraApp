@@ -5,10 +5,10 @@
 (7) persist :SourceRecord + versioned :RESOLVED_TO.
 
 Each step gates the next; an unclassified description stops at (2) and is
-persisted as explicitly unresolved. Offers are bound as :Product price-point
-variants of their item's node (runner._bind_offers); the further "branded
-enough" rule that would promote a variant to its own branded entity is still
-future work.
+persisted as explicitly unresolved. Offers are bound into the branded catalog by
+runner._bind_offers: each becomes an (:Oferta)-[:OFFERS {price}]->(:Product) edge,
+where :Product is the deduped Brand × GenericProduct pairing (price on the edge,
+not the node).
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from .assignment import (
     SourceRef,
     plan_assignment,
 )
+from .brand_lexicon import load_brand_map
 from .classifier import AMBIGUOUS, CLASSIFIED, UNCLASSIFIED, Classification, Tier1Classifier
 from .extractor import Extraction, extract
 
@@ -95,6 +96,9 @@ class Resolver:
         self.normalizer = normalizer or Normalizer()
         self.register = register or load_register()
         self.classifier = classifier or Tier1Classifier(self.register)
+        # {brand token: category_id} — reused by offer binding to recognise a brand
+        # token in offer text (secondary to the explicit "marca X" label). {} if absent.
+        self.brand_map = load_brand_map()
         self._schemas: dict[str, CategorySchema] = {}
         self._fallback_schemas: dict[str, CategorySchema] = {}
 
@@ -237,8 +241,9 @@ class Resolver:
         rescues terse/boilerplate buyer lines), then the tender title. The
         winning text drives attribute extraction; the buyer line fills the
         attributes it omits. Because the item resolves once, all of its offers
-        share this single node (the intra-item invariant); they are bound as
-        :Product price-point variants by runner._bind_offers. With fallback="unspsc", an item no
+        share this single generic node (the intra-item invariant); each is bound to
+        a branded :Product (Brand × this generic) with its price on the OFFERS edge
+        by runner._bind_offers. With fallback="unspsc", an item no
         curated family matches links to a coarse GenericProduct keyed by its
         UNSPSC commodity code instead of being left unresolved."""
         b_norm, b_cls, b_boiler = self._prepare(buyer_text)

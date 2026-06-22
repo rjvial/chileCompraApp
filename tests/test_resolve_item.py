@@ -163,15 +163,46 @@ def test_offers_counted_but_not_written_in_dry_run():
     assert catalog.products == {}  # dry run writes nothing
 
 
-def test_offers_bound_as_products_share_one_generic_node():
+def test_offers_same_brand_dedup_to_one_product():
     catalog = InMemoryCatalog()
     stats, _ = resolve_items(Resolver(catalog), [_item_with_offers()],
                              persist=True, item_mode=True)
     assert stats.offers_bound == 2
+    # both offers carry no brand -> the (sin marca) Brand -> ONE branded Product
+    assert len(catalog.products) == 1
+    prod = next(iter(catalog.products.values()))
+    assert prod["brand_id"] == "(sin marca)"
+    assert "(sin marca)" in catalog.brands
+    # price is NOT on the Product; it rides each (:Oferta)-[:OFFERS]->(:Product) edge
+    assert "unit_price" not in prod
+    assert len(catalog.offers) == 2
+    assert {o["unit_price"] for o in catalog.offers} == {1000.0, 1200.0}
+    # the explicit (:ItemLicitacion)-[:HAS_RECORD]->(:SourceRecord) edge for the item
+    assert ("mp_item_licitacion|L1|1", "L1|1") in catalog.has_record
+
+
+def _item_with_branded_offers():
+    return SourceItem(
+        ref=SourceRef("mp_item_licitacion", "L1", "1", RUBRIC),
+        kind="item", raw_text=RUBRIC, unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "o1", "text": "SONDA FOLEY CH16 2 VIAS MARCA RUSCH",
+             "unit_price": 1000.0, "awarded": True},
+            {"offer_id": "o2", "text": "SONDA FOLEY CH16 2 VIAS MARCA COLOPLAST",
+             "unit_price": 1200.0, "awarded": False}]},
+    )
+
+
+def test_distinct_brands_make_distinct_products_one_generic():
+    catalog = InMemoryCatalog()
+    resolve_items(Resolver(catalog), [_item_with_branded_offers()],
+                  persist=True, item_mode=True)
+    # Product = Brand × GenericProduct: two brands -> two Products, ONE shared generic
     assert len(catalog.products) == 2
-    # the intra-item invariant: both offers' Products point to ONE generic node
     assert len({p["generic_id"] for p in catalog.products.values()}) == 1
-    assert all(p["unit_price"] for p in catalog.products.values())
+    assert {p["brand_id"] for p in catalog.products.values()} == {"rusch", "coloplast"}
+    assert set(catalog.brands) == {"rusch", "coloplast"}
+    assert len(catalog.offers) == 2
 
 
 def test_runner_dispatches_item_mode():

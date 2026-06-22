@@ -1,10 +1,10 @@
 """Product-level price series from the persisted catalog.
 
-Reads prices straight off the catalog's own :Product nodes — one per offer,
-each VARIANT_OF its item's GenericProduct (the item-centric model). The price
-point lives on the Product, so no re-join to the transactional layer is needed:
-(p:Product)-[:VARIANT_OF]->(g:GenericProduct {category_id}). Awarded offers are
-the realized price; pass awarded_only=False to include the full bid spread.
+Reads prices off the explicit (:Oferta)-[:OFFERS]->(:Product) edge — the price
+lives on the edge (the Product itself is the price-free Brand × GenericProduct
+pairing). Each row carries the offer's brand (via (:Product)-[:OF_BRAND]->(:Brand))
+so prices can be sliced by brand. Awarded offers are the realized price; pass
+awarded_only=False to include the full bid spread.
 
 Each row carries the raw `unit_price` AND a `normalized_unit_price` (per base unit)
 with its `basis` — produced by basis.normalize_unit_prices per product: a per-pack
@@ -31,12 +31,13 @@ _BOOKKEEPING = {"id", "category_id", "identity_key", "specificity",
 def build_series(conn, category_id: str, awarded_only: bool = True) -> list[dict]:
     records = conn.query(
         f"""
-        MATCH (p:Product)-[:VARIANT_OF]->(g:GenericProduct {{category_id: $cat}})
-        WHERE p.unit_price IS NOT NULL
-          {'AND p.awarded = true' if awarded_only else ''}
-        RETURN g.id AS product, g{{.*}} AS props, p.tender_id AS tender,
-               p.unit_price AS unit_price, p.currency AS currency, p.date AS date,
-               p.supplier_text AS supplier_text
+        MATCH (o:Oferta)-[r:OFFERS]->(p:Product)-[:VARIANT_OF]->(g:GenericProduct {{category_id: $cat}})
+        WHERE r.unit_price IS NOT NULL
+          {'AND r.awarded = true' if awarded_only else ''}
+        OPTIONAL MATCH (p)-[:OF_BRAND]->(b:Brand)
+        RETURN g.id AS product, g{{.*}} AS props, b.name AS brand,
+               o.id_licitacion AS tender, r.unit_price AS unit_price,
+               r.currency AS currency, r.date AS date, r.supplier_text AS supplier_text
         ORDER BY product, date
         """,
         parameters={"cat": category_id},
@@ -55,6 +56,7 @@ def build_series(conn, category_id: str, awarded_only: bool = True) -> list[dict
             attrs = {k: v for k, v in rec["props"].items() if k not in _BOOKKEEPING}
             rows.append({
                 "product": product,
+                "brand": rec["brand"],
                 "attributes": json.dumps(attrs, ensure_ascii=False),
                 "date": (rec["date"] or "")[:10],
                 "tender": rec["tender"],
@@ -67,7 +69,7 @@ def build_series(conn, category_id: str, awarded_only: bool = True) -> list[dict
     return rows
 
 
-_CSV_FIELDS = ["product", "attributes", "date", "tender", "unit_price",
+_CSV_FIELDS = ["product", "brand", "attributes", "date", "tender", "unit_price",
               "normalized_unit_price", "basis", "pack_size", "currency"]
 
 

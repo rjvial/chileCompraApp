@@ -11,14 +11,11 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-from ..resolve.assignment import (
-    PRODUCT_LABEL,
-    STATUS_PRODUCT,
-    SourceRef,
-    product_id_for,
-)
-from ..resolve.resolver import EXTRACTOR_VERSION, ResolutionReport, Resolver
-from .neo4j_source import SOURCE_OFFER, SourceItem
+from ..resolve.assignment import SourceRef, branded_product_id
+from ..resolve.brand import extract_brand
+from ..resolve.extractor import extract
+from ..resolve.resolver import UNSPSC_PREFIX, ResolutionReport, Resolver
+from .neo4j_source import SourceItem
 
 
 @dataclass
@@ -32,7 +29,7 @@ class ResolutionStats:
                                                         # winning tier (tier1/brand/tier2)
     resolved_without_attributes: int = 0  # anchored on a category root
     resolved_via_fallback: int = 0        # linked to a UNSPSC commodity bucket
-    offers_bound: int = 0                 # offers tied to their item's node as :Product
+    offers_bound: int = 0                 # offers tied via OFFERS edges to branded Products
     nodes_created: int = 0
     illegal_values: int = 0
 
@@ -83,7 +80,7 @@ class ResolutionStats:
             f"price basis mix   : {dict(self.by_basis)}",
             f"resolved w/o attrs: {self.resolved_without_attributes} "
             "(anchored on category roots — honest partials, no product info)",
-            f"offers bound      : {self.offers_bound} (as :Product variants under their item's node)",
+            f"offers bound      : {self.offers_bound} (as OFFERS edges to branded Products)",
             f"nodes created     : {self.nodes_created}",
             f"illegal values    : {self.illegal_values} (dropped, counted — schema dry-run metric)",
         ]
@@ -205,12 +202,12 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
             stats.by_tier[report.classification.tier] += 1
         # Bind the item's offers to its single resolved node (the intra-item
         # invariant). Counted always (coverage metric); written only when
-        # persisting — as :Product variants carrying the offer's price point.
+        # persisting — as OFFERS edges to branded (Brand × generic) Products.
         if item_mode and report.status == "resolved_generic" and report.node_id:
             offers = item.extra.get("offers") or []
             stats.offers_bound += len(offers)
             if persist:
-                _bind_offers(resolver.catalog, item.ref, offers, report.node_id)
+                _bind_offers(resolver, item.ref, offers, report)
         if report.created:
             stats.nodes_created += 1
         if report.extraction is not None:
@@ -227,31 +224,42 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
     return stats, reports
 
 
-def _bind_offers(catalog, item_ref: SourceRef, offers: list[dict],
-                 generic_id: str) -> None:
-    """Write each of an item's offers as a :Product VARIANT_OF the item's one
-    GenericProduct, plus the offer's own :SourceRecord -[:RESOLVED_TO]-> Product
-    (the price point). Keyed by the offer's stable record id; derived from the
-    item ref (tender + item) + the offer id."""
+def _bind_offers(resolver, item_ref: SourceRef, offers: list[dict],
+                 report: ResolutionReport) -> None:
+    """Bind an item's offers into the branded catalog. For each offer:
+    extract its brand and the category's DESCRIPTIVE attributes, upsert the
+    deduped :Product = Brand × GenericProduct pairing, and add the explicit
+    (:Oferta)-[:OFFERS {price…}]->(:Product) edge carrying the bid's price.
+    Many offers of the same brand collapse onto one Product; the price lives on
+    the edge, never on the (price-free) Product."""
+    catalog = resolver.catalog
+    generic_id = report.node_id
+    category_id = report.classification.category_id
+
+    # Descriptive attrs come from the item's chosen category schema. Fallback
+    # buckets (unspsc_*) are attribute-less, so there's nothing to extract there.
+    schema = None
+    descriptive_names: set[str] = set()
+    if category_id and not category_id.startswith(UNSPSC_PREFIX):
+        schema = resolver.schema(category_id)
+        descriptive_names = {a.name for a in schema.attribute_defs if not a.is_identity}
+
     for o in offers:
         oid = o.get("offer_id")
         if oid is None:
             continue
-        offer_ref = SourceRef(SOURCE_OFFER, item_ref.tender_id,
-                              f"{item_ref.line_no}:{oid}", o.get("text") or "")
-        pid = product_id_for(offer_ref.record_key)
-        props = {k: v for k, v in {
-            "tender_id": item_ref.tender_id, "item_id": item_ref.line_no,
-            "offer_id": str(oid),
+        text = o.get("text") or ""
+        brand_id, brand_name, _ = extract_brand(text, resolver.brand_map)
+        descriptive: dict[str, str] = {}
+        if schema is not None and text:
+            ext = extract(resolver.normalizer(text), schema)
+            descriptive = {k: v for k, v in ext.values.items() if k in descriptive_names}
+        pid = branded_product_id(generic_id, brand_id)
+        catalog.merge_branded_product(generic_id, brand_id, brand_name, descriptive)
+        price = {k: v for k, v in {
             "unit_price": o.get("unit_price"), "total_clp": o.get("total_clp"),
             "quantity": o.get("quantity"), "awarded": bool(o.get("awarded")),
             "currency": o.get("currency"), "date": o.get("date"),
-            # The Product is the price-point node, so it carries the supplier's
-            # actual description (readable) — not the hash (that's the
-            # SourceRecord's thin-reference job).
-            "supplier_text": o.get("text"),
+            "supplier_text": text,
         }.items() if v is not None}
-        catalog.bind_product(pid, generic_id, props)
-        catalog.persist_resolution(offer_ref, STATUS_PRODUCT, pid,
-                                   target_label=PRODUCT_LABEL,
-                                   extractor_version=EXTRACTOR_VERSION)
+        catalog.link_offer(oid, pid, price)

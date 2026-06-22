@@ -43,10 +43,17 @@ def node_id_for(key: str) -> str:
     return "gp_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
-def product_id_for(record_key: str) -> str:
-    """Stable :Product id from an offer's record key — one Product per offer
-    (brand-level SKU / price point). Cross-offer brand dedup is a later rule."""
-    return "pr_" + hashlib.sha1(record_key.encode("utf-8")).hexdigest()[:12]
+def branded_identity_key(generic_id: str, brand_id: str) -> str:
+    """A :Product is the pairing Brand × GenericProduct; its identity is the
+    generic node id plus the brand id."""
+    return f"{generic_id}|brand={brand_id}"
+
+
+def branded_product_id(generic_id: str, brand_id: str) -> str:
+    """Stable :Product id for the (generic, brand) pairing — every offer of the
+    same brand for the same generic collapses onto this one node."""
+    key = branded_identity_key(generic_id, brand_id)
+    return "pr_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
 def subsumes(parent_values: dict[str, str], child_values: dict[str, str]) -> bool:
@@ -174,13 +181,31 @@ class InMemoryCatalog:
         self.nodes: dict[str, NodeView] = {}
         self.specs: dict[str, NodeSpec] = {}
         self.resolutions: list[dict] = []
-        self.products: dict[str, dict] = {}
+        self.products: dict[str, dict] = {}   # branded Product (generic × brand)
+        self.brands: dict[str, dict] = {}     # brand_id -> {id, name}
+        self.offers: list[dict] = []          # one per (:Oferta)-[:OFFERS]->(:Product)
+        self.has_record: set[tuple[str, str]] = set()  # (record_key, item_key) edges
         self.events: list[dict] = []   # append-only lineage, one per persist touch
         self.run_uid = run_uid
         self._tick = 0                 # monotonic stamp (deterministic for tests)
 
-    def bind_product(self, product_id: str, generic_id: str, props: dict) -> None:
-        self.products[product_id] = {"generic_id": generic_id, **props}
+    def merge_branded_product(self, generic_id: str, brand_id: str,
+                              brand_name: str, descriptive: dict) -> str:
+        """Upsert the Brand node and the (generic × brand) Product pairing
+        (descriptive attrs ON CREATE — first offer wins). Returns the Product id."""
+        self.brands.setdefault(brand_id, {"id": brand_id, "name": brand_name})
+        pid = branded_product_id(generic_id, brand_id)
+        if pid not in self.products:
+            self.products[pid] = {
+                "id": pid, "generic_id": generic_id, "brand_id": brand_id,
+                "identity_key": branded_identity_key(generic_id, brand_id),
+                **descriptive}
+        return pid
+
+    def link_offer(self, oferta_id, product_id: str, price_props: dict) -> None:
+        """One (:Oferta)-[:OFFERS {price…}]->(:Product) edge per bid."""
+        self.offers.append({"oferta_id": oferta_id, "product_id": product_id,
+                            "run_uid": self.run_uid, **price_props})
 
     def flush(self) -> None:
         """No-op: in-memory writes are already applied. Present so callers can
@@ -212,6 +237,8 @@ class InMemoryCatalog:
         self._tick += 1
         ts = self._tick
         content_hash = source.content_hash
+        # explicit (:ItemLicitacion)-[:HAS_RECORD]->(:SourceRecord) edge
+        self.has_record.add((source.record_key, f"{source.tender_id}|{source.line_no}"))
         cur = next((r for r in self.resolutions
                     if r["record_key"] == source.record_key and r["current"]), None)
         same = (cur is not None and target_id is not None
@@ -420,20 +447,40 @@ class Neo4jCatalog:
                 parameters={"chid": child_id, "pid": new_parent},
             )
 
-    def bind_product(self, product_id: str, generic_id: str, props: dict) -> None:
-        """Upsert a brand-level :Product (one per offer) and link it
-        VARIANT_OF the item's GenericProduct — the shared node every offer on
-        the item points to (the intra-item invariant, literal in the graph).
-        Price props on the Product are what price-series reads."""
+    def merge_branded_product(self, generic_id: str, brand_id: str,
+                              brand_name: str, descriptive: dict) -> str:
+        """Upsert the :Brand node and the deduped :Product = Brand × GenericProduct
+        pairing (descriptive attrs ON CREATE — first offer wins), linked
+        VARIANT_OF the generic and OF_BRAND the brand. Returns the Product id."""
+        pid = branded_product_id(generic_id, brand_id)
         self.conn.query(
             """
+            MERGE (b:Brand {id: $brand_id}) ON CREATE SET b.name = $brand_name
             MERGE (p:Product {id: $pid})
-            SET p += $props
-            WITH p
+              ON CREATE SET p.identity_key = $ik, p.generic_id = $gid, p += $descriptive
+            WITH p, b
             MATCH (g:GenericProduct {id: $gid})
             MERGE (p)-[:VARIANT_OF]->(g)
+            MERGE (p)-[:OF_BRAND]->(b)
             """,
-            parameters={"pid": product_id, "gid": generic_id, "props": props},
+            parameters={"pid": pid, "gid": generic_id, "brand_id": brand_id,
+                        "brand_name": brand_name, "descriptive": descriptive,
+                        "ik": branded_identity_key(generic_id, brand_id)},
+        )
+        return pid
+
+    def link_offer(self, oferta_id, product_id: str, price_props: dict) -> None:
+        """One explicit (:Oferta)-[:OFFERS {price…}]->(:Product) edge per bid —
+        the price lives on the edge, not on the (price-free) Product."""
+        self.conn.query(
+            """
+            MATCH (o:Oferta {id_oferta: $oid})
+            MATCH (p:Product {id: $pid})
+            MERGE (o)-[r:OFFERS]->(p)
+            SET r += $price, r.resolved_at = datetime(), r.run_uid = $run
+            """,
+            parameters={"oid": oferta_id, "pid": product_id, "price": price_props,
+                        "run": self.run_uid},
         )
 
     def persist_resolution(self, source: SourceRef, status: str, target_id: str | None,
@@ -456,6 +503,10 @@ class Neo4jCatalog:
             MERGE (s:SourceRecord {record_key: $rk})
             ON CREATE SET s.source = $src, s.tender_id = $tid, s.line_no = $line
             SET s.raw_text = $text, s.resolution_status = $status, s.content_hash = $chash
+            WITH s
+            OPTIONAL MATCH (i:ItemLicitacion {id_licitacion: $tid, id_item: toInteger($line)})
+            FOREACH (ii IN CASE WHEN i IS NOT NULL THEN [i] ELSE [] END |
+                MERGE (ii)-[:HAS_RECORD]->(s))
             """,
             parameters=params,
         )
@@ -546,7 +597,8 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
         self._gp_buf: list[dict] = []
         self._parent_buf: list[dict] = []
         self._repoint_buf: list[dict] = []
-        self._prod_buf: list[dict] = []
+        self._branded_buf: list[dict] = []   # Brand + (generic × brand) Product
+        self._offers_buf: list[dict] = []     # (:Oferta)-[:OFFERS]->(:Product)
         self._res_buf: list[dict] = []
 
     def ensure_category(self, schema: CategorySchema) -> None:
@@ -583,8 +635,17 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
         for child_id, new_parent in plan.repoint:
             self._repoint_buf.append({"chid": child_id, "pid": new_parent})
 
-    def bind_product(self, product_id: str, generic_id: str, props: dict) -> None:
-        self._prod_buf.append({"pid": product_id, "gid": generic_id, "props": props})
+    def merge_branded_product(self, generic_id: str, brand_id: str,
+                              brand_name: str, descriptive: dict) -> str:
+        pid = branded_product_id(generic_id, brand_id)
+        self._branded_buf.append({
+            "pid": pid, "gid": generic_id, "brand_id": brand_id,
+            "brand_name": brand_name, "descriptive": descriptive,
+            "ik": branded_identity_key(generic_id, brand_id)})
+        return pid
+
+    def link_offer(self, oferta_id, product_id: str, price_props: dict) -> None:
+        self._offers_buf.append({"oid": oferta_id, "pid": product_id, "price": price_props})
 
     def persist_resolution(self, source: SourceRef, status: str, target_id: str | None,
                            target_label: str = GENERIC_LABEL, **edge_props) -> None:
@@ -643,17 +704,33 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
                 MERGE (p)-[:PARENT_OF]->(ch)
                 """, parameters={"rows": self._repoint_buf})
             self._repoint_buf = []
-        if self._prod_buf:
+        if self._branded_buf:
+            # Dedup by Product id (many offers of one brand share the node); MERGE is
+            # idempotent regardless, but fewer rows = fewer locks. ON CREATE descriptive
+            # = first occurrence wins.
+            rows = list({r["pid"]: r for r in self._branded_buf}.values())
             self.conn.query(
                 """
                 UNWIND $rows AS row
+                MERGE (b:Brand {id: row.brand_id}) ON CREATE SET b.name = row.brand_name
                 MERGE (p:Product {id: row.pid})
-                SET p += row.props
-                WITH p, row
+                  ON CREATE SET p.identity_key = row.ik, p.generic_id = row.gid, p += row.descriptive
+                WITH p, b, row
                 MATCH (g:GenericProduct {id: row.gid})
                 MERGE (p)-[:VARIANT_OF]->(g)
-                """, parameters={"rows": self._prod_buf})
-            self._prod_buf = []
+                MERGE (p)-[:OF_BRAND]->(b)
+                """, parameters={"rows": rows})
+            self._branded_buf = []
+        if self._offers_buf:
+            self.conn.query(
+                """
+                UNWIND $rows AS row
+                MATCH (o:Oferta {id_oferta: row.oid})
+                MATCH (p:Product {id: row.pid})
+                MERGE (o)-[r:OFFERS]->(p)
+                SET r += row.price, r.resolved_at = datetime(), r.run_uid = $run
+                """, parameters={"rows": self._offers_buf, "run": self.run_uid})
+            self._offers_buf = []
         if self._res_buf:
             self._flush_resolutions(self._res_buf)
             self._res_buf = []
@@ -675,6 +752,10 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
               ON CREATE SET s.source = row.src, s.tender_id = row.tid, s.line_no = row.line
             SET s.raw_text = row.text, s.resolution_status = row.status,
                 s.content_hash = row.chash
+            WITH s, row
+            OPTIONAL MATCH (i:ItemLicitacion {id_licitacion: row.tid, id_item: toInteger(row.line)})
+            FOREACH (ii IN CASE WHEN i IS NOT NULL THEN [i] ELSE [] END |
+                MERGE (ii)-[:HAS_RECORD]->(s))
             """, parameters={"rows": rows})
         # Unresolved touches emit an 'unresolved' lineage event (no edge).
         unresolved = [r for r in rows if r["target"] is None]

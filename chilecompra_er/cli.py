@@ -1318,9 +1318,12 @@ def cmd_price_series(args) -> int:
 
 
 def cmd_wipe_catalog(args) -> int:
-    """Delete ALL catalog data (Category/GenericProduct/Product/SourceRecord).
+    """Delete ALL catalog data (Category/GenericProduct/Product/Brand/SourceRecord).
     The transactional layer (Licitacion/Oferta/...) and the schema migrations
-    are untouched — this resets the catalog, not the source data."""
+    are untouched — this resets the catalog, not the source data. DETACH DELETE on
+    these nodes also removes the catalog-side edges that hang off them — including
+    the new OFFERS / OF_BRAND / HAS_RECORD edges — leaving the source Oferta/
+    ItemLicitacion nodes edge-free."""
     if not args.yes:
         print("refusing to wipe the entire catalog without --yes")
         return 1
@@ -1331,7 +1334,7 @@ def cmd_wipe_catalog(args) -> int:
         rec = conn.query(
             """
             MATCH (n)
-            WHERE n:GenericProduct OR n:Product OR n:SourceRecord OR n:Category
+            WHERE n:GenericProduct OR n:Product OR n:Brand OR n:SourceRecord OR n:Category
             WITH n LIMIT 100000
             DETACH DELETE n
             RETURN count(*) AS deleted
