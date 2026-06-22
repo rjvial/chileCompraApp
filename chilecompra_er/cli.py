@@ -598,10 +598,13 @@ def cmd_resolve(args) -> int:
                 start_skip=run_start_skip, processed=st.total, done=done,
                 stats_dict=st.to_dict(), total=loop_total))
 
-        # The products-CSV rewrite is expensive at scale and lock-prone under a
-        # syncing folder, so checkpoint durably only every ~20k records; the
-        # cheap progress line + resoluciones flush still happen every tick.
-        durable_every = max(1, 20_000 // max(args.progress_every, 1))
+        # How often to checkpoint durably. A persist checkpoint is cheap (just
+        # catalog.flush() + a small JSON), so bank progress OFTEN — on a flaky box a
+        # crash then loses at most ~this many records of resume position, not 20k. A
+        # dry run rewrites the products CSV here (expensive, lock-prone under a
+        # syncing folder), so it stays sparse.
+        bank_every = 5_000 if args.persist else 20_000
+        durable_every = max(1, bank_every // max(args.progress_every, 1))
         ticks = 0
 
         def show_progress(st) -> None:
