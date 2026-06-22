@@ -1,5 +1,5 @@
 {
-  "register_version": "0.168.0",
+  "register_version": "0.169.0",
   "notes": "Reset to empty on 2026-06-18 for a full from-scratch run. Categories are rebuilt from the raw corpus via `register` (Tier-1 include/exclude regexes over NORMALIZED text; exclusions resolve sibling overlaps). The previous hand-curated 120-category register is recoverable from git commit 9c6e10c. Each category carries corpus_regex (raw-text filter for the schema strawman) and a canonical_example golden fixture; schemas live as versioned JSON under schemas/.",
   "categories": [
     {
@@ -72,7 +72,8 @@
       "exclude": [
         "\\bhisopo\\b",
         "\\bvenda\\w*",
-        "\\bcalcetin\\b"
+        "\\bcalcetin\\b",
+        "\\btorula\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/gasas.json",
@@ -189,7 +190,8 @@
         "\\baguja\\w*"
       ],
       "exclude": [
-        "porta\\s*aguja"
+        "porta\\s*aguja",
+        "\\bsutura\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/agujas.json",
@@ -223,7 +225,8 @@
       ],
       "exclude": [
         "\\bpasador\\b",
-        "\\bmecanic\\w*"
+        "\\bmecanic\\w*",
+        "\\bancla\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/suturas_quirurgicas.json",
