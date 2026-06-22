@@ -84,16 +84,34 @@ def fetch_fallback_items(conn) -> list[dict]:
 
 def residue_ranking(rows: list[dict], normalizer: Normalizer | None = None,
                     min_count: int = 5) -> list[GroupStat]:
-    """Head-noun families across the fallback residue, spend-ranked — the
+    """Head-noun families across the fallback residue, ranked by ITEM COUNT — the
     candidate categories to register. Thin wrapper over the M0 profiler so the
     output is the same GroupStat ranking `register`/propose already consume.
+
+    Ranked by count, NOT spend: `fetch_fallback_items` can only attribute a
+    bucket's awarded spend uniformly across its items (no item<->offer join), so
+    residue "spend" is a smeared average that floats tiny families sharing a
+    high-value bucket to the top (it surfaced services/pharma). Item count is the
+    honest priority signal here. We overload each GroupStat's `spend_share` with
+    its RECORD share and sort by records, so propose's descending-order walk and
+    `min_spend_share` floor act on counts unchanged (the floor becomes a
+    min-record-share floor).
 
     Rubric-only buyer lines are dropped first: their head noun is always the
     leading rubric word ("equipamiento"), which would otherwise swamp the
     ranking with a non-family. They are genuinely uninformative — fallback is
     the right answer for them, not a new category."""
     informative = [r for r in rows if not _is_rubric(r["text"])]
-    return profile(informative, normalizer=normalizer, min_count=min_count)
+    stats = profile(informative, normalizer=normalizer, min_count=min_count)
+    total_records = sum(s.records for s in stats) or 1
+    for s in stats:
+        s.spend_share = s.records / total_records
+    stats.sort(key=lambda s: s.records, reverse=True)
+    cum = 0.0
+    for s in stats:
+        cum += s.spend_share
+        s.cum_share = cum
+    return stats
 
 
 def bucket_ranking(rows: list[dict], normalizer: Normalizer | None = None,
