@@ -67,7 +67,10 @@ number (segment 42 = medical/lab supplies).
 | `Category` | A product **family** (e.g. `sondas_foley`) with a typed attribute **schema** |
 | `GenericProduct` | A canonical product *within* a category, identified by its **identity attribute values** (Foley + 16Fr + latex). Shared across all tenders that describe it. |
 | `Product` | A brand-level variant — **one per offer** — carrying the offer's price. `VARIANT_OF` a GenericProduct. |
-| `SourceRecord` | A thin reference back to a source line/offer, with a versioned `RESOLVED_TO` edge to its catalog node. |
+| `SourceRecord` | A thin reference back to a source line/offer, with a `RESOLVED_TO` edge to its catalog node and a `content_hash` (the incremental-skip key). |
+| `ResolveRun` | One node per persist run (full / incremental / seed) — provenance for every event it emits. |
+| `ResolutionEvent` | An **immutable, append-only** record of one resolution touch — target, status, versions, and the full evidence. The lineage/audit log (`(SourceRecord)-[:HAS_EVENT]->(ResolutionEvent)<-[:EMITTED]-(ResolveRun)`). |
+| `ResolveState` | A singleton holding the set of ingestion `run_id`s already incorporated — the incremental watermark. |
 
 ```
   SOURCE GRAPH (read-only input)            CATALOG (written by `resolve`)
@@ -119,9 +122,12 @@ priority and then runs steps 3–6 once for the chosen text:
    identity attributes anchors honestly on the **category root** (specificity 0);
    more-specific nodes hang under coarser ones via `PARENT_OF` (strict-subset
    hierarchy), so "Foley" parents "Foley 16Fr".
-6. **Persist** — upsert the `SourceRecord` and a **versioned** `RESOLVED_TO` edge
-   (re-resolving adds a new version and retires the prior one — history is kept,
-   see §7).
+6. **Persist** — upsert the `SourceRecord` (carrying a `content_hash` of the item
+   + its offers — the incremental-skip key) and its `RESOLVED_TO` edge.
+   Re-resolving to the **same** target refreshes that edge in place (no new
+   version); a **changed** target retires the old edge and adds a new version.
+   Every touch also appends an immutable `:ResolutionEvent` — the full audit trail
+   (see §7).
 
 ### The item-centric model (`--kind item`) — the recommended way
 
@@ -347,6 +353,25 @@ completes, keep iterating manually
 with the ↺ loop (Steps 4 → 6) until the fallback share stops shrinking. See §4.2
 for the nine stages and every flag.
 
+### Keeping the catalog current (incremental)
+
+The steps above are a **full** build. Once it exists, you don't re-resolve the
+whole corpus every time new tenders/items/offers land in the graph — you fold in
+only the delta:
+
+```powershell
+chilecompra-er resolve --seed-watermark         # once, after the full build: mark the current corpus resolved
+chilecompra-er resolve --incremental            # thereafter: resolve only what's new/changed since the last run
+```
+
+`--incremental` detects the delta from two index-backed signals already on the
+source nodes — the ingestion `run_id` (a watermark of which runs are already
+incorporated, kept in the `:ResolveState` node) and a `content_hash` of each item
++ its offers (so an unchanged item is skipped, and a new offer on an existing item
+re-resolves it). It reuses the existing register / Tier-2 / brand artifacts (never
+retrains) and advances the watermark only on a fully successful run, so it's safe
+to re-run after an interruption. It is item-centric and always persists. See §4.4.
+
 ---
 
 ## 4. Command reference
@@ -388,7 +413,8 @@ nine stages run in this order — the **bold token** is the exact name you pass 
 4. **`build`** — `resolve --kind item --persist` (the catalog build)
 5. **`fallback-report`** — rank the fallback residue
 6. **`register-fallback`** — `register --from-fallback` (curate the residue)
-7. **`train-tier2`** — train the Tier-2 classifier
+7. **`train-tier2`** — train the Tier-2 classifier (**skipped if
+   `tier2_model.joblib` already exists** — retrain out-of-band with `train-tier2`)
 8. **`build-brand-lexicon`** — LLM brand tokens
 9. **`final-resolve`** — `resolve --kind item --persist --tier2 --brands` (re-link)
 
@@ -590,6 +616,8 @@ chilecompra-er resolve --kind item --segment 42 --persist --resume
 | `--tier2` | off | Add the trained Tier-2 classifier after Tier-1 (needs `train-tier2`). |
 | `--tier2-model <path>` | `data\tier2_model.joblib` | Tier-2 model file to load when `--tier2` is set. |
 | `--tier2-threshold <f>` | model default (`0.6`) | Override the Tier-2 confidence threshold for this run. |
+| `--incremental` | off | Fold in **only what's new/changed** since the last run (run_id watermark + content_hash). Implies `--kind item --persist`, unscoped; reuses tier2/brands; advances the `:ResolveState` watermark on success. See below. |
+| `--seed-watermark` | off | Mark every ingestion run currently present as resolved **without** resolving — the one-time handoff after a full build, so the next `--incremental` does only deltas. |
 
 **`--kind` values:** `item` *(recommended)* — whole `ItemLicitacion` at once
 (buyer line + offer consensus + title → one generic product; offers bound as
@@ -607,6 +635,7 @@ items linked      : 5000 (100.0%)  = curated 1809 + UNSPSC-fallback 3191
 by status         : {'resolved_generic': 5000}
 unresolved reasons: {}
 by category       : {'agujas': 138, 'canulas': 85, ... 'unspsc_42151602': 246, ...}
+curated by tier   : {'tier1': 1503, 'brand': 198, 'tier2': 108}  (which classifier won each curated item — Tier-2's marginal lift)
 price basis mix   : {'unknown': 1730, 'per_pack': 79}
 resolved w/o attrs: 412 (anchored on category roots — honest partials, no product info)
 offers bound      : 75 (as :Product variants under their item's node)
@@ -632,6 +661,19 @@ checkpoint: data\check.checkpoint.json
 > the `pipeline` stages reuse the size precomputed at establishment (§4.2) rather
 > than counting again.
 
+> **Incremental runs (`--incremental`).** After the initial full build, fold in
+> only new/changed records instead of re-resolving everything:
+> ```powershell
+> chilecompra-er resolve --seed-watermark      # once: mark the current corpus resolved
+> chilecompra-er resolve --incremental         # thereafter: resolve only the delta
+> ```
+> The delta is "items from an ingestion `run_id` not yet in `:ResolveState`, **or**
+> items whose offers changed", minus anything whose stored `content_hash` still
+> matches. It's unscoped, item-centric, always persists, and reuses the existing
+> tier2/brands. The watermark advances only on a fully successful run, and the
+> `content_hash` skip makes a re-run after a kill idempotent (no `--resume` needed).
+> A first `--incremental` from an empty watermark is itself a full build.
+
 ### 4.5 Coverage tools (Phase 2)
 
 **`fallback-report [--top 20] [--min-count 5] [--out <path>]`** — ranks the UNSPSC
@@ -647,13 +689,42 @@ regex-covered) and cross-category collisions are dropped; survivors merge into
 `categories\brand_lexicon.json` (existing entries win on conflict; `--overwrite`
 replaces). `--dry-run` prints without writing.
 
-**`train-tier2 [--threshold 0.6] [--min-rows 500] [--eval] [--out <path>]`** —
-trains the Tier-2 classifier (TF-IDF word+char n-grams + logistic regression) on
-the curated resolutions in the graph, saving to `data\tier2_model.joblib`. It
-abstains below `--threshold` (only ever adds coverage). `--eval` reports held-out
-accuracy on a 10% split.
+**`train-tier2 [--threshold 0.6] [--min-rows 500] [--eval] [--skip-if-exists]
+[--out <path>]`** — trains the Tier-2 classifier (TF-IDF word+char n-grams +
+logistic regression) on the curated resolutions in the graph, saving to
+`data\tier2_model.joblib`. It abstains below `--threshold` (only ever adds
+coverage). `--eval` reports held-out accuracy on a 10% split. The standalone
+command **always retrains** (overwrites) — the out-of-band refresh after the
+corpus grows; `--skip-if-exists` makes it a no-op when the model is already
+present (this is what the `pipeline` uses, so a re-run trains only when there's no
+`.joblib`).
 
 Then enable per run: `resolve --kind item --tier2 --brands` (§4.4).
+
+**`tier2-eval [--gold <csv>] [--cap 80000] [--test-size 0.1] [--min-rows 500]`** —
+the **measure-before-tuning** harness. Trains a throwaway model on a held-out
+split of the curated resolutions and prints a **coverage/precision curve** across
+thresholds — so you can see where the `0.6` cutoff sits and pick an operating
+point — computed both **text-only and +UNSPSC feature**, so a feature's lift is a
+direct read. With `--gold`, scores the saved model against a human-labeled CSV
+(true precision, with a residue-only breakdown). Touches no production model.
+
+```
+held-out eval (text only): train 34,000 / test 6,000 across 167 categories
+  thresh  coverage  precision  n_classified
+   0.60     74.0%      93.4%     4,442
+   0.75     65.3%      96.1%     3,917
+```
+
+> The held-out precision is *agreement with Tier-1's labels* (an upper bound, since
+> Tier-2 exists for the items Tier-1 missed). For **true** precision on the residue,
+> build a gold set with `tier2-label-sample` and pass it to `--gold`.
+
+**`tier2-label-sample [--n 300] [--segment 42] [--residue-only] [--out <path>]`** —
+exports a sample of items + the current classifier's predictions to a CSV template
+(blank `true_category` column) so a human can build a gold set for
+`tier2-eval --gold`. `--residue-only` keeps only items Tier-1 misses — the rows
+Tier-2 is actually judged on.
 
 ### 4.6 Analyze
 
@@ -722,8 +793,10 @@ Outputs are split by **lifecycle**:
     leaves it — regenerate it with `train-tier2`.
 - **The populated catalog lives in Neo4j**, written only by `resolve --persist`:
   `Category` / `GenericProduct` / `Product` / `SourceRecord` nodes and
-  `IN_CATEGORY` / `RESOLVED_TO` / `VARIANT_OF` / `PARENT_OF` edges. `register`
-  never touches the graph.
+  `IN_CATEGORY` / `RESOLVED_TO` / `VARIANT_OF` / `PARENT_OF` edges, plus the
+  **lineage layer** — `ResolveRun` / `ResolutionEvent` nodes (`HAS_EVENT` /
+  `EMITTED` edges) and the `ResolveState` watermark singleton. `register` never
+  touches the graph.
 
 ---
 
@@ -769,9 +842,27 @@ Outputs are split by **lifecycle**:
   values** (same values, same absences), embedded in `identity_key` — the
   uniqueness key that dedups a product across tenders. `PARENT_OF` builds the
   coarse→specific hierarchy by strict-subset subsumption.
-- `RESOLVED_TO` edges are **versioned** — re-resolving adds a new version and
-  retires the prior one (sets `current=false`) rather than deleting it, so the
-  resolution history stays auditable.
+- `RESOLVED_TO` is the fast **current-state** pointer: re-resolving to the **same**
+  target refreshes the edge in place (updating `last_confirmed_at`, keeping
+  `first_resolved_at` and the version); a **changed** target retires the old edge
+  (`current=false`) and adds a new version. So the live edge never bloats, while
+  target changes stay versioned.
+- **Event-level lineage.** Every persist touch (full or incremental) appends an
+  immutable `:ResolutionEvent` carrying the target, status, versions, `content_hash`
+  and the **full evidence** (normalized text, classifier match + winning tier,
+  attribute values + provenance, price basis; unresolved touches carry the reason),
+  linked `(:SourceRecord)-[:HAS_EVENT]->(ev)<-[:EMITTED]-(:ResolveRun)`. Because
+  each event is self-contained, you can **reconstruct the past** as of any
+  timestamp — `resolve.lineage.resolution_as_of(conn, ts)` (latest event ≤ ts per
+  record) and `record_timeline(conn, record_key)`. The schema (run_id indexes +
+  `ResolveState`/`ResolveRun`/`ResolutionEvent` constraints) is applied by `migrate`.
+- **Incremental** runs key off the ingestion `run_id` watermark (`:ResolveState`)
+  plus the per-record `content_hash`; deletions/retractions upstream are **not** yet
+  reconciled (a removed source item keeps its last resolution).
+- The Tier-2 **UNSPSC feature** was evaluated (`tier2-eval`) and showed no frontier
+  lift on this corpus — it trades precision for coverage like a threshold nudge — so
+  it is intentionally **not** wired into production; only the eval harness folds it in.
 - Known follow-ups: `:Product` cross-offer brand dedup (currently one Product per
-  offer), price-**basis** normalization (unit vs box), and registering the
-  largest UNSPSC-fallback buckets as curated families.
+  offer), price-**basis** normalization (unit vs box), registering the largest
+  UNSPSC-fallback buckets as curated families, and a gold set for true Tier-2
+  precision (`tier2-label-sample` → `tier2-eval --gold`).
