@@ -678,8 +678,9 @@ def cmd_resolve(args) -> int:
 
         for r in shown:
             print(f"  {r.raw_text[:70]!r}")
-            print(f"    -> {r.node_id}  attrs={r.extraction.values}  "
-                  f"basis={r.price_basis.basis}")
+            attrs = r.extraction.values if r.extraction is not None else {}
+            basis = r.price_basis.basis if r.price_basis is not None else "n/a"
+            print(f"    -> {r.node_id}  attrs={attrs}  basis={basis}")
     finally:
         conn.close()
     return 0
