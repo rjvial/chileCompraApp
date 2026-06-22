@@ -730,18 +730,23 @@ Tier-2 is actually judged on.
 
 **`price-series <category_id> [--csv <path>]`** — per-product price history for a
 **persisted** category, read from the awarded `:Product` offers under each
-generic product. Default `data\price_series_<category>.csv`. Empty until that
-category was `resolve --kind item --persist`ed (offers carry the prices).
+generic product. Each row carries the raw `unit_price` **and a
+`normalized_unit_price` (per base unit) with its `basis`** — a per-pack quote is
+divided by its stated pack size only when that lands it in the product's price
+cluster, else `basis=unknown` and the point is flagged out (§7). Default
+`data\price_series_<category>.csv`. Empty until that category was
+`resolve --kind item --persist`ed (offers carry the prices).
 
 ```
-11 price observations across 7 generic products -> data\price_series_sondas_foley.csv
+5790 price observations across 229 generic products -> data\price_series_cintas_adhesivas.csv
 products with the deepest price history:
-  gp_ffaf1899ba78  n=  4  median=       7,480 CLP  range=[330 .. 21,510]
-    {"calibre": "16fr", "material": "latex"}
+  gp_f787b08e384c  n= 90 (+6 flagged)  median=  498 CLP/base-unit  range=[239 .. 1,423]
+    {"largo": "9.1m", "tipo": "quirurgica", "ancho": "2.5cm", "material": "papel"}
 ```
 
-(Wide ranges usually reflect price-**basis** mixing — unit vs box — which
-normalization will address; unknown basis is reported, never assumed.)
+(The `(+N flagged)` count is offers whose basis couldn't be determined — excluded
+from the stats, never assumed. A category-**root** node mixes products, so it shows
+a high flag rate: that's the signal it isn't a single comparable product.)
 
 ### 4.7 Housekeeping & diagnostics
 
@@ -862,7 +867,13 @@ Outputs are split by **lifecycle**:
 - The Tier-2 **UNSPSC feature** was evaluated (`tier2-eval`) and showed no frontier
   lift on this corpus — it trades precision for coverage like a threshold nudge — so
   it is intentionally **not** wired into production; only the eval harness folds it in.
+- **Price-basis normalization** (unit vs box) is handled at read time in
+  `price-series` (`price/basis.py:normalize_unit_prices`): in Mercado Público
+  `total = qty × unit_price` is an accounting identity, so the basis is inferred
+  from price **magnitude** instead — per-unit prices for one GenericProduct
+  cluster, and a per-pack quote is divided by its stated pack size only when that
+  lands it in the cluster (positive evidence); offers that fit neither are flagged
+  `unknown` and excluded.
 - Known follow-ups: `:Product` cross-offer brand dedup (currently one Product per
-  offer), price-**basis** normalization (unit vs box), registering the largest
-  UNSPSC-fallback buckets as curated families, and a gold set for true Tier-2
-  precision (`tier2-label-sample` → `tier2-eval --gold`).
+  offer), registering the largest UNSPSC-fallback buckets as curated families, and
+  a gold set for true Tier-2 precision (`tier2-label-sample` → `tier2-eval --gold`).

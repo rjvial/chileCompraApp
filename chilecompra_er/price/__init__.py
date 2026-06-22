@@ -5,6 +5,8 @@ from .basis import (
     PriceBasis,
     cross_check,
     infer_basis,
+    normalize_unit_prices,
+    pack_size_from_text,
 )
 
 __all__ = [
@@ -14,4 +16,6 @@ __all__ = [
     "PriceBasis",
     "cross_check",
     "infer_basis",
+    "normalize_unit_prices",
+    "pack_size_from_text",
 ]
