@@ -1,5 +1,5 @@
 {
-  "register_version": "0.169.0",
+  "register_version": "0.197.0",
   "notes": "Reset to empty on 2026-06-18 for a full from-scratch run. Categories are rebuilt from the raw corpus via `register` (Tier-1 include/exclude regexes over NORMALIZED text; exclusions resolve sibling overlaps). The previous hand-curated 120-category register is recoverable from git commit 9c6e10c. Each category carries corpus_regex (raw-text filter for the schema strawman) and a canonical_example golden fixture; schemas live as versioned JSON under schemas/.",
   "categories": [
     {
@@ -2874,6 +2874,443 @@
       "schema_file": "schemas/valvulas_hidrocefalia.json",
       "corpus_regex": "(?i).*hidrocefalia.*",
       "canonical_example": "Válvula para hidrocefalia tamaño regular de presión media, estéril, desechable."
+    },
+    {
+      "category_id": "forceps_dentales",
+      "name": "Fórceps dentales de extracción",
+      "status": "candidate",
+      "include": [
+        "\\bforceps?\\b"
+      ],
+      "exclude": [
+        "\\bbipolar\\b",
+        "yasargil",
+        "coagul"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/forceps_dentales.json",
+      "corpus_regex": "(?i).*forceps.*",
+      "canonical_example": "FORCEPS PEDIATRICO SUPERIOR RECTO ANTERIOR · Suministro de Equipamiento e insumos dentales"
+    },
+    {
+      "category_id": "discos_pulido_dental",
+      "name": "Discos de pulido dental (Sof-Lex)",
+      "status": "candidate",
+      "include": [
+        "\\bdisco\\w*\\b.*(pulido|soflex|sof\\s*lex)"
+      ],
+      "exclude": [
+        "\\bporta\\s*disco",
+        "sensidisco",
+        "\\bdispensador\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/discos_pulido_dental.json",
+      "corpus_regex": "(?i).*disco.*(pulido|soflex|sof.lex).*",
+      "canonical_example": "DISCOS SOFLEX XT GRANO MEDIO BOLSA X 85 UNIDADES · Insumos Dentales"
+    },
+    {
+      "category_id": "espatulas_dentales",
+      "name": "Espátulas dentales",
+      "status": "candidate",
+      "include": [
+        "\\bespatula\\w*"
+      ],
+      "exclude": [
+        "\\bayre\\b",
+        "papanic"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/espatulas_dentales.json",
+      "corpus_regex": "(?i).*espatula.*",
+      "canonical_example": "ESPATULA DE ALGINATO PLASTICA · Convenio de Suministro de Insumos Dentales"
+    },
+    {
+      "category_id": "conos_endodoncia",
+      "name": "Conos de endodoncia (gutapercha y papel)",
+      "status": "candidate",
+      "include": [
+        "\\bcono\\w*\\b.*(gutapercha|guatapercha|papel)"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/conos_endodoncia.json",
+      "corpus_regex": "(?i).*cono.*(gutapercha|guatapercha|papel).*",
+      "canonical_example": "CONOS DE GUTAPERCHA · Convenio de Suministro de Insumos Dentales"
+    },
+    {
+      "category_id": "elevadores_dentales",
+      "name": "Elevadores dentales",
+      "status": "candidate",
+      "include": [
+        "\\belevador\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/elevadores_dentales.json",
+      "corpus_regex": "(?i).*elevador.*",
+      "canonical_example": "ELEVADOR RECTO FINO · Suministro de Equipamiento e insumos dentales"
+    },
+    {
+      "category_id": "eugenol",
+      "name": "Eugenol (dental)",
+      "status": "candidate",
+      "include": [
+        "\\beugenol\\b"
+      ],
+      "exclude": [
+        "\\bsin\\s+eugenol\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/eugenol.json",
+      "corpus_regex": "(?i).*eugenol.*",
+      "canonical_example": "EUGENOL FC 30 CC · CONVENIO PAC INSUMOS ODONTOLOGICOS"
+    },
+    {
+      "category_id": "clamps_dentales",
+      "name": "Clamps dentales (aislamiento absoluto)",
+      "status": "candidate",
+      "include": [
+        "\\bclamps?\\b"
+      ],
+      "exclude": [
+        "\\bporta\\s*clamps?\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/clamps_dentales.json",
+      "corpus_regex": "(?i).*clamps.*",
+      "canonical_example": "CLAMPS 200 · Suministro de Equipamiento e insumos dentales"
+    },
+    {
+      "category_id": "espejos_dentales",
+      "name": "Espejos bucales dentales",
+      "status": "candidate",
+      "include": [
+        "\\bespejos?\\b.*(bucal|dental)",
+        "\\bespejos?\\b.*\\bn\\b\\s*°?\\s*5"
+      ],
+      "exclude": [
+        "\\bmango\\b",
+        "incoloro|ferreteria|3\\s*mm"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/espejos_dentales.json",
+      "corpus_regex": "(?i).*espejo.*(bucal|dental|n.{0,3}5).*",
+      "canonical_example": "ESPEJO BUCAL N ° 5 CJ. X 12"
+    },
+    {
+      "category_id": "elasticos_ortodoncia",
+      "name": "Elásticos de ortodoncia extraorales",
+      "status": "candidate",
+      "include": [
+        "\\belasticos?\\b.*(extraoral|extroral|onza|\\boz\\b)"
+      ],
+      "exclude": [
+        "visco",
+        "camilla|mascarilla|funda|balon|cubre"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/elasticos_ortodoncia.json",
+      "corpus_regex": "(?i).*elastico.*(extraoral|extroral|onza|oz).*",
+      "canonical_example": "ELASTICOS EXTRAORALES 1/2  16 OZ PK"
+    },
+    {
+      "category_id": "cubetas_impresion_dentales",
+      "name": "Cubetas de impresión dental",
+      "status": "candidate",
+      "include": [
+        "\\bcubetas?\\b"
+      ],
+      "exclude": [
+        "\\bpilar",
+        "implante"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cubetas_impresion_dentales.json",
+      "corpus_regex": "(?i).*cubeta.*",
+      "canonical_example": "JUEGOS DE CUBETAS TIPO RIM LOCK -SET 6 UNDS. L,M,S INF. Y SUP."
+    },
+    {
+      "category_id": "goma_dique_dental",
+      "name": "Goma dique (dique de goma) dental",
+      "status": "candidate",
+      "include": [
+        "\\bgoma\\b.*\\bdique\\b",
+        "\\bdique\\b.*\\bgoma\\b"
+      ],
+      "exclude": [
+        "pulir",
+        "cistoscopio",
+        "engomada",
+        "filtro"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/goma_dique_dental.json",
+      "corpus_regex": "(?i).*(goma.*dique|dique.*goma).*",
+      "canonical_example": "2520438 GOMA DIQUE GRUESA 5X5"
+    },
+    {
+      "category_id": "yesos_dentales",
+      "name": "Yeso dental",
+      "status": "candidate",
+      "include": [
+        "\\byesos?\\b"
+      ],
+      "exclude": [
+        "espatula",
+        "\\btaza\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/yesos_dentales.json",
+      "corpus_regex": "(?i).*yeso.*",
+      "canonical_example": "YESO EXTRADURO DENTAL 1 KG"
+    },
+    {
+      "category_id": "alambre_acero_quirurgico",
+      "name": "Alambre de acero quirúrgico (cerclaje)",
+      "status": "candidate",
+      "include": [
+        "\\balambre\\b.*acero.*quirurgic"
+      ],
+      "exclude": [
+        "guia",
+        "cesta|canastillo|dormia",
+        "cateter",
+        "bond"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/alambre_acero_quirurgico.json",
+      "corpus_regex": "(?i).*alambre.*acero.*quirurg.*",
+      "canonical_example": "ALAMBRE ACERO QUIRURGICO RLL 0,4 ML"
+    },
+    {
+      "category_id": "formocresol",
+      "name": "Formocresol dental",
+      "status": "candidate",
+      "include": [
+        "\\bformocresol\\b"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/formocresol.json",
+      "corpus_regex": "(?i).*formocresol.*",
+      "canonical_example": "2520276 FORMOCRESOL FRASCO 10 ML"
+    },
+    {
+      "category_id": "barniz_fluor",
+      "name": "Barniz de fluor dental",
+      "status": "candidate",
+      "include": [
+        "\\bbarniz\\b.*\\bfluor\\b",
+        "\\bfluor\\b.*\\bbarniz\\b"
+      ],
+      "exclude": [
+        "barnizad[ao]",
+        "madera"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/barniz_fluor.json",
+      "corpus_regex": "(?i).*barniz.*",
+      "canonical_example": "BARNIZ DE FLUOR AL 5%"
+    },
+    {
+      "category_id": "retractores_quirurgicos",
+      "name": "Retractores quirurgicos abdominales",
+      "status": "candidate",
+      "include": [
+        "\\b(retractor(es)?|retraccion)\\b.*(abdominal|herida|alexis|iris)"
+      ],
+      "exclude": [
+        "hilo\\s*retractor",
+        "gingival"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/retractores_quirurgicos.json",
+      "corpus_regex": "(?i).*retract.*",
+      "canonical_example": "340-8779\tSEPARADOR O RETRACTOR EQUIVALENTE A ALEXIS DE 2.5 A 6 CM. (UD)"
+    },
+    {
+      "category_id": "fonendoscopios",
+      "name": "Fonendoscopios",
+      "status": "candidate",
+      "include": [
+        "\\bfonendoscopio\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/fonendoscopios.json",
+      "corpus_regex": "(?i).*fonendoscopio.*",
+      "canonical_example": "FONENDOSCOPIO PLANO ADULTO."
+    },
+    {
+      "category_id": "alginatos_impresion",
+      "name": "Alginatos de impresión dental",
+      "status": "candidate",
+      "include": [
+        "\\balginato\\s+(fraguado|normal|tipo|de\\s+impresion)",
+        "\\balginato\\w*\\s+bicromatic\\w*"
+      ],
+      "exclude": [
+        "espatula",
+        "taza",
+        "aposito",
+        "laminas",
+        "mechas",
+        "plata ionica",
+        "hidrofilic\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/alginatos_impresion.json",
+      "corpus_regex": "(?i).*alginato.*",
+      "canonical_example": "ALGINATO FRAGUADO NORMAL · Convenio de Suministro de Insumos Dentales"
+    },
+    {
+      "category_id": "cubreobjetos",
+      "name": "Cubreobjetos de laboratorio",
+      "status": "candidate",
+      "include": [
+        "\\bcubre\\s?objetos?\\w*"
+      ],
+      "exclude": [
+        "cubre\\s?cama",
+        "funda",
+        "almohad"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cubreobjetos.json",
+      "corpus_regex": "(?i).*cubre\\s*objeto.*",
+      "canonical_example": "CUBRE OBJETOS 18X18 MM (100 UND). CAJA 100 UNIDADES · INSUMOS LABORATORIO"
+    },
+    {
+      "category_id": "pesarios",
+      "name": "Pesarios",
+      "status": "candidate",
+      "include": [
+        "\\bpesario\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/pesarios.json",
+      "corpus_regex": "(?i).*pesario.*",
+      "canonical_example": "PESARIO DONUT DEL #2 AL #6 · ADQUISICIÓN DE PESARIOS"
+    },
+    {
+      "category_id": "bajalenguas",
+      "name": "Bajalenguas",
+      "status": "candidate",
+      "include": [
+        "\\bbaja\\s?lenguas?\\w*"
+      ],
+      "exclude": [
+        "guia de lengua"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/bajalenguas.json",
+      "corpus_regex": "(?i).*baja\\s*lengua.*",
+      "canonical_example": "Bajalengua Desechable · CONVENIO INSUMOS MÉDICOS AÑOS 2020 Y 2021"
+    },
+    {
+      "category_id": "cadenetas_dentales",
+      "name": "Cadenetas elásticas dentales",
+      "status": "candidate",
+      "include": [
+        "\\bcadeneta\\w*"
+      ],
+      "exclude": [
+        "\\b(maquina|servilleta|costura|hilos)\\b"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/cadenetas_dentales.json",
+      "corpus_regex": "(?i).*cadeneta.*",
+      "canonical_example": "CADENETA DENTAL ELASTICA PLATEADA CONTINUA"
+    },
+    {
+      "category_id": "brackets_ortodoncia",
+      "name": "Brackets de ortodoncia",
+      "status": "candidate",
+      "include": [
+        "\\bbrackets?\\b"
+      ],
+      "exclude": [
+        "\\b(cemento|pinza|macromodelo|retractor)\\w*"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/brackets_ortodoncia.json",
+      "corpus_regex": "(?i).*bracket.*",
+      "canonical_example": "BRACKETS ORTODONCIA MBT 022 TIPO SPRINT SET"
+    },
+    {
+      "category_id": "paramonoclorofenol",
+      "name": "Paramonoclorofenol (medicamento dental)",
+      "status": "candidate",
+      "include": [
+        "\\bparamonoclorofenol\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/paramonoclorofenol.json",
+      "corpus_regex": "(?i).*paramonoclorofenol.*",
+      "canonical_example": "PARAMONOCLOROFENOL ALCANFORADO"
+    },
+    {
+      "category_id": "milrinona",
+      "name": "Milrinona inyectable",
+      "status": "candidate",
+      "include": [
+        "\\bmilrinona\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/milrinona.json",
+      "corpus_regex": "(?i).*milrinona.*",
+      "canonical_example": "MILRINONA 10 MG/10 ML (1 MG/ML) INYECTABLE"
+    },
+    {
+      "category_id": "eyectores_saliva",
+      "name": "Eyectores de saliva dentales",
+      "status": "candidate",
+      "include": [
+        "\\beyector\\w*"
+      ],
+      "exclude": [],
+      "spend_share": null,
+      "schema_file": "schemas/eyectores_saliva.json",
+      "corpus_regex": "(?i).*eyector.*",
+      "canonical_example": "EYECTORES USO DENTAL , BOLSA 100 UNIDADES (OFERTAR POR BOLSAS DE CIEN)"
+    },
+    {
+      "category_id": "acrilicos_dentales",
+      "name": "Acrilico dental para coronas",
+      "status": "candidate",
+      "include": [
+        "\\bacrilico\\b"
+      ],
+      "exclude": [
+        "poliacrilico",
+        "dappen",
+        "pimpollo"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/acrilicos_dentales.json",
+      "corpus_regex": "(?i).*acrilico.*",
+      "canonical_example": "ACRILICO AUTOCURADO PARA CORONA MARCHE N45"
+    },
+    {
+      "category_id": "vasos_desechables",
+      "name": "Vasos plasticos/desechables",
+      "status": "candidate",
+      "include": [
+        "\\bvasos?\\b.*(desechable|plastico|plumavit|termico|cc|ml)"
+      ],
+      "exclude": [
+        "dappen",
+        "coplin",
+        "sanguineo"
+      ],
+      "spend_share": null,
+      "schema_file": "schemas/vasos_desechables.json",
+      "corpus_regex": "(?i).*vaso.*",
+      "canonical_example": "VASOS PLASTICOS 250CC"
     }
   ]
 }
