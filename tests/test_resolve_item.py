@@ -279,3 +279,13 @@ def test_runner_dispatches_item_mode():
     assert stats.total == 1
     assert stats.by_status["resolved_generic"] == 1
     assert stats.by_category["sondas"] == 1
+
+
+def test_offer_rebinding_is_idempotent():
+    # re-binding the same offer to a different Product replaces its edge — no
+    # stale duplicate (the bug a re-resolve with retargeting would otherwise hit).
+    catalog = InMemoryCatalog()
+    catalog.link_offer("o1", "pr_old", {"unit_price": 100.0})
+    catalog.link_offer("o1", "pr_new", {"unit_price": 100.0})
+    edges = [o for o in catalog.offers if o["oferta_id"] == "o1"]
+    assert len(edges) == 1 and edges[0]["product_id"] == "pr_new"

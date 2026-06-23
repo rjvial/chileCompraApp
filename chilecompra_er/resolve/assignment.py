@@ -203,7 +203,10 @@ class InMemoryCatalog:
         return pid
 
     def link_offer(self, oferta_id, product_id: str, price_props: dict) -> None:
-        """One (:Oferta)-[:OFFERS {price…}]->(:Product) edge per bid."""
+        """One (:Oferta)-[:OFFERS {price…}]->(:Product) edge per bid. Idempotent:
+        re-binding an offer (e.g. a re-resolve that retargets it to a different
+        Product) replaces its edge rather than adding a second one."""
+        self.offers = [o for o in self.offers if o["oferta_id"] != oferta_id]
         self.offers.append({"oferta_id": oferta_id, "product_id": product_id,
                             "run_uid": self.run_uid, **price_props})
 
@@ -471,10 +474,16 @@ class Neo4jCatalog:
 
     def link_offer(self, oferta_id, product_id: str, price_props: dict) -> None:
         """One explicit (:Oferta)-[:OFFERS {price…}]->(:Product) edge per bid —
-        the price lives on the edge, not on the (price-free) Product."""
+        the price lives on the edge, not on the (price-free) Product. Idempotent:
+        the offer's prior OFFERS edge is removed first, so a re-resolve that
+        retargets the offer to a different Product leaves exactly one current edge
+        (no stale duplicates accumulating across runs)."""
         self.conn.query(
             """
             MATCH (o:Oferta {id_oferta: $oid})
+            OPTIONAL MATCH (o)-[old:OFFERS]->()
+            DELETE old
+            WITH o
             MATCH (p:Product {id: $pid})
             MERGE (o)-[r:OFFERS]->(p)
             SET r += $price, r.resolved_at = datetime(), r.run_uid = $run
@@ -722,14 +731,21 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
                 """, parameters={"rows": rows})
             self._branded_buf = []
         if self._offers_buf:
+            # One offer is bound once per run, so dedup-by-oid (last wins) then
+            # delete any prior OFFERS edge before re-creating — keeps exactly one
+            # current edge per offer even when a re-resolve retargets it.
+            rows = list({r["oid"]: r for r in self._offers_buf}.values())
             self.conn.query(
                 """
                 UNWIND $rows AS row
                 MATCH (o:Oferta {id_oferta: row.oid})
+                OPTIONAL MATCH (o)-[old:OFFERS]->()
+                DELETE old
+                WITH o, row
                 MATCH (p:Product {id: row.pid})
                 MERGE (o)-[r:OFFERS]->(p)
                 SET r += row.price, r.resolved_at = datetime(), r.run_uid = $run
-                """, parameters={"rows": self._offers_buf, "run": self.run_uid})
+                """, parameters={"rows": rows, "run": self.run_uid})
             self._offers_buf = []
         if self._res_buf:
             self._flush_resolutions(self._res_buf)
