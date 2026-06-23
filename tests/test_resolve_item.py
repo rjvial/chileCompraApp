@@ -144,13 +144,15 @@ def test_fallback_counts_in_stats():
 
 
 def _item_with_offers():
+    # two offers describing the SAME product (foley 16Fr 2-vias), no brand —
+    # they share one generic and one (sin marca) Product.
     return SourceItem(
         ref=SourceRef("mp_item_licitacion", "L1", "1", RUBRIC),
         kind="item", raw_text=RUBRIC, unspsc=42182200,
         extra={"tender_text": None, "offers": [
             {"offer_id": "o1", "text": "SONDA FOLEY CH16 2 VIAS",
              "unit_price": 1000.0, "awarded": True},
-            {"offer_id": "o2", "text": "SONDA FOLEY CH18 SILICONA",
+            {"offer_id": "o2", "text": "SONDA FOLEY CH16 2 VIAS",
              "unit_price": 1200.0, "awarded": False}]},
     )
 
@@ -203,6 +205,65 @@ def test_distinct_brands_make_distinct_products_one_generic():
     assert {p["brand_id"] for p in catalog.products.values()} == {"rusch", "coloplast"}
     assert set(catalog.brands) == {"rusch", "coloplast"}
     assert len(catalog.offers) == 2
+
+
+# --- offer-aware resolution (Oferta↔Product↔Generic consistency) -------------
+
+def test_offer_more_specific_refines_to_finer_generic():
+    # buyer/consensus generic = foley 16Fr 2-vias; a second offer is a DIFFERENT,
+    # more-specific spec (18Fr silicona) -> it earns its own (finer) generic
+    # instead of being force-merged onto the item's node.
+    item = SourceItem(
+        ref=SourceRef("mp_item_licitacion", "L1", "1", RUBRIC),
+        kind="item", raw_text=RUBRIC, unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "o1", "text": "SONDA FOLEY CH16 2 VIAS",
+             "unit_price": 1000.0, "awarded": True},
+            {"offer_id": "o2", "text": "SONDA FOLEY CH18 SILICONA",
+             "unit_price": 1200.0, "awarded": False}]},
+    )
+    catalog = InMemoryCatalog()
+    stats, _ = resolve_items(Resolver(catalog), [item], persist=True, item_mode=True)
+    assert len({p["generic_id"] for p in catalog.products.values()}) == 2
+    assert stats.offer_routing["refined"] == 1
+    assert stats.offer_routing["same"] == 1
+    # both stay in-family -> conforming
+    assert all(o["conforming"] for o in catalog.offers)
+
+
+def test_offer_in_different_family_recategorized_nonconforming():
+    # buyer line is a sonda; one offer is actually an aguja (different family) ->
+    # it binds to an agujas generic, flagged conforming=False, not forced onto sondas.
+    item = SourceItem(
+        ref=SourceRef("mp_item_licitacion", "L2", "1", "SONDA FOLEY CH16"),
+        kind="item", raw_text="SONDA FOLEY CH16", unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "o1", "text": "SONDA FOLEY CH16 2 VIAS",
+             "unit_price": 1000.0, "awarded": True},
+            {"offer_id": "o2", "text": "AGUJA HIPODERMICA 21G",
+             "unit_price": 50.0, "awarded": False}]},
+    )
+    catalog = InMemoryCatalog()
+    stats, _ = resolve_items(Resolver(catalog), [item], persist=True, item_mode=True)
+    cats = {catalog.specs[p["generic_id"]].category_id for p in catalog.products.values()}
+    assert "sondas" in cats and "agujas" in cats
+    conforming = {o["oferta_id"]: o["conforming"] for o in catalog.offers}
+    assert conforming["o1"] is True and conforming["o2"] is False
+    assert stats.offer_routing["recategorized"] == 1
+
+
+def test_vague_offer_stays_on_item_generic():
+    # an offer too terse to classify falls back to the item's node (conservative).
+    item = SourceItem(
+        ref=SourceRef("mp_item_licitacion", "L3", "1", "SONDA FOLEY CH16 2 VIAS"),
+        kind="item", raw_text="SONDA FOLEY CH16 2 VIAS", unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "o1", "text": "segun bases", "unit_price": 999.0}]},
+    )
+    catalog = InMemoryCatalog()
+    stats, _ = resolve_items(Resolver(catalog), [item], persist=True, item_mode=True)
+    assert stats.offer_routing["conservative"] == 1
+    assert catalog.offers[0]["conforming"] is True
 
 
 def test_runner_dispatches_item_mode():

@@ -11,8 +11,10 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-from ..resolve.assignment import SourceRef, branded_product_id
+from ..ambiguity import looks_like_bundle
+from ..resolve.assignment import SourceRef, branded_product_id, plan_assignment
 from ..resolve.brand import extract_brand
+from ..resolve.classifier import CLASSIFIED
 from ..resolve.extractor import extract
 from ..resolve.resolver import UNSPSC_PREFIX, ResolutionReport, Resolver
 from .neo4j_source import SourceItem
@@ -30,6 +32,7 @@ class ResolutionStats:
     resolved_without_attributes: int = 0  # anchored on a category root
     resolved_via_fallback: int = 0        # linked to a UNSPSC commodity bucket
     offers_bound: int = 0                 # offers tied via OFFERS edges to branded Products
+    offer_routing: Counter = field(default_factory=Counter)  # offer-aware binding outcome
     nodes_created: int = 0
     illegal_values: int = 0
 
@@ -44,6 +47,7 @@ class ResolutionStats:
             "resolved_without_attributes": self.resolved_without_attributes,
             "resolved_via_fallback": self.resolved_via_fallback,
             "offers_bound": self.offers_bound,
+            "offer_routing": dict(self.offer_routing),
             "nodes_created": self.nodes_created,
             "illegal_values": self.illegal_values,
         }
@@ -60,6 +64,7 @@ class ResolutionStats:
             resolved_without_attributes=d.get("resolved_without_attributes", 0),
             resolved_via_fallback=d.get("resolved_via_fallback", 0),
             offers_bound=d.get("offers_bound", 0),
+            offer_routing=Counter(d.get("offer_routing", {})),
             nodes_created=d.get("nodes_created", 0),
             illegal_values=d.get("illegal_values", 0),
         )
@@ -81,6 +86,9 @@ class ResolutionStats:
             f"resolved w/o attrs: {self.resolved_without_attributes} "
             "(anchored on category roots — honest partials, no product info)",
             f"offers bound      : {self.offers_bound} (as OFFERS edges to branded Products)",
+            f"offer routing     : {dict(self.offer_routing)} "
+            "(same=item node, refined=finer same-family, recategorized=own family, "
+            "conservative=kept on item)",
             f"nodes created     : {self.nodes_created}",
             f"illegal values    : {self.illegal_values} (dropped, counted — schema dry-run metric)",
         ]
@@ -207,7 +215,7 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
             offers = item.extra.get("offers") or []
             stats.offers_bound += len(offers)
             if persist:
-                _bind_offers(resolver, item.ref, offers, report)
+                _bind_offers(resolver, item.ref, offers, report, stats)
         if report.created:
             stats.nodes_created += 1
         if report.extraction is not None:
@@ -224,25 +232,83 @@ def resolve_items(resolver: Resolver, items: Iterable[SourceItem],
     return stats, reports
 
 
-def _bind_offers(resolver, item_ref: SourceRef, offers: list[dict],
-                 report: ResolutionReport) -> None:
-    """Bind an item's offers into the branded catalog. For each offer:
-    extract its brand and the category's DESCRIPTIVE attributes, upsert the
-    deduped :Product = Brand × GenericProduct pairing, and add the explicit
-    (:Oferta)-[:OFFERS {price…}]->(:Product) edge carrying the bid's price.
-    Many offers of the same brand collapse onto one Product; the price lives on
-    the edge, never on the (price-free) Product."""
-    catalog = resolver.catalog
-    generic_id = report.node_id
-    category_id = report.classification.category_id
+def _descriptive_values(schema, ext) -> dict:
+    """The DESCRIPTIVE (non-identity) subset of an extraction's values."""
+    names = {a.name for a in schema.attribute_defs if not a.is_identity}
+    return {k: v for k, v in ext.values.items() if k in names}
 
-    # Descriptive attrs come from the item's chosen category schema. Fallback
-    # buckets (unspsc_*) are attribute-less, so there's nothing to extract there.
-    schema = None
-    descriptive_names: set[str] = set()
-    if category_id and not category_id.startswith(UNSPSC_PREFIX):
-        schema = resolver.schema(category_id)
-        descriptive_names = {a.name for a in schema.attribute_defs if not a.is_identity}
+
+def _assign_generic(resolver, schema, values: dict) -> str:
+    """Find-or-create the GenericProduct for `values` (the offer's own identity)
+    and return its id. plan_assignment parents finer nodes under coarser ones via
+    PARENT_OF, so a refinement of the item's generic lands as its child."""
+    existing = resolver.catalog.load(schema.category_id, schema)
+    plan = plan_assignment(schema, values, existing)
+    resolver.catalog.apply(plan, schema)
+    return plan.home_id
+
+
+def _offer_target(resolver, text: str, item_gid: str, item_cat: str | None,
+                  item_idv: dict, item_fallback: bool, item_schema):
+    """Resolve an offer to the generic its OWN text supports (offer-aware
+    binding). Returns (generic_id, conforming, descriptive, outcome):
+
+      same          -> offer adds no new identity; inherit the item's node
+      refined        -> offer is more specific (Case A); its finer node, PARENT_OF g
+      recategorized  -> offer is a different family (Case B); its own node, conforming=False
+      conservative   -> unclassified/ambiguous/bundle/low-confidence; keep on item node
+    """
+    norm = resolver.normalizer(text) if text else ""
+    # No usable text, or a UNSPSC-fallback item (no schema identity to compare):
+    # keep the offer on the item's node, as before.
+    if not norm or item_fallback or item_schema is None:
+        desc = _descriptive_values(item_schema, extract(norm, item_schema)) \
+            if (item_schema is not None and norm) else {}
+        return item_gid, True, desc, ("item_fallback" if item_fallback else "conservative")
+
+    cls = resolver.classifier.classify(norm)
+    # Unclassified / ambiguous / multi-product bundle: ambiguity is the right
+    # answer — never invent a target, bind to the item's node.
+    if cls.status != CLASSIFIED or looks_like_bundle(norm):
+        desc = _descriptive_values(item_schema, extract(norm, item_schema))
+        return item_gid, True, desc, "conservative"
+
+    off_schema = resolver.schema(cls.category_id)
+    off_ext = extract(norm, off_schema)
+    descriptive = _descriptive_values(off_schema, off_ext)
+    off_idv = off_ext.identity_values
+
+    if cls.category_id == item_cat:
+        # Same family. A subset of the item's identity is just a vaguer wording of
+        # the same product -> inherit the item node; otherwise it's more specific
+        # (or diverges) and earns its own (finer) node under the item generic.
+        if all(item_idv.get(k) == v for k, v in off_idv.items()):
+            return item_gid, True, descriptive, "same"
+        return _assign_generic(resolver, off_schema, off_ext.values), True, descriptive, "refined"
+
+    # Different family (Case B). Trust only a high-precision Tier-1 verdict to move
+    # an offer off the item's family; a statistical (tier2) guess stays conservative.
+    if getattr(cls, "tier", "tier1") == "tier1":
+        return _assign_generic(resolver, off_schema, off_ext.values), False, descriptive, "recategorized"
+    desc = _descriptive_values(item_schema, extract(norm, item_schema))
+    return item_gid, True, desc, "conservative"
+
+
+def _bind_offers(resolver, item_ref: SourceRef, offers: list[dict],
+                 report: ResolutionReport, stats=None) -> None:
+    """Bind an item's offers into the branded catalog — offer-aware: each offer
+    resolves to the GenericProduct its OWN text supports (equal/finer/own-family),
+    falling back to the item's node when the offer is vague or ambiguous. For each
+    offer: extract its brand, upsert the deduped :Product = Brand × that-generic,
+    and add the (:Oferta)-[:OFFERS {price…, conforming}]->(:Product) edge. The
+    `conforming` flag is False when the offer was bound to a *different* family
+    than the item requested (Case B) — a non-conforming / component bid."""
+    catalog = resolver.catalog
+    item_gid = report.node_id
+    item_cat = report.classification.category_id
+    item_fallback = bool(item_cat) and item_cat.startswith(UNSPSC_PREFIX)
+    item_idv = report.extraction.identity_values if report.extraction is not None else {}
+    item_schema = resolver.schema(item_cat) if (item_cat and not item_fallback) else None
 
     for o in offers:
         oid = o.get("offer_id")
@@ -250,16 +316,17 @@ def _bind_offers(resolver, item_ref: SourceRef, offers: list[dict],
             continue
         text = o.get("text") or ""
         brand_id, brand_name, _ = extract_brand(text, resolver.brand_map)
-        descriptive: dict[str, str] = {}
-        if schema is not None and text:
-            ext = extract(resolver.normalizer(text), schema)
-            descriptive = {k: v for k, v in ext.values.items() if k in descriptive_names}
-        pid = branded_product_id(generic_id, brand_id)
-        catalog.merge_branded_product(generic_id, brand_id, brand_name, descriptive)
+        target_gid, conforming, descriptive, outcome = _offer_target(
+            resolver, text, item_gid, item_cat, item_idv, item_fallback, item_schema)
+        if stats is not None:
+            stats.offer_routing[outcome] += 1
+        pid = branded_product_id(target_gid, brand_id)
+        catalog.merge_branded_product(target_gid, brand_id, brand_name, descriptive)
         price = {k: v for k, v in {
             "unit_price": o.get("unit_price"), "total_clp": o.get("total_clp"),
             "quantity": o.get("quantity"), "awarded": bool(o.get("awarded")),
             "currency": o.get("currency"), "date": o.get("date"),
             "supplier_text": text,
         }.items() if v is not None}
+        price["conforming"] = conforming
         catalog.link_offer(oid, pid, price)

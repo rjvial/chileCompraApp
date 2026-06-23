@@ -1,9 +1,18 @@
 # Design: Offer-Aware Resolution (Oferta ↔ Product ↔ GenericProduct consistency)
 
-> Status: **DESIGN / proposal.** Supersedes the intra-item invariant of
-> `item_centric_plan.md` for the offer side. Prerequisite (extraction trust)
-> shipped: negation guard + canonical numeric domains (`0a67440`). Targets the
-> two inconsistency classes measured below.
+> Status: **IMPLEMENTED (Phases 1–3) in `ingest/runner.py:_bind_offers`.**
+> Each offer now resolves to the generic its own text supports — equal→item
+> node, refinement→finer child (`PARENT_OF`), different family→its own generic
+> with `OFFERS.conforming=false`; vague/ambiguous/bundle stays on the item node.
+> The `offer_routing` stat (same/refined/recategorized/conservative) instruments
+> every decision (Phase 1). Validated on the live register: a regulator and a
+> mask offer under an `oxigeno_medicinal` item re-bind to `reguladores_oxigeno`
+> / `mascarillas` (conforming=false); 602 tests. Banked into the graph on the
+> next `--persist` re-resolve.
+>
+> Supersedes the intra-item invariant of `item_centric_plan.md` for the offer
+> side. Prerequisite (extraction trust) shipped: negation guard + canonical
+> numeric domains (`0a67440`). Targets the two inconsistency classes below.
 
 ## 1. The problem (measured)
 
