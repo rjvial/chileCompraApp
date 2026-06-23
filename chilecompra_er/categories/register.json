@@ -1,5 +1,5 @@
 {
-  "register_version": "0.197.0",
+  "register_version": "0.198.0",
   "notes": "Reset to empty on 2026-06-18 for a full from-scratch run. Categories are rebuilt from the raw corpus via `register` (Tier-1 include/exclude regexes over NORMALIZED text; exclusions resolve sibling overlaps). The previous hand-curated 120-category register is recoverable from git commit 9c6e10c. Each category carries corpus_regex (raw-text filter for the schema strawman) and a canonical_example golden fixture; schemas live as versioned JSON under schemas/.",
   "categories": [
     {
@@ -55,7 +55,8 @@
       ],
       "exclude": [
         "\\bfresa\\w*",
-        "\\bconsignacion\\b"
+        "\\bconsignacion\\b",
+        "\\bendoprotesis\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/protesis.json",
@@ -191,7 +192,8 @@
       ],
       "exclude": [
         "porta\\s*aguja",
-        "\\bsutura\\w*"
+        "\\bsutura\\w*",
+        "\\bfresa\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/agujas.json",
@@ -1371,7 +1373,8 @@
         "etamsilato",
         "astringente",
         "\\bsolucion\\b",
-        "\\bbotella\\b"
+        "\\bbotella\\b",
+        "\\bpinza\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/hemostaticos_absorbibles.json",
@@ -1437,7 +1440,8 @@
       "exclude": [
         "sonda",
         "naricera",
-        "bigotera"
+        "bigotera",
+        "\\bregulador\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/oxigeno_medicinal.json",
@@ -2221,7 +2225,8 @@
         "\\bportland\\b",
         "\\bobra\\b",
         "\\balbanileria\\b",
-        "\\bhormigon\\b"
+        "\\bhormigon\\b",
+        "\\bespatula\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/cementos_dentales.json",
@@ -2356,7 +2361,8 @@
       ],
       "exclude": [
         "espatula",
-        "\\bportacomposite\\w*"
+        "\\bportacomposite\\w*",
+        "\\bfresa\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/composites_dentales.json",
@@ -3058,7 +3064,8 @@
       ],
       "exclude": [
         "espatula",
-        "\\btaza\\b"
+        "\\btaza\\b",
+        "\\bvenda\\w*"
       ],
       "spend_share": null,
       "schema_file": "schemas/yesos_dentales.json",
