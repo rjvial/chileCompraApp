@@ -66,8 +66,9 @@ number (segment 42 = medical/lab supplies).
 |---|---|
 | `Category` | A product **family** (e.g. `sondas_foley`) with a typed attribute **schema** |
 | `GenericProduct` | A canonical product *within* a category, identified by its **identity attribute values** (Foley + 16Fr + latex). Shared across all tenders that describe it. |
-| `Product` | A brand-level variant — **one per offer** — carrying the offer's price. `VARIANT_OF` a GenericProduct. |
-| `SourceRecord` | A thin reference back to a source line/offer, with a `RESOLVED_TO` edge to its catalog node and a `content_hash` (the incremental-skip key). |
+| `Product` | A **brand × generic pairing** — `(Foley 16Fr latex) × B.Braun`. Deduped: **one node per distinct (generic, brand)**, shared across every offer of it (not one per offer). Price-free — `VARIANT_OF` a GenericProduct and `OF_BRAND` a Brand; the price lives on the offer edge below. |
+| `Brand` | A first-class trade-name node (`b.braun`, `3m`), shared across products and categories. |
+| `SourceRecord` | A thin reference back to a source line/offer (`(ItemLicitacion)-[:HAS_RECORD]->`), with a `RESOLVED_TO` edge to its catalog node and a `content_hash` (the incremental-skip key). |
 | `ResolveRun` | One node per persist run (full / incremental / seed) — provenance for every event it emits. |
 | `ResolutionEvent` | An **immutable, append-only** record of one resolution touch — target, status, versions, and the full evidence. The lineage/audit log (`(SourceRecord)-[:HAS_EVENT]->(ResolutionEvent)<-[:EMITTED]-(ResolveRun)`). |
 | `ResolveState` | A singleton holding the set of ingestion `run_id`s already incorporated — the incremental watermark. |
@@ -79,23 +80,28 @@ number (segment 42 = medical/lab supplies).
    Licitacion
       │ :TIENE_ITEM
       ▼
-   ItemLicitacion  ┄┄1 per item┄┄▶  SourceRecord ──:RESOLVED_TO──┐  (versioned)
-      ▲  buyer text + UNSPSC                                      │
-      │ :PARA_ITEM                                                ▼
-   Oferta  ┄┄┄┄┄┄1 per offer┄┄┄▶  Product ──:VARIANT_OF──▶  GenericProduct ──:IN_CATEGORY──▶ Category
-      supplier text + price                                  │   ▲   shared node, deduped
-                                                             └───┘   by identity attributes
-                                                          :PARENT_OF  (coarse → fine hierarchy)
+   ItemLicitacion ──:HAS_RECORD──▶  SourceRecord ──:RESOLVED_TO──┐  (versioned)
+      ▲  buyer text + UNSPSC                                     │
+      │ :PARA_ITEM                                               ▼
+   Oferta ─:OFFERS {price}─▶ Product ──:VARIANT_OF──▶  GenericProduct ──:IN_CATEGORY──▶ Category
+      supplier text          │  shared (generic,brand) │   ▲   shared node, deduped
+                             │  node — price NOT here   └───┘   by identity attributes
+                       :OF_BRAND                     :PARENT_OF  (coarse → fine hierarchy)
+                             ▼
+                          Brand
 
   ──▶  stored edge        ┄┄▶  created by the resolver (a node, not a stored edge)
 ```
 
-Each `ItemLicitacion` becomes one `SourceRecord` that `RESOLVED_TO` a
-`GenericProduct`; each `Oferta` on that item becomes one `Product` that is
-`VARIANT_OF` the **same** `GenericProduct`. Identical products across different
-tenders collapse onto one shared `GenericProduct` (that is what makes
-cross-tender price comparison possible), and coarser nodes parent finer ones via
-`:PARENT_OF`.
+Each `ItemLicitacion` becomes one `SourceRecord` (via `:HAS_RECORD`) that
+`RESOLVED_TO` a `GenericProduct`; each `Oferta` on that item attaches via an
+explicit `(:Oferta)-[:OFFERS {price…}]->(:Product)` edge, where the `Product` is
+the deduped `Brand × GenericProduct` pairing (`VARIANT_OF` the generic,
+`OF_BRAND` the brand). **The price lives on the OFFERS edge, not on the node** —
+so many offers of the same brand for the same generic collapse onto one shared
+`Product`. Identical generics across different tenders collapse onto one shared
+`GenericProduct` (that is what makes cross-tender price comparison possible), and
+coarser nodes parent finer ones via `:PARENT_OF`.
 
 ### How one line resolves
 
@@ -123,8 +129,9 @@ priority and then runs steps 3–6 once for the chosen text:
    identity attributes anchors honestly on the **category root** (specificity 0);
    more-specific nodes hang under coarser ones via `PARENT_OF` (strict-subset
    hierarchy), so "Foley" parents "Foley 16Fr".
-6. **Persist** — upsert the `SourceRecord` (carrying a `content_hash` of the item
-   + its offers — the incremental-skip key) and its `RESOLVED_TO` edge.
+6. **Persist** — upsert the `SourceRecord` (linked from its item via `:HAS_RECORD`,
+   carrying a `content_hash` of the item + its offers — the incremental-skip key)
+   and its `RESOLVED_TO` edge.
    Re-resolving to the **same** target refreshes that edge in place (no new
    version); a **changed** target retires the old edge and adds a new version.
    Every touch also appends an immutable `:ResolutionEvent` — the full audit trail
@@ -140,7 +147,8 @@ at a time**, pooling every signal it has:
   is just a rubric path ("Equipamiento médico / … / Sondas") gets its real
   category from the supplier offers that actually name the product.
 - **One generic product per item.** All of the item's offers bind beneath that
-  single node as `:Product` variants — they can't scatter to different products.
+  single generic — each via an `OFFERS` edge to the `Brand × generic` `Product`
+  for that offer's brand — so they can't scatter to different generics.
 - **UNSPSC fallback** (see below) → coverage approaches **100%**.
 
 ### Curated vs fallback (the metric that matters)
@@ -207,7 +215,8 @@ what the step before it produced.
 | 1 | `register` **(1st run)** | the **raw source corpus** | **yes** | `register.json` + schema files (git); `profiling.csv` cache | families defined from scratch |
 | 2 | `resolve … ` *(dry run)* | source items **+ the register** | no | nothing | preview the curated/fallback split |
 | 3 | `resolve … --persist` | source items **+ the register** | no | **the catalog** (graph) | items linked; **fallback residue created** |
-| 4 | `fallback-report` | the **fallback residue** (graph) | no | `fallback_ranking.csv` | residue ranked |
+| 4 | `fallback-report` | the **fallback residue** (graph) | no | `fallback_ranking.csv` | residue ranked (UNCOVERED families) |
+| 4b | `ambiguity-report` *(optional)* | the **fallback residue** (graph) | no | stdout | register OVERLAPS ranked (the fixable-with-an-exclude backlog) |
 | 5 | `register --from-fallback` **(2nd run)** | the **fallback residue** (graph) | **yes** | `register.json` + schema files (git); `fallback_ranking.csv` | **more** families defined |
 | 5a | `train-tier2` *(optional)* | curated resolutions (graph) | no *(scikit-learn)* | `tier2_model.joblib` | wording classifier |
 | 5b | `build-brand-lexicon` *(optional)* | corpus samples per family | **yes** | `brand_lexicon.json` | brand tokens |
@@ -251,9 +260,10 @@ too much lands on fallback, fix schemas / add families and re-run.
 
 **Step 3 — `resolve --persist`: build the catalog.** Same pipeline, now
 **writing** (resumable; checkpointed). MERGEs the canonical `GenericProduct` per
-item, links its `SourceRecord`, and binds **every offer as a priced `:Product`
-variant**. Unmatched items link to their `unspsc_<code>` bucket → **coverage ≈
-100%**. The items that landed on fallback are the **residue** Phase 2 attacks.
+item, links its `SourceRecord`, and binds **every offer via an `OFFERS {price}`
+edge to its `Brand × generic` `Product`** (the price on the edge). Unmatched
+items link to their `unspsc_<code>` bucket → **coverage ≈ 100%**. The items that
+landed on fallback are the **residue** Phase 2 attacks.
 
 #### Phase 2 — shrink the fallback residue (Steps 4–6, then loop)
 
@@ -264,6 +274,18 @@ not used to rank: `fetch_fallback_items` can only attribute a bucket's spend
 uniformly across its items, so it's a smeared average that floats junk to the top —
 item count is the honest priority signal.) **Output:** `data\fallback_ranking.csv`
 — a prioritized "curate these next" list.
+
+**Step 4b — `ambiguity-report` (optional): the overlap counterpart.** Where
+`fallback-report` ranks the **uncovered** families, `ambiguity-report` ranks the
+**overlapping** ones. Some residue items fell to fallback not because *no*
+category matched but because **two Tier-1 regexes both did** (ambiguous → dropped
+to the bucket silently). It re-classifies the residue, keeps the ambiguous items,
+and ranks the colliding category **sets** — splitting **spurious** overlaps (one
+product two regexes both claim, e.g. "aguja de sutura" → `agujas ∩ suturas`,
+fixable by adding an `--exclude`) from genuine **multi-product bundles**
+("mascarillas, canulas, gasas", where ambiguity is correct and is left alone).
+The spurious count is a trackable register-hygiene backlog; fix the top overlaps
+with `add-category`/register excludes, then a full re-resolve clears them.
 
 **Step 5 — `register --from-fallback` (2nd run): curate the tail.** The *same*
 `register` machinery as Step 1, but candidates come from the **graph residue**
@@ -305,7 +327,8 @@ chilecompra-er resolve --kind item --segment 42 --limit 5000 --show 10 --out dat
 chilecompra-er resolve --kind item --segment 42 --persist                                 # 3. resolve (persist): WRITE catalog
 
 # Phase 2 — shrink the fallback residue (repeat this block)
-chilecompra-er fallback-report --top 20         # 4. rank the residue
+chilecompra-er fallback-report --top 20         # 4. rank the residue (uncovered families)
+chilecompra-er ambiguity-report --top 20        # 4b. (opt) rank register OVERLAPS (spurious vs bundle)
 chilecompra-er register --from-fallback         # 5. register (2nd run): curate the residue
 chilecompra-er train-tier2 --eval               # 5a. (opt) statistical tier
 chilecompra-er build-brand-lexicon              # 5b. (opt) LLM: brand tokens
@@ -608,14 +631,14 @@ chilecompra-er resolve --kind item --segment 42 --persist --resume
 |---|---|---|
 | `--kind tender\|offer\|oc\|joint\|item` | `tender` | Unit / source of records — see below. |
 | `--fallback unspsc\|none` | `unspsc` | **`--kind item` only.** Unmatched items link to a coarse `unspsc_NNNNNNNN` node → ~100% link. `none` leaves them unresolved (curated-only). |
-| `--persist` | off | **WRITE** to the graph: SourceRecords, GenericProducts + RESOLVED_TO, and (item kind) the offers' `:Product` variants. Off = dry run. |
+| `--persist` | off | **WRITE** to the graph: SourceRecords (+ `HAS_RECORD`), GenericProducts + RESOLVED_TO, and (item kind) the offers as `OFFERS {price}` edges to their `Brand × generic` `Product`s. Off = dry run. |
 | `--segment <n>` | none | UNSPSC segment filter (tender/offer/joint/item; ignored for oc). |
 | `--contains <str>` | none | Filter on buyer text (e.g. `foley`). |
 | `--limit <n>` | `200` | Max records. `all` (or `0`) = the whole filtered set. |
 | `--skip <n>` | `0` | Skip N records (stable order; chunked builds). |
 | `--show <n>` | `5` | Print the first N resolved examples (display only). |
 | `--out <prefix>` | `data\resolve` | Output prefix (see §5). |
-| `--progress-every <n>` | `200` | Progress line every N records (durable checkpoint ~every 20k). |
+| `--progress-every <n>` | `200` | Progress line every N records (durable checkpoint ~every 5k when persisting, ~every 20k on a dry run). |
 | `--resume` | off | Continue `<out>.checkpoint.json` (invocation must match kind/segment/contains/persist/limit). |
 | `--brands` | off | Add the brand-lexicon tier after Tier-1 (`categories\brand_lexicon.json`). |
 | `--tier2` | off | Add the trained Tier-2 classifier after Tier-1 (needs `train-tier2`). |
@@ -625,8 +648,9 @@ chilecompra-er resolve --kind item --segment 42 --persist --resume
 | `--seed-watermark` | off | Mark every ingestion run currently present as resolved **without** resolving — the one-time handoff after a full build, so the next `--incremental` does only deltas. |
 
 **`--kind` values:** `item` *(recommended)* — whole `ItemLicitacion` at once
-(buyer line + offer consensus + title → one generic product; offers bound as
-priced variants; UNSPSC fallback). `tender` — one buyer line + its title as
+(buyer line + offer consensus + title → one generic product; offers bound via
+`OFFERS {price}` edges to their `Brand × generic` Products; UNSPSC fallback).
+`tender` — one buyer line + its title as
 context (curated only). `joint` — one offer paired with its buyer line (offer
 wins; disagreement → review). `offer` — offers standalone. `oc` — purchase-order
 items.
@@ -643,7 +667,7 @@ by category       : {'agujas': 138, 'canulas': 85, ... 'unspsc_42151602': 246, .
 curated by tier   : {'tier1': 1503, 'brand': 198, 'tier2': 108}  (which classifier won each curated item — Tier-2's marginal lift)
 price basis mix   : {'unknown': 1730, 'per_pack': 79}
 resolved w/o attrs: 412 (anchored on category roots — honest partials, no product info)
-offers bound      : 75 (as :Product variants under their item's node)
+offers bound      : 75 (as OFFERS edges to branded Products)
 nodes created     : 847
 illegal values    : 452 (dropped, counted — schema dry-run metric)
 written: data\check_resoluciones.csv
@@ -693,6 +717,27 @@ rubric-only share) and the recurring head-noun families in the residue, **by ite
 count** (spend is shown but smeared/unreliable for the residue — see §3 Step 4).
 Writes `data\fallback_ranking.csv`. Needs a prior `resolve --kind item --persist`.
 
+**`ambiguity-report [--top 20] [--min-count 3]`** — the **overlap** counterpart to
+`fallback-report`. Re-classifies the UNSPSC fallback residue and ranks the
+colliding category **sets** — items that fell to fallback because **two Tier-1
+regexes both matched** (ambiguous). Splits **spurious** overlaps (one product two
+families both claim — fixable by adding an `--exclude`) from genuine
+**multi-product bundles** (a line enumerating several products, ≥2 list
+separators — ambiguity is correct, left alone), ranked by spurious/fixable
+volume. Read-only (prints to stdout, writes nothing). Needs a prior
+`resolve --kind item --persist`.
+
+```
+register overlaps: 1,204 ambiguous residue items across 23 colliding category sets
+  spurious (one product, fixable with an exclude): 412
+  multi-product bundles (ambiguity is correct):    792
+
+top 20 colliding category sets (by spurious/fixable volume):
+   spurious  bundle  categories
+        198      14  agujas ∩ suturas
+      e.g. AGUJA DE SUTURA CT-1 1/2 CIRCULO
+```
+
 **`build-brand-lexicon [--only <id>] [--samples 50] [--max-per-category 15]
 [--overwrite] [--dry-run]`** — for each curated category, samples the corpus and
 asks the LLM for brand/trade-name tokens (`relyx`, `panamax`). Each is validated
@@ -741,8 +786,10 @@ Tier-2 is actually judged on.
 ### 4.6 Analyze
 
 **`price-series <category_id> [--csv <path>]`** — per-product price history for a
-**persisted** category, read from the awarded `:Product` offers under each
-generic product. Each row carries the raw `unit_price` **and a
+**persisted** category, read off the `(:Oferta)-[:OFFERS]->(:Product)` edges
+under each generic product (the price lives on the edge; each row also carries the
+offer's `brand` via `(:Product)-[:OF_BRAND]->(:Brand)`, so prices can be sliced by
+brand). Each row carries the raw `unit_price` **and a
 `normalized_unit_price` (per base unit) with its `basis`** — a per-pack quote is
 divided by its stated pack size only when that lands it in the product's price
 cluster, else `basis=unknown` and the point is flagged out (§7). Default
@@ -780,7 +827,7 @@ Never touches the graph (that's `wipe-catalog`).
 | Command | What it does |
 |---|---|
 | `wipe-category <id> --yes` | Delete one category's catalog nodes + their SourceRecords. |
-| `wipe-catalog --yes` | Delete ALL catalog data (Category / GenericProduct / Product / SourceRecord). Source data + migrations untouched. |
+| `wipe-catalog --yes` | Delete ALL catalog data (Category / GenericProduct / Product / Brand / SourceRecord). Source data + migrations untouched. |
 
 ---
 
@@ -809,8 +856,9 @@ Outputs are split by **lifecycle**:
   - `tier2_model.joblib` (the trained classifier) also lives here but `clean`
     leaves it — regenerate it with `train-tier2`.
 - **The populated catalog lives in Neo4j**, written only by `resolve --persist`:
-  `Category` / `GenericProduct` / `Product` / `SourceRecord` nodes and
-  `IN_CATEGORY` / `RESOLVED_TO` / `VARIANT_OF` / `PARENT_OF` edges, plus the
+  `Category` / `GenericProduct` / `Product` / `Brand` / `SourceRecord` nodes and
+  `IN_CATEGORY` / `HAS_RECORD` / `RESOLVED_TO` / `VARIANT_OF` / `OF_BRAND` /
+  `OFFERS {price}` / `PARENT_OF` edges, plus the
   **lineage layer** — `ResolveRun` / `ResolutionEvent` nodes (`HAS_EVENT` /
   `EMITTED` edges) and the `ResolveState` watermark singleton. `register` never
   touches the graph.
@@ -859,6 +907,18 @@ Outputs are split by **lifecycle**:
   values** (same values, same absences), embedded in `identity_key` — the
   uniqueness key that dedups a product across tenders. `PARENT_OF` builds the
   coarse→specific hierarchy by strict-subset subsumption.
+- **Branded products (`Product = Brand × GenericProduct`).** A `:Product` is the
+  deduped `(generic, brand)` pairing — `id = pr_<sha1(generic_id|brand=brand_id)>`
+  (`resolve/assignment.py:branded_product_id`) — so every offer of the same brand
+  for the same generic collapses onto one node, `VARIANT_OF` the generic and
+  `OF_BRAND` a shared `:Brand`. Each bid is an explicit
+  `(:Oferta)-[:OFFERS {price…}]->(:Product)` edge: **the price is on the edge, not
+  the node** (the node is brand-level identity only). The brand for an offer comes
+  from the brand lexicon / offer text (`resolve/brand.py:extract_brand`) during
+  `_bind_offers` (`ingest/runner.py`); offers with no recognizable brand fall to a
+  shared `SIN_MARCA` sentinel, so they collapse onto one `(generic, SIN_MARCA)`
+  Product. Schema (the `Brand.id` constraint + `Product.identity_key` index) is in
+  migration `003_branded_products.cypher`, applied by `migrate`.
 - `RESOLVED_TO` is the fast **current-state** pointer: re-resolving to the **same**
   target refreshes the edge in place (updating `last_confirmed_at`, keeping
   `first_resolved_at` and the version); a **changed** target retires the old edge
@@ -889,6 +949,8 @@ Outputs are split by **lifecycle**:
   cluster, and a per-pack quote is divided by its stated pack size only when that
   lands it in the cluster (positive evidence); offers that fit neither are flagged
   `unknown` and excluded.
-- Known follow-ups: `:Product` cross-offer brand dedup (currently one Product per
-  offer), registering the largest UNSPSC-fallback buckets as curated families, and
-  a gold set for true Tier-2 precision (`tier2-label-sample` → `tier2-eval --gold`).
+- Known follow-ups: **brand canonicalization** (the `Brand` nodes still hold
+  spelling variants — `BIOLIGH`/`BIOLIGHT` — that should collapse), an `OFFERS`
+  edge `date` for offers whose source `fecha` is null, registering the largest
+  UNSPSC-fallback buckets as curated families, and a gold set for true Tier-2
+  precision (`tier2-label-sample` → `tier2-eval --gold`).
