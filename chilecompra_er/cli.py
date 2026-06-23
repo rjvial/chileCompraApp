@@ -1088,6 +1088,44 @@ def cmd_fallback_report(args) -> int:
     return 0
 
 
+def cmd_ambiguity_report(args) -> int:
+    """Rank the register-overlap backlog: which category SETS collide on the
+    fallback residue (ambiguous items), separating spurious overlaps (one
+    product, fixable with an exclude) from genuine multi-product bundles
+    (ambiguity is correct). The counterpart to `fallback-report`: that ranks the
+    UNCOVERED families, this the OVERLAPPING ones. Reads the persisted residue —
+    run a `--kind item --persist` run first."""
+    from .ambiguity import ambiguity_ranking
+    from .fallback import fetch_fallback_items
+    from .graphdb import get_connection
+
+    conn = get_connection()
+    try:
+        rows = fetch_fallback_items(conn)
+    finally:
+        conn.close()
+    if not rows:
+        print("no UNSPSC fallback nodes in the graph — run a "
+              "`resolve --kind item --persist` run first")
+        return 1
+
+    stats = ambiguity_ranking(rows, min_count=args.min_count)
+    total_amb = sum(s.items for s in stats)
+    total_spurious = sum(s.spurious_items for s in stats)
+    print(f"register overlaps: {total_amb:,} ambiguous residue items across "
+          f"{len(stats):,} colliding category sets")
+    print(f"  spurious (one product, fixable with an exclude): {total_spurious:,}")
+    print(f"  multi-product bundles (ambiguity is correct):    "
+          f"{total_amb - total_spurious:,}\n")
+    print(f"top {args.top} colliding category sets (by spurious/fixable volume):")
+    print(f"  {'spurious':>9}{'bundle':>8}  categories")
+    for s in stats[:args.top]:
+        print(f"  {s.spurious_items:>9,}{s.bundle_items:>8,}  {' ∩ '.join(s.pair)}")
+        for ex in s.samples[:2]:
+            print(f"      e.g. {ex}")
+    return 0
+
+
 def cmd_generate_schemas(args) -> int:
     from .graphdb import get_connection
     from .strawman import generate
@@ -1533,6 +1571,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", type=Path, default=Path("data/fallback_ranking.csv"),
                    help="residue family ranking CSV (feeds register --from-fallback)")
     p.set_defaults(func=cmd_fallback_report)
+
+    p = sub.add_parser("ambiguity-report",
+                       help="rank register overlaps (ambiguous residue items by "
+                            "colliding category set; spurious vs bundle)")
+    p.add_argument("--top", type=int, default=20, help="colliding sets to show (default 20)")
+    p.add_argument("--min-count", type=int, default=3,
+                   help="min ambiguous items for a colliding set to be shown (default 3)")
+    p.set_defaults(func=cmd_ambiguity_report)
 
     p = sub.add_parser("generate-schemas", help="LLM strawman drafts from corpus samples")
     p.add_argument("--only", default=None, help="single category_id")
