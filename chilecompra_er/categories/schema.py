@@ -30,6 +30,25 @@ REGISTER_PATH = CATEGORIES_DIR / "register.json"
 IDENTITY = "identity"
 DESCRIPTIVE = "descriptive"
 
+# Negation guard for keyword rules: a material/feature term mentioned in a
+# negated context ("libre de latex", "sin balon", "no esteril") must NOT fire —
+# otherwise a *latex-free* product is wrongly stamped material=latex (measured:
+# ~1,925 such records, an identity error). We look only at the 2 word-tokens
+# immediately before the match: tight enough to skip "sin aguja con latex"
+# (latex is NOT negated there) while catching the dominant "libre de X" / "sin X"
+# adjacency. Lists ("libre de ftalatos y latex") past the window are accepted
+# loss for now.
+_NEGATORS = frozenset({
+    "sin", "no", "libre", "libres", "exento", "exenta", "exentos", "exentas",
+})
+_WORD = re.compile(r"\w+")
+
+
+def _is_negated(text: str, start: int) -> bool:
+    """True if the keyword match at `start` is preceded by a negator within the
+    last two word-tokens."""
+    return any(t.lower() in _NEGATORS for t in _WORD.findall(text[:start])[-2:])
+
 
 @dataclass(frozen=True)
 class Rule:
@@ -39,11 +58,16 @@ class Rule:
     value: str | None = None     # keyword kind
 
     def apply(self, text: str) -> tuple[str, re.Match] | None:
+        if self.kind == "keyword":
+            # Return the first NON-negated occurrence (a negated mention like
+            # "libre de latex" must not fire; a later plain mention still can).
+            for m in self.pattern.finditer(text):
+                if not _is_negated(text, m.start()):
+                    return self.value, m
+            return None
         m = self.pattern.search(text)
         if not m:
             return None
-        if self.kind == "keyword":
-            return self.value, m
         out = self.template or ""
         for i, group in enumerate(m.groups(), start=1):
             out = out.replace("{%d}" % i, group or "")
