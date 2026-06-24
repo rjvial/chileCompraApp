@@ -190,16 +190,17 @@ class InMemoryCatalog:
         self._tick = 0                 # monotonic stamp (deterministic for tests)
 
     def merge_branded_product(self, generic_id: str, brand_id: str,
-                              brand_name: str, descriptive: dict) -> str:
-        """Upsert the Brand node and the (generic × brand) Product pairing
-        (descriptive attrs ON CREATE — first offer wins). Returns the Product id."""
+                              brand_name: str) -> str:
+        """Upsert the Brand node and the (generic × brand) Product pairing. The
+        Product is a PURE pairing — no own attributes — so it is exactly as
+        specific as its GenericProduct; per-offer descriptive values live on the
+        OFFERS edge, not smeared/frozen onto the node. Returns the Product id."""
         self.brands.setdefault(brand_id, {"id": brand_id, "name": brand_name})
         pid = branded_product_id(generic_id, brand_id)
         if pid not in self.products:
             self.products[pid] = {
                 "id": pid, "generic_id": generic_id, "brand_id": brand_id,
-                "identity_key": branded_identity_key(generic_id, brand_id),
-                **descriptive}
+                "identity_key": branded_identity_key(generic_id, brand_id)}
         return pid
 
     def link_offer(self, oferta_id, product_id: str, price_props: dict) -> None:
@@ -451,23 +452,24 @@ class Neo4jCatalog:
             )
 
     def merge_branded_product(self, generic_id: str, brand_id: str,
-                              brand_name: str, descriptive: dict) -> str:
+                              brand_name: str) -> str:
         """Upsert the :Brand node and the deduped :Product = Brand × GenericProduct
-        pairing (descriptive attrs ON CREATE — first offer wins), linked
-        VARIANT_OF the generic and OF_BRAND the brand. Returns the Product id."""
+        pairing, linked VARIANT_OF the generic and OF_BRAND the brand. The Product
+        is a PURE pairing (no own attributes) — exactly as specific as its generic;
+        per-offer descriptives ride the OFFERS edge. Returns the Product id."""
         pid = branded_product_id(generic_id, brand_id)
         self.conn.query(
             """
             MERGE (b:Brand {id: $brand_id}) ON CREATE SET b.name = $brand_name
             MERGE (p:Product {id: $pid})
-              ON CREATE SET p.identity_key = $ik, p.generic_id = $gid, p += $descriptive
+              ON CREATE SET p.identity_key = $ik, p.generic_id = $gid
             WITH p, b
             MATCH (g:GenericProduct {id: $gid})
             MERGE (p)-[:VARIANT_OF]->(g)
             MERGE (p)-[:OF_BRAND]->(b)
             """,
             parameters={"pid": pid, "gid": generic_id, "brand_id": brand_id,
-                        "brand_name": brand_name, "descriptive": descriptive,
+                        "brand_name": brand_name,
                         "ik": branded_identity_key(generic_id, brand_id)},
         )
         return pid
@@ -645,11 +647,11 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
             self._repoint_buf.append({"chid": child_id, "pid": new_parent})
 
     def merge_branded_product(self, generic_id: str, brand_id: str,
-                              brand_name: str, descriptive: dict) -> str:
+                              brand_name: str) -> str:
         pid = branded_product_id(generic_id, brand_id)
         self._branded_buf.append({
             "pid": pid, "gid": generic_id, "brand_id": brand_id,
-            "brand_name": brand_name, "descriptive": descriptive,
+            "brand_name": brand_name,
             "ik": branded_identity_key(generic_id, brand_id)})
         return pid
 
@@ -715,15 +717,14 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
             self._repoint_buf = []
         if self._branded_buf:
             # Dedup by Product id (many offers of one brand share the node); MERGE is
-            # idempotent regardless, but fewer rows = fewer locks. ON CREATE descriptive
-            # = first occurrence wins.
+            # idempotent regardless, but fewer rows = fewer locks.
             rows = list({r["pid"]: r for r in self._branded_buf}.values())
             self.conn.query(
                 """
                 UNWIND $rows AS row
                 MERGE (b:Brand {id: row.brand_id}) ON CREATE SET b.name = row.brand_name
                 MERGE (p:Product {id: row.pid})
-                  ON CREATE SET p.identity_key = row.ik, p.generic_id = row.gid, p += row.descriptive
+                  ON CREATE SET p.identity_key = row.ik, p.generic_id = row.gid
                 WITH p, b, row
                 MATCH (g:GenericProduct {id: row.gid})
                 MERGE (p)-[:VARIANT_OF]->(g)

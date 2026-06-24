@@ -289,3 +289,28 @@ def test_offer_rebinding_is_idempotent():
     catalog.link_offer("o1", "pr_new", {"unit_price": 100.0})
     edges = [o for o in catalog.offers if o["oferta_id"] == "o1"]
     assert len(edges) == 1 and edges[0]["product_id"] == "pr_new"
+
+
+def test_balloon_size_splits_generics_and_product_is_pure_pairing():
+    # capacidad_balon promoted to identity: same gastrostomia/18fr/silicona with
+    # 5cc vs 20cc balloon now resolves to TWO distinct generics (was one).
+    item = SourceItem(
+        ref=SourceRef("mp_item_licitacion", "LB", "1", "SONDA GASTROSTOMIA 18FR SILICONA"),
+        kind="item", raw_text="SONDA GASTROSTOMIA 18FR SILICONA", unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "a", "text": "SONDA GASTROSTOMIA 18FR SILICONA BALON 5CC ESTERIL",
+             "unit_price": 100.0, "awarded": True},
+            {"offer_id": "b", "text": "SONDA GASTROSTOMIA 18FR SILICONA BALON 20CC",
+             "unit_price": 200.0}]},
+    )
+    catalog = InMemoryCatalog()
+    stats, _ = resolve_items(Resolver(catalog), [item], persist=True, item_mode=True)
+    # 5cc and 20cc -> distinct (finer) generics
+    assert len({p["generic_id"] for p in catalog.products.values()}) == 2
+    assert stats.offer_routing["refined"] == 2
+    # Product is a PURE pairing — no descriptive smeared onto the node
+    for p in catalog.products.values():
+        assert set(p) == {"id", "generic_id", "brand_id", "identity_key"}
+    # the offer's own descriptive (esteril) rides ITS OFFERS edge
+    edge_a = next(o for o in catalog.offers if o["oferta_id"] == "a")
+    assert edge_a.get("esteril") == "esteril"

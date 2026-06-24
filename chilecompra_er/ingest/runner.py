@@ -321,7 +321,7 @@ def _bind_offers(resolver, item_ref: SourceRef, offers: list[dict],
         if stats is not None:
             stats.offer_routing[outcome] += 1
         pid = branded_product_id(target_gid, brand_id)
-        catalog.merge_branded_product(target_gid, brand_id, brand_name, descriptive)
+        catalog.merge_branded_product(target_gid, brand_id, brand_name)
         price = {k: v for k, v in {
             "unit_price": o.get("unit_price"), "total_clp": o.get("total_clp"),
             "quantity": o.get("quantity"), "awarded": bool(o.get("awarded")),
@@ -329,4 +329,7 @@ def _bind_offers(resolver, item_ref: SourceRef, offers: list[dict],
             "supplier_text": text,
         }.items() if v is not None}
         price["conforming"] = conforming
+        # This offer's own descriptive attributes ride its OFFERS edge (accurate
+        # per-offer), instead of being smeared/frozen onto the shared Product node.
+        price.update(descriptive)
         catalog.link_offer(oid, pid, price)

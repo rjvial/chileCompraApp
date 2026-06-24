@@ -202,7 +202,7 @@
     },
     {
       "name": "capacidad_balon",
-      "role": "descriptive",
+      "role": "identity",
       "domain": [
         "2ml",
         "3ml",
@@ -229,7 +229,7 @@
           "template": "{1}ml"
         }
       ],
-      "curation_notes": "descriptive: el volumen del balon (foley) se normaliza pero suele expresarse en rangos y no se usa para igualdad.",
+      "curation_notes": "identity: el volumen del balon distingue SKUs no intercambiables (gastrostomia 5cc vs 20cc); promovido de descriptive 2026-06-23. Ofertas sin balon anclan en el nodo mas grueso via PARENT_OF; '5cc o 20cc' toma el primer match.",
       "unit": "ml"
     }
   ]
