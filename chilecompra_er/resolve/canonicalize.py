@@ -79,6 +79,7 @@ def canonicalize(records, store: ProfileStore, *,
                  normalizer: Normalizer | None = None,
                  model: str = "claude-haiku-4-5",
                  batch_size: int = _BATCH_SIZE,
+                 workers: int = 8,
                  dry_run: bool = False,
                  log=lambda _m: None) -> CanonStats:
     """Canonicalize an iterable of records into the store.
@@ -120,13 +121,13 @@ def canonicalize(records, store: ProfileStore, *,
     items = list(todo.items())
     for start in range(0, len(items), batch_size):
         chunk = items[start:start + batch_size]
-        from ..llm import complete_json_batch
+        from ..llm import complete_json_many
         requests = [
             (h, P.build_user_message(raw, unspsc=unspsc_by_hash.get(h)))
             for h, raw in chunk
         ]
-        results = complete_json_batch(requests, P.PROFILE_SCHEMA, system,
-                                      model=model, log=log)
+        results = complete_json_many(requests, P.PROFILE_SCHEMA, system,
+                                     model=model, max_workers=workers, log=log)
         to_store: dict[str, dict] = {}
         for h, _raw in chunk:
             d = results.get(h)

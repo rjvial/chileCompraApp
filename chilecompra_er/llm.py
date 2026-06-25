@@ -17,6 +17,7 @@ Layer-2 extraction (§7), Tier-3 classification (§8), schema strawman (§3.5).
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
@@ -190,6 +191,57 @@ def complete_json_batch(
             out[result.custom_id] = json.loads(text)
     log(f"batch {batch.id} complete: {len(out)}/{len(requests)} parsed")
     return out
+
+
+# CLI --model accepts the short aliases; map the full ids the pipeline uses.
+_CLI_ALIASES = {"claude-haiku-4-5": "haiku", "claude-sonnet-4-6": "sonnet",
+                "claude-opus-4-8": "opus", "claude-opus-4-7": "opus"}
+
+
+def _cli_json_concurrent(requests, schema, system, *, model, max_workers, log):
+    """Run many structured calls through the Claude CLI (Max subscription) with a
+    bounded thread pool — each call is a `claude -p` subprocess. No Batch API and
+    no server-side prompt caching on this path (those are SDK-only), so this is
+    slower and bound by the Max usage limits; keep max_workers modest."""
+    cli_model = _CLI_ALIASES.get(model, model)
+    out: dict[str, dict] = {}
+    done = 0
+
+    def one(item):
+        cid, user = item
+        return cid, complete_json(user, schema, system=system, model=cli_model)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(one, it): it[0] for it in requests}
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                cid, d = fut.result()
+                out[cid] = d
+            except Exception as exc:  # noqa: BLE001 - one bad call shouldn't kill the run
+                log(f"  {futs[fut][:12]}: failed ({type(exc).__name__})")
+            done += 1
+            if done % 200 == 0:
+                log(f"  ...{done}/{len(requests)} ({len(out)} ok)")
+    log(f"CLI concurrent done: {len(out)}/{len(requests)} parsed")
+    return out
+
+
+def complete_json_many(requests, schema, system, *,
+                       model: str = "claude-haiku-4-5", max_workers: int = 8,
+                       poll_seconds: int = 30, log=lambda _m: None) -> dict[str, dict]:
+    """Run a batch of structured calls and return {custom_id: parsed_dict}, using
+    whichever backend is configured:
+
+      - claude_cli (DEFAULT — the Max subscription): concurrent per-call CLI
+        subprocesses. No per-token cost; slower; bounded by Max usage limits.
+      - anthropic_sdk (API credits): the Batch API (−50% + prompt caching).
+
+    `requests` is a list of (custom_id, user_message). The L1/L3 workhorse."""
+    if _backend() == "anthropic_sdk":
+        return complete_json_batch(requests, schema, system, model=model,
+                                   poll_seconds=poll_seconds, log=log)
+    return _cli_json_concurrent(requests, schema, system, model=model,
+                                max_workers=max_workers, log=log)
 
 
 def complete_text(prompt: str, system: str | None = None,

@@ -829,16 +829,19 @@ never become identity (the redesign's answer to the `2.5pct` false-merge class).
 | `--from-file <path>` | none | Read newline-separated descriptions from a file instead of the graph (runnable now). |
 | `--out <path>` | `data\profiles.jsonl` | Profile store — JSONL keyed by text-hash; the L1 cache (skip already-done). |
 | `--model <id>` | `claude-haiku-4-5` | L1 model. |
+| `--workers <n>` | `8` | Concurrent CLI calls on the Max backend. |
 | `--segment <n>` | all | UNSPSC segment scope for the graph read, e.g. `42` (bounds a run). |
 | `--limit <n>` | all | Cap inputs (dev runs). |
-| `--dry-run` | off | **L0 dedup only** — report distinct/cached counts, **no LLM calls, no API credits spent**. |
+| `--dry-run` | off | **L0 dedup only** — report distinct/cached counts, **no LLM calls**. |
 
-> **Status.** The graph read (streamed `descripcion_proveedor` + UNSPSC, deduped
-> by text-hash) and the `--from-file`/`--dry-run`/`--segment` paths are
-> implemented and tested. The only piece not yet exercised is the **bulk LLM
-> batch run** — it uses the **Batch API + prompt caching** and therefore **bills
-> API credits** (the `anthropic_sdk` backend), *not* the Claude Max subscription,
-> so load credits before running it.
+> **LLM backend.** By default the LLM stages run on the **Claude Max subscription**
+> (the `claude_cli` backend) — concurrent `claude -p` calls (`--workers`), **no
+> per-token cost**. There is **no Batch API or server-side prompt caching** on the
+> Max path, so a full-corpus L1 run is *slow* and bounded by Max usage limits;
+> because the profile store is a resumable text-hash cache, run it **incrementally
+> or per `--segment`** rather than all at once. (Set
+> `CHILECOMPRA_LLM_BACKEND=anthropic_sdk` to use the Batch API instead — −50% and
+> caching, but it bills API credits, not Max.)
 
 **`match [--store data\profiles.jsonl] [--attach-partials] [--persist] [--segment <n>] [--show 15]`**
 — **L2**: clusters the L1 profile store into product clusters. The pairwise rule:
@@ -855,8 +858,9 @@ per base unit on the edge); run `migrate` first (migration `005`).
 deterministically — a shared `model_token` whose specs conflict, and a coarse
 partial spec compatible with several divergent children. Each case becomes a
 structured verdict (`same` / `different` / `anchor`, with rationale), persisted by
-case key so re-runs don't re-pay. Uses Sonnet/Opus → **API credits**; `--dry-run`
-reports the case count with no spend.
+case key so re-runs don't re-pay. Runs on **Max** by default (Sonnet/Opus via the
+CLI backend); the residue is small, so this is cheap. `--dry-run` reports the case
+count with no LLM calls.
 
 **`coherence-check [--store data\profiles.jsonl] [--graph] [--tier all] [--out <csv>]`**
 — **L4 auditor**: runs the named invariants in three tiers. **Structural** (e.g.

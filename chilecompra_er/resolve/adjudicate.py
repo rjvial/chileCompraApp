@@ -159,10 +159,10 @@ def adjudicate(questions: list[AdjQuestion], store: VerdictStore, *,
         log("dry run — no LLM calls (no API credits spent)")
         return stats
 
-    from ..llm import complete_json_batch
+    from ..llm import complete_json_many
     requests = [(q.key, q.prompt) for q in todo]
-    results = complete_json_batch(requests, ADJUDICATION_SCHEMA, SYSTEM_PROMPT,
-                                  model=model, log=log)
+    results = complete_json_many(requests, ADJUDICATION_SCHEMA, SYSTEM_PROMPT,
+                                 model=model, log=log)
     to_store: dict[str, dict] = {}
     for q in todo:
         v = results.get(q.key)
