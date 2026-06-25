@@ -1441,6 +1441,40 @@ def cmd_price_series(args) -> int:
     return 0
 
 
+def cmd_price_clusters(args) -> int:
+    """L5 (redesign): price series over L2 product clusters — per-base-unit price
+    over time and across competition (distinct supplier RUTs). Reads the persisted
+    :PRICED_IN edges; scope with --category or a single --signature."""
+    from .graphdb import get_connection
+    from .price.cluster_series import (
+        build_cluster_series,
+        summarize,
+        write_cluster_series_csv,
+    )
+
+    if not args.category and not args.signature:
+        print("pass --category <id> or --signature <sig> to scope the series")
+        return 1
+    conn = get_connection()
+    try:
+        rows = build_cluster_series(conn, category=args.category,
+                                    signature=args.signature)
+    finally:
+        conn.close()
+    if not rows:
+        print("no PRICED_IN observations — is the catalog persisted "
+              "(`match --persist`) for that scope?")
+        return 1
+    out = args.csv or Path(f"data/price_clusters_{args.category or 'sig'}.csv")
+    write_cluster_series_csv(rows, out)
+    clusters = len({r["cluster"] for r in rows})
+    print(f"{len(rows):,} price observations across {clusters:,} clusters -> {out}")
+    print("\nclusters with the deepest price history (competition + time):")
+    for line in summarize(rows, top=args.top):
+        print(line)
+    return 0
+
+
 def cmd_wipe_catalog(args) -> int:
     """Delete ALL catalog data (Category/GenericProduct/Product/Brand).
     The transactional layer (Licitacion/Oferta/ItemLicitacion/...) and the schema
@@ -1862,6 +1896,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--csv", type=Path, default=None,
                    help="output path; default data\\price_series_<category>.csv")
     p.set_defaults(func=cmd_price_series)
+
+    p = sub.add_parser("price-clusters",
+                       help="L5 (redesign): price series over L2 product clusters "
+                            "(per-base-unit, over time + across competition)")
+    p.add_argument("--category", default=None, help="scope to a cluster category")
+    p.add_argument("--signature", default=None, help="scope to one cluster signature")
+    p.add_argument("--csv", type=Path, default=None,
+                   help="output path; default data\\price_clusters_<category>.csv")
+    p.add_argument("--top", type=int, default=10, help="clusters to summarize")
+    p.set_defaults(func=cmd_price_clusters)
 
     p = sub.add_parser("wipe-catalog",
                        help="delete ALL catalog data from the graph (destructive; "

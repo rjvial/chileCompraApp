@@ -858,8 +858,15 @@ unique cluster signatures, S7 strict-subset REFINES) are a contract — any brea
 clusters, M4 model-token conflicts, ambiguous partials; with `--graph`: unplaced
 offers, price-incoherent clusters) are ranked review backlogs. **Health** is a
 trend snapshot (confidence mix, placement). Offline by default; `--graph` adds
-checks over the persisted catalog. L3 adjudication and the Phase-6 cutover from
-the legacy `:GenericProduct` catalog remain.
+checks over the persisted catalog.
+
+**`price-clusters (--category <id> | --signature <sig>) [--csv <path>] [--top 10]`**
+— **L5**: price series over the L2 clusters, read off the `:PRICED_IN` edges
+(normalization already on the edge). A cluster is the substitutable-product
+comparison unit, so the summary answers both goals at once — per-base-unit price
+**over time** and **across competition** (distinct supplier RUTs + the price
+spread among them). Needs a persisted catalog (`match --persist`). L3 adjudication
+and the Phase-6 cutover from the legacy `:GenericProduct` catalog remain.
 
 ---
 
