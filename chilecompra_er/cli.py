@@ -978,6 +978,46 @@ def cmd_pipeline(args) -> int:
     return 0
 
 
+def cmd_canonicalize(args) -> int:
+    """L1 canonicalization (redesign): turn descriptions into persisted canonical
+    profiles via Claude Haiku 4.5 (batch + caching). SCAFFOLD — the graph source
+    fetch lands in the Phase-1 build; --from-file + --dry-run are runnable now."""
+    from .resolve.canonicalize import (
+        ProfileStore,
+        canonicalize,
+        fetch_distinct_descriptions,
+    )
+
+    def log(msg) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
+    if args.from_file:
+        descriptions = [ln for ln in Path(args.from_file).read_text(
+            encoding="utf-8").splitlines() if ln.strip()]
+        if args.limit:
+            descriptions = descriptions[:args.limit]
+        unspsc_by_text = None
+    else:
+        from .graphdb import get_connection
+        conn = get_connection()
+        try:
+            descriptions, unspsc_by_text = fetch_distinct_descriptions(conn)
+        finally:
+            conn.close()
+
+    store = ProfileStore(args.out)
+    stats = canonicalize(descriptions, store, model=args.model,
+                         dry_run=args.dry_run, log=log)
+    print(f"inputs       : {stats.total_inputs:,}")
+    print(f"distinct     : {stats.distinct:,}")
+    print(f"cached (skip): {stats.cached:,}")
+    if not args.dry_run:
+        print(f"canonicalized: {stats.canonicalized:,}")
+        print(f"failed       : {stats.failed:,}")
+        print(f"store        : {args.out} ({len(store):,} profiles)")
+    return 0
+
+
 def cmd_fallback_report(args) -> int:
     """Rank the UNSPSC fallback residue from the graph: which commodity codes
     carry the most un-categorized items, and which head-noun families recur
@@ -1489,6 +1529,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-dir", type=Path, default=Path("data"), dest="data_dir",
                    help="directory for the checkpoint + resolve outputs (default data\\)")
     p.set_defaults(func=cmd_pipeline)
+
+    p = sub.add_parser("canonicalize",
+                       help="L1 (redesign): canonicalize descriptions into profiles "
+                            "via Haiku 4.5 batch (scaffold; --from-file/--dry-run runnable)")
+    p.add_argument("--from-file", default=None,
+                   help="read newline-separated descriptions from a file instead of the graph")
+    p.add_argument("--out", type=Path, default=Path("data/profiles.jsonl"),
+                   help="profile store (JSONL, keyed by text-hash; the L1 cache)")
+    p.add_argument("--model", default="claude-haiku-4-5", help="L1 model (default Haiku 4.5)")
+    p.add_argument("--limit", type=int, default=None, help="cap inputs (dev runs)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="L0 dedup only — report distinct/cached counts, no LLM calls")
+    p.set_defaults(func=cmd_canonicalize)
 
     p = sub.add_parser("fallback-report",
                        help="rank the UNSPSC fallback residue (graph): commodity "

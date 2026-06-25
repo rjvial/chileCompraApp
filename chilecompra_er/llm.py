@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from functools import lru_cache
 
 DEFAULT_MODEL = "claude-opus-4-8"
@@ -126,6 +127,69 @@ def complete_json(prompt: str, schema: dict, system: str | None = None,
         retry = (f"{full_prompt}\n\nTu respuesta anterior no fue JSON valido "
                  f"({exc}). Respondela de nuevo, SOLO el objeto JSON.")
         return _parse_json_text(_cli_complete(retry, system, cli_model))
+
+
+def complete_json_batch(
+    requests: list[tuple[str, str]],
+    schema: dict,
+    system: str,
+    *,
+    model: str = "claude-haiku-4-5",
+    max_tokens: int = 1024,
+    poll_seconds: int = 30,
+    log=lambda _m: None,
+) -> dict[str, dict]:
+    """Run a batch of structured-output calls and return {custom_id: parsed_dict}.
+
+    The L1 canonicalization workhorse (design: L1). One shared, cached `system`
+    prefix (the prompt + the implicit json schema) across every request → ~0.1x
+    on the prefix; the Batch API takes another 50% off all tokens. Defaults to
+    Haiku 4.5 (the decided L1 tier).
+
+    NOTE — this is SDK-only and bills API CREDITS, not the Max subscription: the
+    Batch API has no Claude-CLI equivalent. Load credits / use the anthropic_sdk
+    path before a bulk run. `requests` is a list of (custom_id, user_message);
+    cap each call at the API's 100k-requests / 256MB batch limit (chunk upstream).
+    """
+    from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+    from anthropic.types.messages.batch_create_params import Request
+
+    client = get_client()
+    cached_system = [{
+        "type": "text", "text": system,
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},  # span the batch run
+    }]
+    output_config = {"format": {"type": "json_schema", "schema": schema}}
+
+    batch = client.messages.batches.create(requests=[
+        Request(custom_id=cid, params=MessageCreateParamsNonStreaming(
+            model=model, max_tokens=max_tokens, system=cached_system,
+            output_config=output_config,
+            messages=[{"role": "user", "content": user}],
+        ))
+        for cid, user in requests
+    ])
+    log(f"batch {batch.id} submitted: {len(requests)} requests")
+
+    while True:
+        batch = client.messages.batches.retrieve(batch.id)
+        if batch.processing_status == "ended":
+            break
+        log(f"  batch {batch.id}: {batch.processing_status} "
+            f"(done {batch.request_counts.succeeded + batch.request_counts.errored})")
+        time.sleep(poll_seconds)
+
+    out: dict[str, dict] = {}
+    for result in client.messages.batches.results(batch.id):
+        if result.result.type != "succeeded":
+            log(f"  {result.custom_id}: {result.result.type}")
+            continue
+        msg = result.result.message
+        text = next((b.text for b in msg.content if b.type == "text"), None)
+        if text is not None:
+            out[result.custom_id] = json.loads(text)
+    log(f"batch {batch.id} complete: {len(out)}/{len(requests)} parsed")
+    return out
 
 
 def complete_text(prompt: str, system: str | None = None,
