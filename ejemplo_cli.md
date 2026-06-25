@@ -1,11 +1,11 @@
 # `chilecompra-er` — CLI guide
 
 A complete guide to the `chilecompra-er` command-line tool: what it does, the
-ideas behind it, and how to use every command. No prior knowledge of the
-codebase is assumed.
+ideas behind it, and how to run every command. No prior knowledge of the codebase
+is assumed.
 
-The guide is organized so each topic has **one** home: §2 is the mental model,
-§3 is the workflow in order, §4 is a pure command lookup, and §5–§7 cover files,
+The guide is organized so each topic has **one** home: §2 is the mental model, §3
+is the workflow in order, §4 is a pure command lookup, and §5–§7 cover files,
 conventions, and internals.
 
 ---
@@ -14,39 +14,29 @@ conventions, and internals.
 
 ChileCompra (Mercado Público) is Chile's public-procurement marketplace. Every
 purchase is described in **free text** by whoever wrote the tender — so the same
-physical product ("Foley catheter, 16 Fr, 2-way, latex") appears under hundreds
-of different descriptions, units, and spellings. That makes it impossible to ask
+physical product ("Foley catheter, 16 Fr, 2-way, latex") appears under hundreds of
+different descriptions, units, and spellings. That makes it impossible to ask
 simple questions like *"what does this product usually cost?"* or *"who sells it
 cheapest?"*.
 
-`chilecompra-er` is an **entity-resolution pipeline** that turns those messy
-descriptions into a clean, structured **catalog**: a set of canonical *generic
-products*, each with typed attributes, that real purchase lines and supplier
-offers are linked to. Once the catalog exists, price comparison and analysis
-become straightforward.
+`chilecompra-er` turns those messy descriptions into **canonical product
+clusters** — groups of supplier bids that are the *same substitutable product*,
+independent of brand and packaging — so price comparison **over time** and
+**across competitors** becomes straightforward.
 
 The data already lives in a **Neo4j graph** (the transactional layer: tenders,
-line items, offers, purchase orders). The pipeline reads from that graph and
-*adds* a catalog layer on top — it never modifies the source data. The **CLI is
-the single operational surface**: it profiles the corpus, builds the catalog,
-resolves records into it, and reports prices.
+line items, offers). The pipeline reads from that graph and *adds* a cluster
+catalog on top — it never modifies the source data. The **CLI is the single
+operational surface**.
+
+The heart of the pipeline is one Claude **canonicalization** step: each distinct
+supplier description becomes a structured *profile*, and a deterministic matcher
+clusters those profiles into products. All LLM work runs on the **Claude Max
+subscription** by default (`CHILECOMPRA_LLM_BACKEND`, §4.8).
 
 Invoke it as `chilecompra-er <command>` (installed entry point) or, from inside
 the repo, `.\.venv\Scripts\chilecompra-er.exe <command>`. Examples use PowerShell
 paths (`data\...`).
-
-> **Two pipelines — cutover in progress.** §2–§7 describe the original
-> **register/resolve** flow: a deterministic pipeline that built the
-> `:GenericProduct`/`:Product` catalog (1M+ lines resolved). The newer **resolution
-> redesign** (`canonicalize` → `match` → `adjudicate`, with `coherence-check` and
-> `price-clusters`, **§4.9**) replaces regex extraction with one Claude
-> **canonicalization** step and writes a `:ProductCluster` catalog. It has now been
-> **validated end-to-end at scale** on the Claude Max subscription, and the legacy
-> `:GenericProduct` catalog has been **wiped from the graph** — so the redesign is
-> the forward path and the only product layer (rebuilt per `--segment`). The legacy
-> *code* and §2–§7 remain as reference and are still reproducible from the intact
-> source graph. All LLM work runs on **Max** by default (`CHILECOMPRA_LLM_BACKEND`);
-> the efficient path is the `claude_oauth` backend (see §4.9).
 
 ---
 
@@ -56,147 +46,106 @@ Read this once and the rest of the guide makes sense.
 
 ### Two graphs
 
-The resolver reads a **source graph** (loaded by a separate ingestion pipeline)
-and writes a **catalog** on top of it.
+The pipeline reads a **source graph** (loaded by a separate ingestion pipeline)
+and writes a **cluster catalog** on top of it.
 
 **Source graph (read-only input):**
 
 | Node | What it is | Key text |
 |---|---|---|
 | `Licitacion` | A tender (procurement process) | `titulo` — the tender headline |
-| `ItemLicitacion` | One **line item** a buyer wants | `descripcion_comprador` — the buyer's product text |
+| `ItemLicitacion` | One **line item** a buyer wants | `descripcion_comprador` + a **UNSPSC** code (`codigo_unspsc_producto`) |
 | `Oferta` | A supplier **offer/bid** for a line item | `descripcion_proveedor` — the supplier's text, plus prices |
-| `OrdenCompra` / `ItemOC` | Purchase orders | — |
 
 Relationships: `(Licitacion)-[:TIENE_ITEM]->(ItemLicitacion)` and
-`(Oferta)-[:PARA_ITEM]->(ItemLicitacion)`. Each `ItemLicitacion` carries a
-**UNSPSC code** (`codigo_unspsc_producto`) — the UN's standard product taxonomy
-number (segment 42 = medical/lab supplies).
+`(Oferta)-[:PARA_ITEM]->(ItemLicitacion)`. The UNSPSC code is the UN's standard
+product-taxonomy number (segment 42 = medical/lab supplies); it scopes runs.
 
-**Catalog (written by `resolve`):**
+**Cluster catalog (written by `match --persist`):**
 
-| Node | What it is |
+| Node / edge | What it is |
 |---|---|
-| `Category` | A product **family** (e.g. `sondas_foley`) with a typed attribute **schema** |
-| `GenericProduct` | A canonical product *within* a category, identified by its **identity attribute values** (Foley + 16Fr + latex). Shared across all tenders that describe it. |
-| `Product` | A **brand × the offer's own spec** — `(Foley 16Fr latex 2-way) × B.Braun`. Deduped: **one node per distinct (generic, brand, offer identity)**, shared across every offer of that exact spec+brand. **Self-describing** (carries the offer's full identity values) and price-free — `VARIANT_OF` the item's GenericProduct and `OF_BRAND` a Brand; the price lives on the offer edge below. |
-| `Brand` | A first-class trade-name node (`b.braun`, `3m`), shared across products and categories. |
+| `ProductCluster` | A canonical **substitutable product** — the set of bids that share one identity **signature** (category + sorted identity attributes). The unit of price comparison. |
+| `(Oferta)-[:PRICED_IN {normalized_price, unit_price, rut, date, pack_size}]->(ProductCluster)` | Each bid priced into its cluster — **price per base unit on the edge**. `rut` is the supplier (for competition), `date` for time series. |
+| `(finer)-[:REFINES]->(coarser)` | A more-specific cluster **refines** a coarser one (the partial-spec hierarchy: "Foley 16Fr" refines "Foley"). |
 
 ```
-  SOURCE GRAPH (read-only input)            CATALOG (written by `resolve`)
-  ──────────────────────────────           ───────────────────────────────
+  SOURCE GRAPH (read-only input)              CLUSTER CATALOG (written by `match`)
+  ──────────────────────────────             ─────────────────────────────────────
 
    Licitacion
       │ :TIENE_ITEM
       ▼
-   ItemLicitacion ───────:RESOLVED_TO───────────────────┐
-      ▲  buyer text + UNSPSC                            │
-      │ :PARA_ITEM                                      ▼
-   Oferta ─:OFFERS {price}─▶ Product ──:VARIANT_OF──▶  GenericProduct ──:IN_CATEGORY──▶ Category
-      supplier text          │  Brand × offer-spec      │   ▲   shared node, deduped
-                             │  node — price NOT here   └───┘   by identity attributes
-                       :OF_BRAND                     :PARENT_OF  (coarse → fine hierarchy)
-                             ▼
-                          Brand
-
-  ──▶  stored edge        ┄┄▶  created by the resolver (a node, not a stored edge)
+   ItemLicitacion   (buyer text + UNSPSC)
+      ▲
+      │ :PARA_ITEM
+   Oferta ──:PRICED_IN {price, rut, date}──▶  ProductCluster ──:REFINES──▶ ProductCluster
+    supplier text                                (signature = category        (coarser)
+                                                  + identity attributes)
 ```
 
-Each `ItemLicitacion` links **directly** to its `GenericProduct` via one
-`(:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct)` edge (carrying the evidence;
-overwritten on re-resolve). Each `Oferta` on that item attaches via an
-explicit `(:Oferta)-[:OFFERS {price…}]->(:Product)` edge, where the `Product` is
-the deduped `Brand × the offer's identity` node (`VARIANT_OF` the item's generic,
-`OF_BRAND` the brand). **The price lives on the OFFERS edge, not on the node** —
-so many offers of the same brand AND the same spec collapse onto one shared
-`Product`. Identical generics across different tenders collapse onto one shared
-`GenericProduct` (that is what makes cross-tender price comparison possible), and
-coarser nodes parent finer ones via `:PARENT_OF`.
+A `ProductCluster` is keyed by its **signature**, so identical signatures across
+different tenders collapse onto one shared cluster — that is what makes
+cross-tender, cross-competitor price comparison possible.
 
-### How one line resolves
+### The pipeline (L0 → L5)
 
-`resolve` runs each description through an ordered, **fully deterministic**
-pipeline. These six steps are the **per-text core every `--kind` shares**; the
-item-centric mode below wraps step 2 with its buyer → offer-consensus → title
-priority and then runs steps 3–6 once for the chosen text:
+```
+L0 dedup → L1 canonicalize (Claude) → L2 match → L3 adjudicate → L4 coherence-check → L5 price-clusters
+```
 
-1. **Normalize** — lowercase, strip accents, split digit/letter runs, expand a
-   versioned abbreviation table. ("SONDA FOLEY 2VÍAS" → "sonda foley 2 vias").
-2. **Classify (Tier-1)** — deterministic include/exclude **regexes** per category
-   (from the register). Exactly one matches → *classified*; none → *unclassified*;
-   more than one → *ambiguous*. Nothing is ever guessed.
-3. **Extract attributes** — per the category's **schema**, pull identity +
-   descriptive values (`calibre=16fr`, `material=latex`). The schema is loaded
-   from its frozen file in git (see §3 Step 1); out-of-domain values are dropped
-   and counted (the "illegal values" metric).
-4. **Infer price basis** — a coarse hint from the text: `per_pack` when it carries
-   pack evidence, otherwise `unknown` (reported, never assumed). The real per-offer
-   unit-vs-pack normalization happens later, at `price-series` time, from price
-   **magnitude** — the arithmetic cross-check is signal-less on Mercado Público,
-   where `total = quantity × unit_price` is an accounting identity (§4.6 / §7).
-5. **Find or create the generic product** — the node whose *present identity
-   values* exactly match (same values, same absences). A line with no extracted
-   identity attributes anchors honestly on the **category root** (specificity 0);
-   more-specific nodes hang under coarser ones via `PARENT_OF` (strict-subset
-   hierarchy), so "Foley" parents "Foley 16Fr".
-6. **Persist** — write the direct `(:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct)`
-   edge (carrying the evidence). One edge per item; re-resolving overwrites it
-   (DELETE old, CREATE new). No SourceRecord / lineage / versioning.
+- **L0 — dedup.** Collapse the corpus to **distinct normalized descriptions**,
+  keyed by a stable `text_hash`. The same string is only ever canonicalized once.
+- **L1 — canonicalize** (`canonicalize`, Claude/Haiku). Each distinct description
+  becomes a structured **profile**: `category`, evidence-anchored **identity
+  attributes**, `brand`, `model_token`, `packaging`. Persisted to a text-hash
+  store (the L1 cache and resume state).
+- **L2 — match** (`match`). A deterministic matcher clusters the profiles into
+  `:ProductCluster` nodes and prices offers into them.
+- **L3 — adjudicate** (`adjudicate`, Claude/Sonnet). Claude settles the small
+  residue the matcher couldn't decide deterministically.
+- **L4 — coherence-check** (`coherence-check`). An auditor of named invariants
+  over the profiles + clusters (+ the persisted graph).
+- **L5 — price-clusters** (`price-clusters`). Price series over the clusters —
+  per-base-unit price over time and across competition.
 
-### The item-centric model (`--kind item`) — the recommended way
+### What a profile is (and the rules that make clustering work)
 
-Instead of resolving each record independently, resolve one **`ItemLicitacion`
-at a time**, pooling every signal it has:
+A profile is the structured form of one description. Four ideas make it reliable:
 
-- **Category priority:** buyer line → **offer consensus** (majority vote across
-  the item's offers) → tender title. Offers are the key lever — a buyer line that
-  is just a rubric path ("Equipamiento médico / … / Sondas") gets its real
-  category from the supplier offers that actually name the product.
-- **One generic per item, offer-aware Products under it.** The buyer line gets
-  one `GenericProduct` (its demand), enriched **upward only** by the offers'
-  *minimum common* spec. Each offer then binds to a `Product` carrying that
-  **offer's own** identity, `VARIANT_OF` that generic: equal (`same`), more
-  specific (`refined`), or — when the offer is vaguer than or diverges from the
-  demand — kept but flagged `conforming=false` (`nonconforming`). An offer that is
-  plainly a **different family** resolves to its own generic (`recategorized`).
-  The spec chain stays consistent: `Item = Generic ≤ Product ≤ Oferta`.
-- **UNSPSC fallback** (see below) → coverage approaches **100%**.
+- **Evidence-anchoring (the cardinal rule).** Every identity attribute must quote,
+  in its `evidence`, the exact source substring that *names* it. A bare number can
+  **never** become identity. This closes the false-merge class where a cable
+  ("3x2,5 mm") and calcium ("Ca 2,5 mEq") could both be read as "2.5%".
+- **Constrained vocabulary.** For a known family, the attribute **names** are
+  pinned to that family's registered schema (so the model uses `calibre`, never
+  `gauge`/`length_mm`), and values are **Spanish / snake_case**. Consistent names
+  are what let the matcher actually merge equivalent bids.
+- **`model_token`.** A manufacturer model / reference token (e.g. `mic-g`). Two
+  bids with the **same `model_token` are the same product, even cross-brand** — a
+  sufficient merge signal.
+- **Brand and packaging are not identity.** Brand is a *slice* of a product;
+  packaging is *price normalization* (a per-pack quote ÷ pack size). Neither
+  belongs in the identity signature.
 
-### Curated vs fallback (the metric that matters)
+### How matching decides (the pairwise rule)
 
-Two outcomes for every line — and Phase 2 of the process exists to shift lines
-from the second to the first:
+Profiles are **blocked by category**, then compared pairwise (`same_product`):
 
-- **Curated** = the line matched a real product family you defined (`agujas`,
-  `suturas`, …). It gets typed attributes and a precise generic product. The
-  valuable output.
-- **Fallback** = no family matched, so the line links to a coarse bucket keyed
-  purely by its raw UNSPSC code (`unspsc_42171903`), with a synthetic
-  attribute-less schema (which is why fallback buckets carry no typed
-  attributes). Nothing is force-fit into the wrong family — fallback is honest,
-  visible debt.
+- same `model_token` ⇒ **same** (even across brands);
+- a **conflicting** identity attribute ⇒ a **hard cut** (different);
+- identical signatures ⇒ **merge**;
+- a coarser **partial** spec (a subset of a finer one) ⇒ linked by **`REFINES`**,
+  not merged — unless `--attach-partials` and it has a single finer child.
 
-The headline metric for a `--kind item` run is therefore
-**items linked = curated + UNSPSC-fallback**.
+The result is one cluster per distinct signature, plus the REFINES hierarchy.
 
 ---
 
 ## 3. The process, step by step
 
-The whole pipeline is **two phases over one idea**: first build a catalog and
-link every purchase line to it (Phase 1); then keep shrinking the fallback
-residue (Phase 2).
-
-**The one thing to internalize — where the LLM is (and isn't).** In the current
-pipeline only **three** commands ever call the LLM: `register`,
-`generate-schemas`, and `build-brand-lexicon`. Everything else is deterministic.
-(The §4.9 redesign adds two more LLM commands — `canonicalize` and `adjudicate`.) The LLM is used to
-**invent structure** *once* — propose which families exist, draft their schemas,
-list their brand names — looking only at small *aggregated samples*. It is
-**never** asked to classify individual purchase lines; those are resolved
-mechanically (§2) against the structure the LLM bootstrapped. That is why
-resolving 1M+ lines is fast and cheap, and why "curated" describes a *family*,
-not a hand-touched node.
+Two parts: **build the vocabulary** (once, then occasionally extend it), then
+**run the L0→L5 pipeline** (per `--segment`, repeatable and resumable).
 
 ### Setup (one-time)
 
@@ -206,204 +155,63 @@ python -m venv .venv
 ```
 
 - **Neo4j** — `chilecompra-er instance start` boots the EC2 box; the public IP
-  changes every start, so it rewrites `.mcp.json` automatically. (A bolt
-  *timeout* right after a clean start usually means the `neo4j-sg` security group
-  doesn't allow your current client IP — not that Neo4j is down.)
-- **LLM auth** — the legacy LLM commands (`register` / `generate-schemas` /
-  `build-brand-lexicon`) use `ant auth login` (Max). The redesign's efficient
-  backend (`claude_oauth`, §4.9) needs a `claude setup-token` token in
-  `secrets.env` as `CLAUDE_CODE_OAUTH_TOKEN`. Both bill the **Claude Max
-  subscription** — never API credits / Bedrock.
+  changes every start, so it rewrites `.mcp.json` automatically. (A bolt *timeout*
+  right after a clean start usually means the security group doesn't allow your
+  current client IP — not that Neo4j is down.)
+- **Max auth** — the efficient backend (`claude_oauth`, §4.8) needs a token from
+  `claude setup-token` placed in `secrets.env` as `CLAUDE_CODE_OAUTH_TOKEN`
+  (gitignored). It bills the **Claude Max subscription** — never API credits.
 - `chilecompra-er status` is a register + instance + graph sanity check anytime.
-  Run the tests after register/schema changes: `python -m pytest tests -q`.
+  Run the tests after vocabulary changes: `python -m pytest tests -q`.
 
-### The whole timeline, in the order you actually run it
+### Part 1 — build the vocabulary
 
-This is one continuous sequence. **`register` and `resolve` each run more than
-once** — every occurrence is listed at the point it runs, labeled with its run
-number. The **"Reads"** column is the key to the ordering: each step depends on
-what the step before it produced.
-
-| Step | Command | Reads (its input) | LLM? | Writes | Result |
-|---|---|---|---|---|---|
-| 0 | `instance start` + `migrate` | — | no | graph constraints/indexes | Neo4j up; IP refreshed |
-| 1 | `register` **(1st run)** | the **raw source corpus** | **yes** | `register.json` + schema files (git); `profiling.csv` cache | families defined from scratch |
-| 2 | `resolve … ` *(dry run)* | source items **+ the register** | no | nothing | preview the curated/fallback split |
-| 3 | `resolve … --persist` | source items **+ the register** | no | **the catalog** (graph) | items linked; **fallback residue created** |
-| 4 | `fallback-report` | the **fallback residue** (graph) | no | `fallback_ranking.csv` | residue ranked (UNCOVERED families) |
-| 4b | `ambiguity-report` *(optional)* | the **fallback residue** (graph) | no | stdout | register OVERLAPS ranked (the fixable-with-an-exclude backlog) |
-| 5 | `register --from-fallback` **(2nd run)** | the **fallback residue** (graph) | **yes** | `register.json` + schema files (git); `fallback_ranking.csv` | **more** families defined |
-| 5a | `train-tier2` *(optional)* | curated resolutions (graph) | no *(scikit-learn)* | `tier2_model.joblib` | wording classifier |
-| 5b | `build-brand-lexicon` *(optional)* | corpus samples per family | **yes** | `brand_lexicon.json` | brand tokens |
-| 6 | `resolve … --tier2 --brands --persist` **(2nd run)** | source items **+ the now-richer register** (+ model + lexicon) | no | **the catalog** (re-linked) | **lower fallback %** |
-| ↺ | **repeat steps 4 → 6** | the new, **smaller** residue | — | — | until the fallback share stops shrinking |
-| 7 | `price-series` / `status` | the catalog (graph) | no | CSV / stdout | prices & counts |
-
-> **Why `register` appears twice (Steps 1 and 5).** It is the *same command*, but
-> on **two different inputs**. Run 1 reads the **raw corpus** and invents families
-> from scratch — it must come *before* any `resolve`, because you can't resolve
-> into families that don't exist yet. Run 2 (`--from-fallback`) reads the
-> **leftovers of a `resolve`** (the fallback residue) and curates *those* — so it
-> must come *after* a `resolve`. Same idea for `resolve`: it runs at Steps 2, 3,
-> and 6, each time against whatever the latest `register` defined. That back-and-
-> forth **is** the loop.
-
-Below, the same steps with detail, grouped into the two phases.
-
-#### Phase 1 — build the catalog (Steps 0–3)
-
-**Step 0 — bring up infra.** `instance start` boots Neo4j (rewrites `.mcp.json`);
-`migrate` applies the uniqueness constraints + indexes the resolver relies on.
-Idempotent.
-
-**Step 1 — `register` (1st run): invent the families from the raw corpus.** The
-only "thinking" step. Profiles the corpus by **head-noun × spend** to rank
-candidate families, sends the top of that ranking to the LLM in batches asking
-*"is this a real, coherent product family?"*, **mechanically validates** every
-proposal (regexes compile; the family's own example classifies to it; no existing
-family's example becomes ambiguous), then writes survivors to `register.json`
-**and drafts a versioned attribute schema for each** under
-`chilecompra_er\categories\schemas\<id>.json`. **Output:** the catalog
-*definition* (family list + schema files), version-controlled in git. Nothing is
-written to the graph yet; no purchase line has been classified.
-
-**Step 2 — `resolve` (dry run): look before you write.** Run a sample
-(`--limit 5000`, no `--persist`). The resolver pools each item's signals and runs
-the §2 pipeline against the register from Step 1, reporting the
-**curated-vs-fallback split** without touching the graph. Your quality gate: if
-too much lands on fallback, fix schemas / add families and re-run.
-
-**Step 3 — `resolve --persist`: build the catalog.** Same pipeline, now
-**writing** (resumable; checkpointed). MERGEs the canonical `GenericProduct` per
-item, links it via a direct `(:ItemLicitacion)-[:RESOLVED_TO]->` edge, and binds
-**every offer via an `OFFERS {price}` edge to its `Brand × offer-spec`
-`Product`** (the price on the edge). Unmatched
-items link to their `unspsc_<code>` bucket → **coverage ≈ 100%**. The items that
-landed on fallback are the **residue** Phase 2 attacks.
-
-#### Phase 2 — shrink the fallback residue (Steps 4–6, then loop)
-
-**Step 4 — `fallback-report`.** Reads the `unspsc_*` fallback nodes, splits
-rubric-only boilerplate from real products, and surfaces the recurring head-noun
-**families** in the tail, ranked by **item count**. (Residue *spend* is shown but
-not used to rank: `fetch_fallback_items` can only attribute a bucket's spend
-uniformly across its items, so it's a smeared average that floats junk to the top —
-item count is the honest priority signal.) **Output:** `data\fallback_ranking.csv`
-— a prioritized "curate these next" list.
-
-**Step 4b — `ambiguity-report` (optional): the overlap counterpart.** Where
-`fallback-report` ranks the **uncovered** families, `ambiguity-report` ranks the
-**overlapping** ones. Some residue items fell to fallback not because *no*
-category matched but because **two Tier-1 regexes both did** (ambiguous → dropped
-to the bucket silently). It re-classifies the residue, keeps the ambiguous items,
-and ranks the colliding category **sets** — splitting **spurious** overlaps (one
-product two regexes both claim, e.g. "aguja de sutura" → `agujas ∩ suturas`,
-fixable by adding an `--exclude`) from genuine **multi-product bundles**
-("mascarillas, canulas, gasas", where ambiguity is correct and is left alone).
-The spurious count is a trackable register-hygiene backlog; fix the top overlaps
-with `add-category`/register excludes, then a full re-resolve clears them.
-
-**Step 5 — `register --from-fallback` (2nd run): curate the tail.** The *same*
-`register` machinery as Step 1, but candidates come from the **graph residue**
-instead of the whole-corpus profile (and are ranked by **item count**, not spend —
-see Step 4) — so the LLM vets exactly the highest-volume families that failed to
-resolve. It re-queries the fallback nodes from the graph itself (and rewrites
-`fallback_ranking.csv`), so Step 4 is a useful preview but not a strict
-prerequisite. Adds **more** families + schemas to git.
-
-**Steps 5a / 5b — close the phrasing & brand gaps (optional).** Some residue
-isn't a *missing family* — it's a known family phrased so regex misses it, or a
-bare **brand name**:
-- **`train-tier2`** fits a TF-IDF + logistic-regression model on the curated
-  resolutions already in the graph; it generalizes to unseen wording and
-  *abstains* when unsure, so it only ever *adds* coverage. (scikit-learn, no LLM.)
-- **`build-brand-lexicon`** asks the LLM for per-family trade-name tokens, then
-  validates and stores them. (Ships **empty** — until populated, `--brands` is a
-  no-op.)
-
-**Step 6 — `resolve --tier2 --brands --persist` (2nd run): re-link.** Same
-`resolve` as Step 3, but now against the **enriched** register, with the
-classifier as a cascade — **Tier-1 regex → brand lexicon → Tier-2 model** (each
-lower tier only promotes an *otherwise-unresolved* item; a Tier-1 hit always
-wins). With the new families from Step 5 plus the tiers, **fewer items fall to
-fallback**. Run it as a dry run to measure the reduction, then add `--persist`.
-
-**↺ Loop.** Go back to Step 4 on the new, smaller residue and repeat 4 → 6 until
-the fallback share stops shrinking. **Step 7** (`price-series` / `status`, §4)
-analyzes the result whenever you want.
-
-### The commands, in order
+The pipeline canonicalizes descriptions into **product families** (categories),
+each with an **attribute schema** that defines its identity attribute *names*.
+That family list + the per-family attribute names **are** the vocabulary L1 fills
+in. They live version-controlled under `chilecompra_er\categories\`
+(`register.json` + `schemas\<id>.json`).
 
 ```powershell
-# Phase 1 — build the catalog
-chilecompra-er instance start                  # 0. infra up (rewrites .mcp.json)
-chilecompra-er migrate                          #    constraints + indexes
-chilecompra-er register --segment 42            # 1. register (1st run): families from the raw corpus
-chilecompra-er resolve --kind item --segment 42 --limit 5000 --show 10 --out data\check   # 2. resolve (dry run)
-chilecompra-er resolve --kind item --segment 42 --persist                                 # 3. resolve (persist): WRITE catalog
-
-# Phase 2 — shrink the fallback residue (repeat this block)
-chilecompra-er fallback-report --top 20         # 4. rank the residue (uncovered families)
-chilecompra-er ambiguity-report --top 20        # 4b. (opt) rank register OVERLAPS (spurious vs bundle)
-chilecompra-er register --from-fallback         # 5. register (2nd run): curate the residue
-chilecompra-er train-tier2 --eval               # 5a. (opt) statistical tier
-chilecompra-er build-brand-lexicon              # 5b. (opt) LLM: brand tokens
-chilecompra-er resolve --kind item --segment 42 --tier2 --brands --persist   # 6. resolve (2nd run): re-link
-#                                               ↺  repeat 4 → 6 until fallback stops shrinking
-
-# Analyze, then shut down (graph data persists)
-chilecompra-er price-series sondas_foley        # 7.
-chilecompra-er status
-chilecompra-er clean                            #    drop local scratch files
-chilecompra-er instance stop
+chilecompra-er register --segment 42        # profile the corpus, vet families via LLM, draft schemas
+chilecompra-er add-category mascarillas --include "\bmascarilla\w*" --example "MASCARILLA QUIRURGICA 3 PLIEGUES"
+chilecompra-er generate-schemas --only mascarillas    # draft / refine one family's attribute schema
 ```
 
-```
-                 ┌──────────────────── the loop ────────────────────┐
-                 ▼                                                   │
- register ─→ resolve --persist ─→ fallback-report ─→ register --from-fallback
- (1st run:      (3: links items,    (4: ranks the      (5, 2nd run: curates
-  families       builds catalog,     fallback           the residue) │
-  from raw       creates residue)    residue)                        │
-  corpus)                                                            ▼
-     ▲                                          resolve --tier2 --brands --persist
-     │                                          (6, 2nd run: re-links against the
-  (Step 1, once)                                 richer register → lower fallback)
-                                                                     │
-                                          then ─→ price-series  ◀─────┘
-```
+You mostly do this once; thereafter you only **extend** it (a new family, a richer
+schema). **Editing a schema's attribute names changes the L1 vocabulary**, so
+re-canonicalize that family afterward (§3 Part 2, and `wipe-clusters` first).
 
-### Run the whole sequence as one resumable command
-
-Everything above is automated by a single orchestrator. It runs Steps 0, 1, and
-3–6 in order (one full Phase-2 pass) — going straight to the persisting build and
-**skipping the Step 2 dry-run preview**, so use the manual sequence above first
-when you want that quality gate:
+### Part 2 — run the pipeline
 
 ```powershell
-chilecompra-er pipeline --segment 42      # run the whole build end-to-end
-chilecompra-er pipeline --resume          # continue after an interruption
+chilecompra-er instance start
+chilecompra-er migrate                                       # graph constraints + indexes (incl. migration 005)
+chilecompra-er canonicalize --segment 42 --limit 1000        # L1: descriptions → profiles (resumable, --workers 2)
+chilecompra-er match --persist --segment 42 --limit 1000     # L2: write clusters + PRICED_IN (resumable)
+chilecompra-er coherence-check --graph                       # L4: structural gate + review backlogs
+chilecompra-er price-clusters --category sondas              # L5: prices over time + competition
+chilecompra-er adjudicate                                    # L3 (optional): settle the L2 residue
+chilecompra-er instance stop                                 #     graph data persists
 ```
 
-It runs them as ordered **stages**, recording each completed stage in
-`data\pipeline.checkpoint.json`. If a stage is interrupted — a kill, a crash, a
-dropped Neo4j connection — re-run with `--resume`: completed stages are skipped
-and the run picks up at the interrupted one. The four long LLM/resolve stages —
-`register`, `register-fallback`, `build`, and `final-resolve` — *also* resume
-**within** themselves (their own per-run checkpoints): a kill mid-`build`
-continues from the exact record, and a kill mid-`register` continues from the
-next un-vetted batch — no LLM work re-paid, no rows duplicated. After it
-completes, keep iterating manually
-with the ↺ loop (Steps 4 → 6) until the fallback share stops shrinking. See §4.2
-for the nine stages and every flag.
+- Work **per `--segment`** and validate a small `--limit` slice before scaling up.
+- Keep `--workers` low (default 2) so a long run doesn't burst past the Max usage
+  limit; drop `--limit` to run the full segment.
+- Every step is safe to **Ctrl-C and re-run** — see resumability below.
 
-### Keeping the catalog current
+### Re-running & keeping current
 
-The steps above are a **full** build. To fold in new tenders/items/offers, re-run
-`resolve --kind item --persist` — each `(:ItemLicitacion)-[:RESOLVED_TO]->`
-edge is overwritten in place, so a re-resolve simply refreshes every item to its
-current generic. (There is no incremental/watermark mode; the model is kept
-deliberately simple — one direct edge per item, no lineage layer.)
+- **More data** (new tenders/offers): re-run `canonicalize` then `match --persist`
+  for the segment. The text-hash store skips everything already canonicalized; all
+  graph writes are `MERGE` (idempotent).
+- **After a vocabulary / prompt change** (you edited a schema or the L1 prompt):
+  the cluster signatures change, so first **`wipe-clusters --yes`** (clears the
+  `:ProductCluster` namespace + the `match` checkpoints), then re-canonicalize the
+  affected families and re-match.
+- **If you hit the Max usage limit** mid-run, L1 stops cleanly ("re-run to
+  resume") instead of churning — just re-run the same command after your usage
+  window resets (§4.8).
 
 ---
 
@@ -414,599 +222,222 @@ marks optional.
 
 ### 4.1 Infrastructure
 
-**`status`** — register version, per-category schema status, Neo4j state, graph
-node counts. Read-only; never crashes on a flaky graph.
-
-```
-register version : 1.78.0
-category                  status      schema          identity attrs
-sondas_foley              launched    1.2.0           calibre, material, vias
-agujas                    candidate   1.0.0           calibre, tipo
-neo4j instance   : i-06c721c54d821f3a8 running @ 52.91.37.106
-graph            : 119 categories, 6059 generic products, 99386 resolved items
-```
+**`status`** — register version, per-category schema status, Neo4j state, and
+graph node counts. Read-only; never crashes on a flaky graph.
 
 **`instance start|stop|status`** — Neo4j EC2 lifecycle. `start` boots the box and
-prints the new bolt IP (changes each start, rewrites `.mcp.json`); `stop` shuts
-it down (graph data persists); `status` prints state.
+prints the new bolt IP (changes each start, rewrites `.mcp.json`); `stop` shuts it
+down (graph data persists); `status` prints state.
 
 **`migrate [--dry-run]`** — apply graph migrations (uniqueness constraints +
-indexes) under `chilecompra_er/migrations/*.cypher`. Idempotent. `--dry-run`
-prints pending Cypher without running it.
+indexes) under `chilecompra_er/migrations/*.cypher`, including `005` (the
+`ProductCluster` id + signature constraints). Idempotent. `--dry-run` prints
+pending Cypher without running it.
 
-### 4.2 `pipeline` — run the whole build end-to-end (resumable)
+### 4.2 Vocabulary (`register` / `add-category` / `generate-schemas`)
 
-Orchestrates the entire §3 sequence as one ordered, checkpointed command. The
-nine stages run in this order — the **bold token** is the exact name you pass to
-`--from-step` / `--only`:
+These define the **families + attribute schemas** that L1 canonicalizes into.
 
-1. **`instance`** — boot Neo4j (`instance start`)
-2. **`migrate`** — apply constraints + indexes
-3. **`register`** — invent families from the raw corpus (1st `register` run)
-4. **`build`** — `resolve --kind item --persist` (the catalog build)
-5. **`fallback-report`** — rank the fallback residue
-6. **`register-fallback`** — `register --from-fallback` (curate the residue)
-7. **`train-tier2`** — train the Tier-2 classifier (**skipped if
-   `tier2_model.joblib` already exists** — retrain out-of-band with `train-tier2`)
-8. **`build-brand-lexicon`** — LLM brand tokens
-9. **`final-resolve`** — `resolve --kind item --persist --tier2 --brands` (re-link)
+**`register [--segment 42] [--count <n>] [--preview|--apply] [--proposals <path>] [--resume]`**
+— profiles the corpus by head-noun, walks the ranking in LLM **vet batches**
+(*"is this a real, coherent product family?"*), mechanically validates each
+proposal, and writes survivors to `register.json` **plus a drafted attribute
+schema** per family. Resumable (`--resume`); `--preview` stops at
+`data\proposals.json` for review and `--apply` registers an edited proposals file.
+It **builds over** the existing register — already-covered families are skipped, so
+a re-run only extends coverage.
 
-Each stage reuses the corresponding command; completed stages are recorded in
-`data\pipeline.checkpoint.json`.
-
-```powershell
-chilecompra-er pipeline --segment 42                 # fresh full run (one Phase-2 pass)
-chilecompra-er pipeline --resume                     # continue at the interrupted stage
-chilecompra-er pipeline --restart                    # discard the checkpoint and start over
-chilecompra-er pipeline --from-step register-fallback  # resume at a CHOSEN stage + run the rest
-chilecompra-er pipeline --only train-tier2           # run a single stage in isolation
-chilecompra-er pipeline --status                     # snapshot: plan + per-step progress % + rate + ETA
-chilecompra-er pipeline --watch                      # live monitor (refreshes until done / Ctrl-C)
-```
-
-**Resuming from any stage — the two ways.**
-- **Automatic** (`--resume`): re-run after any interruption (a kill, a crash, a
-  dropped Neo4j connection) and the pipeline skips every stage already marked
-  done in the checkpoint and picks up at the one that was interrupted. This is
-  the normal recovery path — you don't need to know which stage stopped.
-- **Manual** (`--from-step <stage>`): force the run to begin at *any* stage you
-  name (from the list above) and continue through the end, **ignoring** the done
-  list. Use it to redo a stage you've changed your mind about, or to step over a
-  stage that keeps failing for a reason you've decided to accept. `--only
-  <stage>` runs exactly one stage and stops.
-
-Two layers of resume compose: **stage level** (the above) and **within a stage**
-— the `register`, `register-fallback` (§4.3), `build`, and `final-resolve`
-(§4.4) stages each continue from their *own* per-run checkpoint. So a kill in the
-middle of the multi-hour `build` resumes from the exact record, and a kill partway
-through the long `register` vet scan resumes at the next un-vetted batch — not the
-top of the stage. A stage's non-zero exit halts the run with the prior stages
-still marked done — fix the cause and `--resume`, or `--from-step <next-stage>`
-to skip past it.
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--resume` | off | Continue `data\pipeline.checkpoint.json`, skipping completed stages. |
-| `--restart` | off | Discard the pipeline checkpoint + the resolve sub-checkpoints + every step's progress timeline; start from the first stage. |
-| `--from-step <stage>` | none | Force-run this stage and everything after it (ignores the done list). |
-| `--only <stage>` | none | Run just this one stage. |
-| `--status` | off | Print the plan (stages done/pending) + **per-step progress** — `N/total`, live %, **rate and ETA** for every step that loops (the resolve stages, the `register`/`register-fallback` vet scans, the brand-lexicon scan); `[done]`/`[running…]` for the rest. Read-only: exits without running anything (and without writing the checkpoint). |
-| `--watch` | off | Like `--status` but **refresh on an interval** until the run completes or you Ctrl-C — a live monitor you can open in a second terminal alongside the run. |
-| `--interval <n>` | `15` | `--watch` refresh seconds. |
-| `--segment <n>` | `42` | UNSPSC segment scope for `register` + `resolve`. |
-| `--all-segments` | off | Run over the WHOLE marketplace (overrides `--segment`). |
-| `--limit <n>` | all | Cap records per resolve stage; `all`/`0` = no cap. |
-| `--progress-every <n>` | `200` | Resolve progress/checkpoint cadence. |
-| `--data-dir <path>` | `data\` | Directory for the checkpoint + resolve outputs. |
-
-> A fresh `pipeline` run **refuses to start if a checkpoint already exists** (so
-> an in-progress build is never silently clobbered) — use `--resume` or
-> `--restart`. The build and final resolve write to the `pipeline_build` /
-> `pipeline_final` `--out` prefixes (distinct so their checkpoints don't collide).
-> Resuming with a different `--segment`/`--limit` than the checkpoint is refused.
-
-> **Precomputed loop size.** A resolve stage iterates a *deterministic* number of
-> records — the count of buyer lines in scope (resolution only adds catalog
-> nodes, it never adds source items, so the count can't drift mid-run). The
-> pipeline counts it **once, right after `migrate`** (the earliest point the data
-> exists) and saves it to `pipeline.checkpoint.json` under `loop_sizes`. From then
-> on `build`/`final-resolve` report `processed N / TOTAL (pct%)` instead of a bare
-> count, the resumed-run banner shows how far in you are, and `pipeline --status`
-> reads it back any time. The same number is stored in each resolve stage's own
-> `*.checkpoint.json` (`total`), so resume restores the denominator without
-> re-counting. (A checkpoint from an older build with no `loop_sizes` is
-> backfilled automatically on the next `--resume`; `--status` is read-only and
-> simply shows no % for a resolve stage until then.)
-
-> **Monitoring the evolution.** Every step that loops over records or groups
-> appends a point to a persistent timeline — `<step>.progress.jsonl` — each
-> progress tick. The resolve stages write `pipeline_build` /
-> `pipeline_final.progress.jsonl` with the full `{ts, processed, total, resolved,
-> unresolved, created}`; the `register` / `register-fallback` vet scans and the
-> `build-brand-lexicon` scan write `{ts, processed, total}`. A step clears its own
-> timeline when it starts fresh, so two runs never blur together, yet it's
-> append-only *within* a run, so the curve **spans kills and resumes**.
-> `pipeline --status` reads every step's timeline the same way — `N/total (pct%)`,
-> the recent **rate (per min)**, an **ETA** (extrapolated from the remaining loop)
-> and the **elapsed** processing time — while the steps with no record loop
-> (`instance`, `migrate`, `fallback-report`, `train-tier2`) show plain
-> `[done]` / `[running…]` / pending. `pipeline --watch [--interval <s>]` reprints
-> the whole view on a timer as a live monitor you can leave running in another
-> terminal. Rate and elapsed are summed over *active* intervals only — a resume's
-> rewind and a kill's idle gap are excluded — so neither is distorted by a pause,
-> wherever it falls. Both read straight off disk: they never touch or slow the
-> running job (a status check is read-only — it doesn't even write the checkpoint),
-> and work from any terminal at any time, even after the run was killed.
-
-### 4.3 `register` — build the category register
-
-Profiles by head-noun × spend, walks the ranking in LLM **vet batches**,
-validates every proposed regex mechanically, writes survivors to a proposals
-file, and **registers them + drafts a schema for each**. No count cap by default
-(proposes every viable family down to `--min-spend`). Progress streams to stderr.
-
-```powershell
-chilecompra-er register --segment 42                 # profile → vet → register + schemas
-chilecompra-er register --segment 42 --count 10      # ...or cap at the top 10
-chilecompra-er register --segment 42 --preview       # stop at data\proposals.json for review
-chilecompra-er register --apply                      # ...then commit the edited file
-chilecompra-er register --from-fallback --preview    # candidates from the graph residue (§3 Phase 2)
-chilecompra-er register --segment 42 --resume        # continue an interrupted vet scan
-```
-
-`--preview` and `--apply` are mutually exclusive opt-outs that split the run at a
-human-review gap: `--preview` = profile + vet only (write proposals, register
-nothing); `--apply` = register an existing/edited proposals file without
-re-profiling.
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--preview` | off | Profile + vet only: write `--proposals` and stop. |
-| `--apply` | off | Register an existing/edited `--proposals` file without re-profiling. |
-| `--proposals <path>` | `data\proposals.json` | Proposals file — written by every run, read back by `--apply`. |
-| `--ranking <path>` | `data\profiling.csv` | Cached spend ranking. Reused if present (skips the slow scan); rebuilt otherwise. |
-| `--reprofile` | off | Force a fresh corpus profile, overwriting `--ranking`. |
-| `--from-fallback` | off | Rank candidates from the UNSPSC fallback residue in the graph instead of the whole-corpus profile; needs a prior `--persist` item run. |
-| `--segment <n>` | `42` | UNSPSC segment scope when profiling (42 = medical supplies). |
-| `--all-segments` | off | Profile the WHOLE marketplace (overrides `--segment`). |
-| `--limit <n>` | all | Profile only the first N tender items — fast dev runs. |
-| `--count <n>` | none | Stop after N viable categories. Default: no limit (`0`/negative also = no limit). |
-| `--min-samples <n>` | `15` | Minimum distinct corpus descriptions a candidate must have. |
-| `--min-spend <f>` | `0.0005` | Share floor; the scan stops below it (0.05%). With no `--count`, this is the real stop — lower it to reach deeper into the tail. (Spend-share for the corpus profile; **record-share** for `--from-fallback`, where the ranking is by item count.) |
-| `--revisit` | off | Re-evaluate tokens previously cached as junk (`categories\vet_rejections.json`). |
-| `--resume` | off | Continue an interrupted vet scan from `data\register.checkpoint.json` — restores the families already chosen and skips the groups already vetted (`--from-fallback` uses `register_fallback.checkpoint.json`). |
-
-> The first run does the slow full-corpus scan and caches the ranking. Re-running
-> to tune `--count`/`--min-spend` reuses the cache; add `--reprofile` only when
-> the underlying data changed.
-
-> **Resumable vet scan.** A full-segment scan vets thousands of head-noun groups
-> through the LLM over many minutes. The chosen families + scan cursor are
-> checkpointed after **every batch**, so a kill loses at most the in-flight
-> batch: re-run with `--resume` to continue where it stopped (the `pipeline`
-> `register` / `register-fallback` stages do this automatically). The checkpoint
-> is cleared once the proposals are written, and a `--resume` whose scope
-> (`--segment`/`--count`/floors) differs from the checkpoint starts fresh rather
-> than splicing two scans.
-
-> **Builds over the existing register — never regenerates it.** Every `register`
-> run (and so every `pipeline` run, fresh or resumed) reads the current register
-> and schemas first and only adds what's new: the vet scan **skips families
-> already covered** by a registered category's Tier-1 regex, `apply` **skips a
-> proposed id that's already registered** (no duplicate, no version bump), and
-> schema drafting **skips any schema already on disk**. So the 100+ categories and
-> schemas you've already built are never re-vetted, re-added, or re-drafted — a
-> re-run just extends coverage. Use `--revisit` to re-evaluate cached junk tokens,
-> or `generate-schemas --overwrite` to deliberately redraft a schema.
-
-**`add-category <id> --include <regex> [...]`** — manually append one known family
-(skips the LLM vet). `--include` is required & repeatable (Tier-1 inclusion regex
-over normalized text); `--exclude` (repeatable) resolves sibling overlaps;
-`--name`, `--corpus` (raw-text sampling regex for schema generation), `--example`
-(golden test fixture) are optional. Draft its schema afterward with
+**`add-category <id> --include <regex> [--exclude <regex>] [--name <txt>] [--example <txt>]`**
+— manually append one family (skips the LLM vet). `--include` is the required,
+repeatable head-noun regex over normalized text. Draft its schema afterward with
 `generate-schemas --only <id>`.
 
-```powershell
-chilecompra-er add-category mascarillas --include "\bmascarilla\w*" --example "MASCARILLA QUIRURGICA 3 PLIEGUES"
-```
-
 **`generate-schemas [--only <id>] [--samples 50] [--overwrite]`** — LLM strawman
-attribute schemas from corpus samples. `register` already drafts one per new
-category. **A schema that already exists on disk is skipped** (no LLM call, no
-clobbered hand-edits): re-running only fills in the *missing* ones. `--only`
-limits to one category; `--samples` is how many descriptions to feed the LLM;
-`--overwrite` forces a fresh redraft of schemas that already exist (or just
-delete the schema file). This is what lets a `pipeline`/`register` re-run **build
-over** an established register instead of regenerating it.
+attribute schema from corpus samples. A schema already on disk is **skipped** (no
+LLM call, no clobbered hand-edits); `--overwrite` forces a redraft. The schema's
+identity attribute **names** become that family's L1 vocabulary.
 
-### 4.4 `resolve` — fill the catalog
+> Editing a schema's attribute names is a vocabulary change → `wipe-clusters` and
+> re-canonicalize that family to apply it.
 
-Runs source records through the §2 pipeline. **Dry run unless `--persist`.** The
-*unit of work* is set by `--kind`.
+### 4.3 `canonicalize` — L1 (descriptions → profiles)
 
 ```powershell
-# item-centric dry run (recommended)
-chilecompra-er resolve --kind item --segment 42 --limit 5000 --show 10 --out data\check
-# persist (resumable after a kill)
-chilecompra-er resolve --kind item --segment 42 --persist
-chilecompra-er resolve --kind item --segment 42 --persist --resume
+chilecompra-er canonicalize --segment 42 --limit 1000        # from the graph (bounded slice)
+chilecompra-er canonicalize --from-file data\descs.txt       # from a newline-separated file
 ```
+
+Turns each distinct `descripcion_proveedor` into a structured **profile**
+(category + **evidence-anchored** identity attributes + brand + model token +
+packaging), persisted by `text_hash` so each distinct string is canonicalized
+**once** (a cached pure function). The cardinal rule: every identity attribute must
+quote the substring that anchors it — a bare number can never become identity. For
+a known family, the attribute **names** are constrained to that family's schema
+vocabulary, and values are Spanish/snake_case — which is what lets L2 merge
+equivalent bids.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--kind tender\|offer\|oc\|joint\|item` | `tender` | Unit / source of records — see below. |
-| `--fallback unspsc\|none` | `unspsc` | **`--kind item` only.** Unmatched items link to a coarse `unspsc_NNNNNNNN` node → ~100% link. `none` leaves them unresolved (curated-only). |
-| `--persist` | off | **WRITE** to the graph: GenericProducts, the direct `(:ItemLicitacion)-[:RESOLVED_TO]->` edges, and (item kind) the offers as `OFFERS {price}` edges to their `Brand × offer-spec` `Product`s. Off = dry run. |
-| `--segment <n>` | none | UNSPSC segment filter (tender/offer/joint/item; ignored for oc). |
-| `--contains <str>` | none | Filter on buyer text (e.g. `foley`). |
-| `--limit <n>` | `200` | Max records. `all` (or `0`) = the whole filtered set. |
-| `--skip <n>` | `0` | Skip N records (stable order; chunked builds). |
-| `--show <n>` | `5` | Print the first N resolved examples (display only). |
-| `--out <prefix>` | `data\resolve` | Output prefix (see §5). |
-| `--progress-every <n>` | `200` | Progress line every N records (durable checkpoint ~every 5k when persisting, ~every 20k on a dry run). |
-| `--resume` | off | Continue `<out>.checkpoint.json` (invocation must match kind/segment/contains/persist/limit). |
-| `--brands` | off | Add the brand-lexicon tier after Tier-1 (`categories\brand_lexicon.json`). |
-| `--tier2` | off | Add the trained Tier-2 classifier after Tier-1 (needs `train-tier2`). |
-| `--tier2-model <path>` | `data\tier2_model.joblib` | Tier-2 model file to load when `--tier2` is set. |
-| `--tier2-threshold <f>` | model default (`0.6`) | Override the Tier-2 confidence threshold for this run. |
-
-**`--kind` values:** `item` *(recommended)* — whole `ItemLicitacion` at once
-(buyer line + offer consensus + title → one generic product; offers bound via
-`OFFERS {price}` edges to their `Brand × offer-spec` Products; UNSPSC fallback).
-`tender` — one buyer line + its title as
-context (curated only). `joint` — one offer paired with its buyer line (offer
-wins; disagreement → review). `offer` — offers standalone. `oc` — purchase-order
-items.
-
-Sample `--kind item` summary:
-
-```
-mode: dry run (no writes)
-records processed : 5000
-items linked      : 5000 (100.0%)  = curated 1809 + UNSPSC-fallback 3191
-by status         : {'resolved_generic': 5000}
-unresolved reasons: {}
-by category       : {'agujas': 138, 'canulas': 85, ... 'unspsc_42151602': 246, ...}
-curated by tier   : {'tier1': 1503, 'brand': 198, 'tier2': 108}  (which classifier won each curated item — Tier-2's marginal lift)
-price basis mix   : {'unknown': 1730, 'per_pack': 79}
-resolved w/o attrs: 412 (anchored on category roots — honest partials, no product info)
-offers bound      : 75 (as OFFERS edges to branded Products)
-offer routing     : {} (per-offer outcome; populated only on --persist:
-                        same / refined / nonconforming / recategorized / conservative)
-nodes created     : 847
-illegal values    : 452 (dropped, counted — schema dry-run metric)
-written: data\check_resoluciones.csv
-written: data\check_productos_genericos.csv
-checkpoint: data\check.checkpoint.json
-```
-
-(With `--fallback unspsc`, every item links, so `unresolved reasons` is empty and
-`by status` is all `resolved_generic`; `--fallback none` is where those fill in.)
-
-> **Resumable long runs:** a killed `--persist` run leaves a checkpoint; re-run
-> the *identical* command with `--resume`. The resolutions CSV is trimmed to the
-> last durable checkpoint, so kill timing can never duplicate rows.
-
-> **Live progress %.** For `--kind item`/`tender`, the per-tick progress line reads
-> `...processed N/TOTAL (pct%)` against the deterministic loop size: an unbounded
-> run counts the in-scope records once up front (index-backed); a bounded `--limit`
-> run just uses the limit as the denominator (no count needed). The size is stored
-> in the checkpoint (`total`) so `--resume` restores the % without re-counting, and
-> the `pipeline` stages reuse the size precomputed at establishment (§4.2) rather
-> than counting again.
-
-> **Keeping current.** There is no incremental mode — to fold in new
-> tenders/items/offers, re-run the full `resolve --kind item --persist`. Each
-> `(:ItemLicitacion)-[:RESOLVED_TO]->` edge is overwritten in place, so the
-> re-resolve just refreshes every item to its current generic (no duplicate edges,
-> no watermark to maintain).
-
-### 4.5 Coverage tools (Phase 2)
-
-**`fallback-report [--top 20] [--min-count 5] [--out <path>]`** — ranks the UNSPSC
-fallback nodes (codes carrying the most fallback items, with awarded spend and
-rubric-only share) and the recurring head-noun families in the residue, **by item
-count** (spend is shown but smeared/unreliable for the residue — see §3 Step 4).
-Writes `data\fallback_ranking.csv`. Needs a prior `resolve --kind item --persist`.
-
-**`ambiguity-report [--top 20] [--min-count 3]`** — the **overlap** counterpart to
-`fallback-report`. Re-classifies the UNSPSC fallback residue and ranks the
-colliding category **sets** — items that fell to fallback because **two Tier-1
-regexes both matched** (ambiguous). Splits **spurious** overlaps (one product two
-families both claim — fixable by adding an `--exclude`) from genuine
-**multi-product bundles** (a line enumerating several products, ≥2 list
-separators — ambiguity is correct, left alone), ranked by spurious/fixable
-volume. Read-only (prints to stdout, writes nothing). Needs a prior
-`resolve --kind item --persist`.
-
-```
-register overlaps: 1,204 ambiguous residue items across 23 colliding category sets
-  spurious (one product, fixable with an exclude): 412
-  multi-product bundles (ambiguity is correct):    792
-
-top 20 colliding category sets (by spurious/fixable volume):
-   spurious  bundle  categories
-        198      14  agujas ∩ suturas
-      e.g. AGUJA DE SUTURA CT-1 1/2 CIRCULO
-```
-
-**`build-brand-lexicon [--only <id>] [--samples 50] [--max-per-category 15]
-[--overwrite] [--dry-run]`** — for each curated category, samples the corpus and
-asks the LLM for brand/trade-name tokens (`relyx`, `panamax`). Each is validated
-(single normalized token, present in samples, not generic filler, not already
-regex-covered) and cross-category collisions are dropped; survivors merge into
-`categories\brand_lexicon.json` (existing entries win on conflict; `--overwrite`
-replaces). `--dry-run` prints without writing.
-
-**`train-tier2 [--threshold 0.6] [--min-rows 500] [--eval] [--skip-if-exists]
-[--out <path>]`** — trains the Tier-2 classifier (TF-IDF word+char n-grams +
-logistic regression) on the curated resolutions in the graph, saving to
-`data\tier2_model.joblib`. It abstains below `--threshold` (only ever adds
-coverage). `--eval` reports held-out accuracy on a 10% split. The standalone
-command **always retrains** (overwrites) — the out-of-band refresh after the
-corpus grows; `--skip-if-exists` makes it a no-op when the model is already
-present (this is what the `pipeline` uses, so a re-run trains only when there's no
-`.joblib`).
-
-Then enable per run: `resolve --kind item --tier2 --brands` (§4.4).
-
-**`tier2-eval [--gold <csv>] [--cap 80000] [--test-size 0.1] [--min-rows 500]`** —
-the **measure-before-tuning** harness. Trains a throwaway model on a held-out
-split of the curated resolutions and prints a **coverage/precision curve** across
-thresholds — so you can see where the `0.6` cutoff sits and pick an operating
-point — computed both **text-only and +UNSPSC feature**, so a feature's lift is a
-direct read. With `--gold`, scores the saved model against a human-labeled CSV
-(true precision, with a residue-only breakdown). Touches no production model.
-
-```
-held-out eval (text only): train 34,000 / test 6,000 across 167 categories
-  thresh  coverage  precision  n_classified
-   0.60     74.0%      93.4%     4,442
-   0.75     65.3%      96.1%     3,917
-```
-
-> The held-out precision is *agreement with Tier-1's labels* (an upper bound, since
-> Tier-2 exists for the items Tier-1 missed). For **true** precision on the residue,
-> build a gold set with `tier2-label-sample` and pass it to `--gold`.
-
-**`tier2-label-sample [--n 300] [--segment 42] [--residue-only] [--out <path>]`** —
-exports a sample of items + the current classifier's predictions to a CSV template
-(blank `true_category` column) so a human can build a gold set for
-`tier2-eval --gold`. `--residue-only` keeps only items Tier-1 misses — the rows
-Tier-2 is actually judged on.
-
-### 4.6 Analyze
-
-**`price-series <category_id> [--csv <path>]`** — per-product price history for a
-**persisted** category, read off the `(:Oferta)-[:OFFERS]->(:Product)` edges
-under each generic product (the price lives on the edge; each row also carries the
-offer's `brand` via `(:Product)-[:OF_BRAND]->(:Brand)`, so prices can be sliced by
-brand). Each row carries the raw `unit_price` **and a
-`normalized_unit_price` (per base unit) with its `basis`** — a per-pack quote is
-divided by its stated pack size only when that lands it in the product's price
-cluster, else `basis=unknown` and the point is flagged out (§7). Default
-`data\price_series_<category>.csv`. Empty until that category was
-`resolve --kind item --persist`ed (offers carry the prices).
-
-```
-5790 price observations across 229 generic products -> data\price_series_cintas_adhesivas.csv
-products with the deepest price history:
-  gp_f787b08e384c  n= 90 (+6 flagged)  median=  498 CLP/base-unit  range=[239 .. 1,423]
-    {"largo": "9.1m", "tipo": "quirurgica", "ancho": "2.5cm", "material": "papel"}
-```
-
-(The `(+N flagged)` count is offers whose basis couldn't be determined — excluded
-from the stats, never assumed. A category-**root** node mixes products, so it shows
-a high flag rate: that's the signal it isn't a single comparable product.)
-
-### 4.7 Housekeeping & diagnostics
-
-**`clean [--all] [--dry-run] [--dir <path>]`** — delete **regenerable** `data\`
-artifacts (resolve output triplets incl. `pipeline.checkpoint.json`,
-`price_series_*`, loose `*.log`/`*.out`). Keeps the cached inputs
-`profiling.csv`, `proposals.json`, and `fallback_ranking.csv` unless `--all`.
-Does **not** remove `tier2_model.joblib` (regenerate it with `train-tier2`).
-Never touches the graph (that's `wipe-catalog`).
-
-| Command | What it does |
-|---|---|
-| `demo` | Offline pipeline demo — no graph, no LLM. Good first run to see the mechanics. |
-| `smoke [--keep]` | Live graph round-trip test; cleans up after itself (`--keep` leaves the data). |
-| `probe-offers [--limit 1500]` | Metric: how often offer text recovers a category for rubric-only buyer lines. Read-only. |
-
-### 4.8 Destructive (gated by `--yes`)
-
-| Command | What it does |
-|---|---|
-| `wipe-category <id> --yes` | Delete one category's **legacy** catalog nodes (and their RESOLVED_TO edges). |
-| `wipe-catalog --yes` | Delete ALL **legacy** catalog data (Category / GenericProduct / Product / Brand) **and every edge incident to it** (RESOLVED_TO / OFFERS / OF_BRAND / VARIANT_OF / PARENT_OF / IN_CATEGORY). APOC-batched, relationships first — OOM-safe at millions of edges and edge-type-agnostic. Source data + migrations untouched. |
-| `wipe-clusters --yes` | Delete ONLY the **redesign** shadow catalog (`:ProductCluster` + `PRICED_IN`/`REFINES`). Edges dropped first (APOC-batched for scale), then nodes; clears the `match` checkpoints so a re-match starts fresh. **Legacy catalog and source untouched.** Use after changing the L1 prompt/vocabulary, before re-matching. |
-
-### 4.9 Resolution redesign (L0→L3) — the new pipeline (shadow catalog)
-
-The resolution pipeline going forward. It replaces the regex extractor +
-classifier (§2) with a single LLM **canonicalization** step feeding a
-deterministic matcher, and writes the `:ProductCluster` / `:PRICED_IN` catalog.
-The legacy `:GenericProduct` catalog it replaced has been **wiped** (cutover); this
-is now the only product layer, rebuilt per `--segment`. Its purpose is the one
-question the legacy model got wrong on noisy text: *are two bids the same
-substitutable product?* (brand- and packaging-independent), for price comparison
-over time and across competition.
-
-```
-L0 dedup → L1 canonicalize (Claude) → L2 match → L3 adjudicate → L4 coherence-check → L5 price-clusters
-```
-
-**Status: validated end-to-end at scale; cutover begun.** All stages (L1, L2, L4,
-L5 built + unit-tested; L3 scaffolded) have been run live against the graph on a
-1,000-offer segment-42 slice — `canonicalize` → `match --persist` →
-`coherence-check --graph` → `price-clusters` — with the structural gate green
-(S1/S4/S5/S7/S8/S9 = 0; S2 down to a handful). The **legacy `:GenericProduct`
-catalog has been wiped** (the cutover), so the graph now holds only the source
-layer plus whatever the redesign rebuilds. What remains is the **full per-segment
-production run** (start with segment 42). Everything is killable/resumable and runs
-on the **Claude Max subscription** by default.
-
-**`canonicalize [--from-file <path>] [--out data\profiles.jsonl] [--model claude-haiku-4-5] [--limit <n>] [--dry-run]`**
-— **L1**: turns each distinct `descripcion_proveedor` into a structured
-**profile** (category + **evidence-anchored** identity attributes + brand + model
-token + packaging), persisted by text-hash so each distinct string is
-canonicalized **once** (a cached pure function). The cardinal rule: every
-identity attribute must quote the substring that anchors it — a bare number can
-never become identity (the redesign's answer to the `2.5pct` false-merge class).
-For a known family, the attribute **names** are constrained to that family's
-registered schema vocabulary (so the model can't drift between `gauge` and
-`calibre`), and values are Spanish/snake_case — which is what lets the L2 matcher
-actually merge equivalent bids.
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--from-file <path>` | none | Read newline-separated descriptions from a file instead of the graph (runnable now). |
+| `--from-file <path>` | none | Read newline-separated descriptions from a file instead of the graph. |
 | `--out <path>` | `data\profiles.jsonl` | Profile store — JSONL keyed by text-hash; the L1 cache (skip already-done). |
-| `--model <id>` | `claude-haiku-4-5` | L1 model. |
-| `--workers <n>` | `2` | Concurrent LLM calls on the Max backend. Kept low so a long run doesn't burst past the Max usage limit; raise it for short jobs. |
-| `--group-size <n>` | `25` | Descriptions per LLM call — **batched** so the ~28K Claude-Code per-call overhead is paid once per *group*, not per item (≈ N× fewer tokens/calls). |
-| `--segment <n>` | all | UNSPSC segment scope for the graph read, e.g. `42` (bounds a run). |
-| `--limit <n>` | all | Cap inputs (dev runs). |
+| `--model <id>` | `claude-haiku-4-5` | L1 model. Haiku is the right tier — cheapest, gentlest on Max usage (~5× less than Opus). |
+| `--workers <n>` | `2` | Concurrent LLM calls on the Max backend. Kept low so a long run doesn't burst the usage limit; raise it for short jobs. |
+| `--group-size <n>` | `25` | Descriptions **batched** per LLM call — the per-call overhead is paid once per *group*, not per item (≈ N× fewer calls). |
+| `--segment <n>` | all | UNSPSC segment scope for the graph read, e.g. `42`. |
+| `--limit <n>` | all | Cap inputs (validation / dev runs). |
 | `--dry-run` | off | **L0 dedup only** — report distinct/cached counts, **no LLM calls**. |
 
-> **LLM backend & efficiency.** All LLM stages run on the **Claude Max
-> subscription** by default — **no per-token cost** (backends listed at the end of
-> §4.9). The efficient path is **`claude_oauth`** (a `claude setup-token` credential
-> used directly with `messages.create`): bare, ~11× leaner than the `claude_cli`
-> default, billed to Max. Two further levers cut usage on either Max backend: L1
-> **batches `--group-size` descriptions per call** (the per-call overhead is paid
-> once per *group*), and calls use `--strict-mcp-config` (no MCP/Neo4j connection).
-> There is still **no Batch API** on Max, so a full-corpus L1 run is bounded by Max
-> usage limits — and because the profile store is a resumable text-hash cache, run
-> it **incrementally / per `--segment`** with a low `--workers`. If you hit the
-> usage limit mid-run, L1 **stops cleanly** ("re-run to resume") instead of
-> churning; just re-run the same command after the window resets.
-
-**`match [--store data\profiles.jsonl] [--attach-partials] [--persist] [--resume] [--segment <n>] [--limit <n>] [--show 15]`**
-— **L2**: clusters the L1 profile store into product clusters. (`--limit` caps the
-offer-price read when persisting — handy for a bounded validation slice.) The pairwise rule:
-same `model_token` ⇒ same product (even cross-brand); a conflicting attribute is a
-hard cut; identical signatures collapse; a coarser partial spec is linked by
-`REFINES` rather than merged (unless `--attach-partials` and it has a unique finer
-child). Default is an offline report (no graph, no LLM). With **`--persist`** it
-writes `:ProductCluster` + `:REFINES` nodes and binds offers via
-`(:Oferta)-[:PRICED_IN {normalized_price, rut, date}]->(:ProductCluster)` (price
-per base unit on the edge); run `migrate` first (migration `005`).
-
-**`adjudicate [--store data\profiles.jsonl] [--verdicts data\adjudications.jsonl] [--model claude-sonnet-4-6] [--dry-run]`**
-— **L3**: Claude adjudicates the small residue the L2 matcher couldn't settle
-deterministically — a shared `model_token` whose specs conflict, and a coarse
-partial spec compatible with several divergent children. Each case becomes a
-structured verdict (`same` / `different` / `anchor`, with rationale), persisted by
-case key so re-runs don't re-pay. Runs on **Max** by default (Sonnet/Opus via the
-CLI backend); the residue is small, so this is cheap. `--dry-run` reports the case
-count with no LLM calls.
-
-**`coherence-check [--store data\profiles.jsonl] [--graph] [--tier all] [--out <csv>]`**
-— **L4 auditor**: runs the named invariants in three tiers. **Structural** (e.g.
-S1 every identity attribute has evidence, S2 no *ungrounded bare-number* identity
-— value carries no unit and the evidence doesn't ground it, so legit `70pct`/`12fr`/
-`6/0`/code values are accepted, S4 each offer in one cluster, S5 unique cluster
-signatures, S7 strict-subset REFINES) are a contract — any breach **fails the run
-(exit 1)**, suitable as a CI gate. **Semantic** (M1 weak-identity
-clusters, M4 model-token conflicts, ambiguous partials; with `--graph`: unplaced
-offers, price-incoherent clusters) are ranked review backlogs. **Health** is a
-trend snapshot (confidence mix, placement). Offline by default; `--graph` adds
-checks over the persisted catalog.
-
-**`price-clusters (--category <id> | --signature <sig>) [--csv <path>] [--top 10]`**
-— **L5**: price series over the L2 clusters, read off the `:PRICED_IN` edges
-(normalization already on the edge). A cluster is the substitutable-product
-comparison unit, so the summary answers both goals at once — per-base-unit price
-**over time** and **across competition** (distinct supplier RUTs + the price
-spread among them). Needs a persisted catalog (`match --persist`).
-
-> **Every stage is killable and resumable.** `canonicalize` persists each profile
-> as it lands (durable every ~100) into the text-hash store and **skips anything
-> already there on re-run** — a kill loses only the in-flight calls; just re-run
-> the same command. `adjudicate` works the same way against its verdict store.
-> `match --persist` is idempotent (all writes are `MERGE`), and the long
-> `:PRICED_IN` write keeps a stream-offset checkpoint — re-run with `--resume` to
-> continue the edge write from where it stopped (same `--segment`). So the
-> practical Max workflow — run L1 per segment, killing and resuming freely — never
-> repeats finished work.
-
-**Running it end to end.** L1 is bounded by Max usage limits, so work **per
-`--segment`**, keep `--workers` low (default 2), and validate a small slice first
-before scaling up. On the `claude_oauth` backend each call is a fast bare message
-(no subprocess); on `claude_cli` each call is a `claude -p` subprocess:
+### 4.4 `match` — L2 (cluster the profiles)
 
 ```powershell
-chilecompra-er instance start
-chilecompra-er migrate                                          # constraints incl. migration 005
-chilecompra-er canonicalize --segment 42 --limit 1000          # bounded first pass (resumable, --workers 2)
-chilecompra-er match --persist --segment 42 --limit 1000       # write clusters + PRICED_IN (resumable)
-chilecompra-er coherence-check --graph                         # structural gate + review backlogs
-chilecompra-er price-clusters --category sondas                # prices over time + competition
-#                                                              ↺ then drop --limit / next segment
-chilecompra-er adjudicate                                      # (optional) resolve the L2 residue
-chilecompra-er instance stop
+chilecompra-er match --segment 42 --show 15                  # offline report (no graph)
+chilecompra-er match --persist --segment 42 --limit 1000     # write clusters + PRICED_IN (resumable)
 ```
 
-Before re-running after an L1 prompt/vocabulary change, clear the shadow catalog
-with `wipe-clusters --yes` (§4.8) so stale-signature clusters don't linger.
+Clusters the L1 profile store into product clusters by the pairwise rule (§2): same
+`model_token` ⇒ same; conflicting attribute ⇒ hard cut; identical signature ⇒
+merge; coarser partial spec ⇒ `REFINES` (unless `--attach-partials` and it has a
+unique finer child). Default is an **offline report** (no graph, no LLM). With
+**`--persist`** it writes `:ProductCluster` + `:REFINES` and prices offers via
+`(:Oferta)-[:PRICED_IN {normalized_price, rut, date}]->(:ProductCluster)`; run
+`migrate` first.
 
-Every step is safe to Ctrl-C and re-run. Per-segment caveat: run `match --persist`
-on the **same** segment you canonicalized (or with no `--segment` once all
-segments are canonicalized), else clusters for un-bound segments show up as orphan
-nodes in `coherence-check` (transient).
+| Flag | Default | Meaning |
+|---|---|---|
+| `--store <path>` | `data\profiles.jsonl` | The L1 profile store to cluster. |
+| `--persist` | off | **WRITE** clusters, REFINES, and PRICED_IN edges to the graph. |
+| `--segment <n>` | none | UNSPSC segment for the offer-price read when persisting. |
+| `--limit <n>` | all | Cap the offer-price read (a bounded validation slice). |
+| `--attach-partials` | off | Attach a coarse partial to its unique finer child instead of leaving it a REFINES parent. |
+| `--resume` | off | Continue the `:PRICED_IN` write from its stream-offset checkpoint (same `--segment`). |
+| `--show <n>` | `15` | Print the top clusters by bid count. |
 
-**LLM backend selection** (`CHILECOMPRA_LLM_BACKEND`, applies to every LLM command):
-- **`claude_cli`** (default) — Max via `claude -p`; correct but ~28K scaffolding/call.
-- **`claude_oauth`** — Max via the **`claude setup-token`** OAuth token used directly
-  with `messages.create` (Authorization: Bearer + the `oauth-2025-04-20` beta header).
-  **Bare, cacheable calls billed to Max — no agent scaffolding** (measured ~11×
-  fewer tokens/call than `claude_cli`, and fast: no subprocess). Set
-  `CLAUDE_CODE_OAUTH_TOKEN` to the token from `claude setup-token`. The efficient Max path.
-- **`anthropic_sdk`** — first-party API (Batch API for L1/L3); bills API credits.
+### 4.5 `adjudicate` — L3 (settle the residue)
 
-The pipeline stays on **Max** (`claude_cli` or `claude_oauth`) — never Bedrock.
+```powershell
+chilecompra-er adjudicate                                    # Claude settles the L2 residue
+chilecompra-er adjudicate --dry-run                          # just count the cases
+```
+
+Claude adjudicates the small residue the matcher couldn't settle deterministically
+— a shared `model_token` whose specs conflict, or a coarse partial compatible with
+several divergent children. Each case becomes a structured verdict (`same` /
+`different` / `anchor`, with rationale), persisted by case key so re-runs don't
+re-pay. The residue is small, so this is cheap.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--store <path>` | `data\profiles.jsonl` | The profile store. |
+| `--verdicts <path>` | `data\adjudications.jsonl` | The verdict store (resume state). |
+| `--model <id>` | `claude-sonnet-4-6` | L3 model (a stronger tier; the residue is tiny). |
+| `--dry-run` | off | Report the case count with no LLM calls. |
+
+### 4.6 `coherence-check` — L4 (the auditor)
+
+```powershell
+chilecompra-er coherence-check                               # offline tiers (profiles + recomputed clusters)
+chilecompra-er coherence-check --graph                       # + checks over the persisted catalog
+```
+
+Runs named invariants in three tiers:
+
+- **Structural** — a contract; any breach **fails the run (exit 1)**, suitable as
+  a CI gate. E.g. **S1** every identity attribute has evidence; **S2** no
+  *ungrounded bare-number* identity (a value with no unit whose evidence doesn't
+  ground it — so legit `70pct`/`12fr`/`6/0`/code values are accepted); **S4** each
+  offer in exactly one cluster; **S5** unique cluster signatures; **S7**
+  strict-subset `REFINES`; **S8** no brand/packaging in identity; **S9** no orphan
+  clusters.
+- **Semantic** — ranked review backlogs (expected nonzero): **M1** weak-identity
+  clusters, **M4** model-token conflicts, ambiguous partials; with `--graph`:
+  unplaced offers (**S10**), price-incoherent clusters (**M2**).
+- **Health** — a trend snapshot (confidence mix, product share, cluster
+  placement).
+
+`--tier all|structural|semantic|health` selects tiers; `--out <csv>` writes the
+findings. Offline by default; `--graph` adds the catalog checks.
+
+### 4.7 `price-clusters` — L5 (prices)
+
+```powershell
+chilecompra-er price-clusters --category sondas --top 10
+chilecompra-er price-clusters --signature "sondas|calibre=16fr|material=latex"
+```
+
+Price series over the L2 clusters, read off the `:PRICED_IN` edges (normalization
+already on the edge). A cluster is the substitutable-product comparison unit, so
+the summary answers both goals at once — per-base-unit price **over time** and
+**across competition** (distinct supplier RUTs + the price spread among them).
+Needs a persisted catalog (`match --persist`). `--csv <path>` writes the series;
+default `data\price_clusters_<cat>.csv`.
+
+### 4.8 Backends & efficiency
+
+All LLM stages run on the **Claude Max subscription** by default — **no per-token
+cost**, bounded by Max usage limits. Select with `CHILECOMPRA_LLM_BACKEND`:
+
+- **`claude_oauth`** — **the efficient Max path.** A `claude setup-token`
+  credential used directly with `messages.create` (Authorization: Bearer + the
+  `oauth-2025-04-20` beta header): bare, cacheable calls billed to Max, **no agent
+  scaffolding** — measured **~11× fewer tokens/call** than `claude_cli`, and fast
+  (no subprocess). Set `CLAUDE_CODE_OAUTH_TOKEN` in `secrets.env`.
+- **`claude_cli`** (default) — Max via `claude -p` subprocesses; correct but each
+  carries ~28K tokens of Claude Code scaffolding per call.
+- **`anthropic_sdk`** — first-party Batch API; bills **API credits**, not Max.
+
+Three things keep a long run within the Max limit, and they compose:
+
+1. **Model tier** — L1 is on **Haiku 4.5**, ~5× gentler on the usage limit than
+   Opus, for no quality loss (the constrained vocabulary carries the consistency).
+2. **Batching** — `--group-size` amortizes the per-call overhead across many
+   descriptions.
+3. **Graceful abort** — on a sustained usage/rate limit, L1 **stops cleanly**
+   (cancels pending calls, keeps everything done, prints "re-run to resume")
+   instead of churning. Re-run the same command after the window resets; the
+   text-hash store skips all completed work.
+
+> **Every stage is killable and resumable.** `canonicalize` persists each profile
+> as it lands (durable ~every 100) and **skips anything already in the store** on
+> re-run. `adjudicate` works the same way against its verdict store. `match
+> --persist` is idempotent (`MERGE`), and the long `:PRICED_IN` write keeps a
+> stream-offset checkpoint (`--resume`). So the practical workflow — run L1 per
+> segment, killing and resuming freely — never repeats finished work.
+
+### 4.9 Housekeeping
+
+**`clean [--all] [--dry-run] [--dir <path>]`** — delete **regenerable** `data\`
+scratch (checkpoints, CSV outputs, loose `*.log`/`*.out`). Never touches the graph
+or the version-controlled vocabulary.
+
+**`demo`** — offline pipeline demo (no graph, no LLM). **`smoke [--keep]`** — live
+graph round-trip test, cleans up after itself.
+
+### 4.10 Destructive (gated by `--yes`)
+
+| Command | What it does |
+|---|---|
+| `wipe-clusters --yes` | Delete the cluster catalog (`:ProductCluster` + `PRICED_IN`/`REFINES`) and clear the `match` checkpoints, so a re-match starts fresh. APOC-batched (edges first — OOM-safe at millions of edges, edge-type-agnostic). The source graph is untouched. Use before re-matching after a vocabulary/prompt change. |
 
 ---
 
 ## 5. Files & outputs
 
-Outputs are split by **lifecycle**:
+Outputs split by **lifecycle**:
 
-- **The catalog definition is version-controlled**, under
-  `chilecompra_er\categories\`: `register.json` (the family list) and
-  `schemas\*.json` (one attribute schema per category). This is the real
-  deliverable — code-reviewed, diffed in PRs, asserted by tests — so `register`
-  writes it here, **not** to `data\`.
-- **`data\` is gitignored scratch** — all reproducible. Two sub-groups:
-  - *Cached inputs `clean` keeps* (removed only with `--all`): `profiling.csv`
-    (spend ranking), `proposals.json` (preview→apply handoff),
-    `fallback_ranking.csv` (residue ranking).
-  - *Run outputs `clean` always removes*: `<prefix>_resoluciones.csv` (every
-    record + its resolution), `<prefix>_productos_genericos.csv` (the
-    generic-product nodes, dry runs only), `<prefix>.checkpoint.json` (per-run
-    resolve resume marker), `<step>.progress.jsonl` (the append-only per-step
-    progress timelines — the resolve stages plus the `register`/`register-fallback`
-    and `build-brand-lexicon` scans — that feed `pipeline --status`/`--watch`, §4.2),
-    `pipeline.checkpoint.json` (stage-level `pipeline`
-    resume marker), `register.checkpoint.json` / `register_fallback.checkpoint.json`
-    (the `register` vet-scan resume markers, §4.3), `price_series_<cat>.csv`.
-  - `tier2_model.joblib` (the trained classifier) also lives here but `clean`
-    leaves it — regenerate it with `train-tier2`.
-- **The legacy catalog** (`Category` / `GenericProduct` / `Product` / `Brand` +
-  `IN_CATEGORY` / `RESOLVED_TO` / `VARIANT_OF` / `OF_BRAND` / `OFFERS {price}` /
-  `PARENT_OF`) was written only by `resolve --persist`. It has been **wiped from
-  the graph** (the cutover); it is reproducible by re-running the §3 pipeline
-  against the intact source. `register` never touched the graph.
-- **Redesign artifacts (§4.9)** — under `data\` (all regenerable, but `clean`
-  does *not* target them by name yet, so remove by hand if needed):
-  `profiles.jsonl` (the L1 profile store / cache — the resume state),
-  `adjudications.jsonl` (L3 verdict store), `match_seg<seg>.checkpoint.json` (the
-  `:PRICED_IN` resume offset), `price_clusters_<cat>.csv`. The redesign's own
-  graph layer is `:ProductCluster` nodes + `:PRICED_IN` / `:REFINES` edges
-  (migration `005`), written only by `match --persist`, in its own namespace —
-  reset with `wipe-clusters --yes` (§4.8) before a re-match after an L1 change.
+- **The vocabulary is version-controlled**, under `chilecompra_er\categories\`:
+  `register.json` (the family list) and `schemas\*.json` (one attribute schema per
+  family). This is the real deliverable — code-reviewed, diffed in PRs, asserted by
+  tests. `register` / `generate-schemas` write it here, **never** to `data\`.
+- **`data\` is gitignored scratch** — all reproducible:
+  - `profiles.jsonl` — the **L1 profile store** (the cache and resume state).
+  - `adjudications.jsonl` — the L3 verdict store.
+  - `match_seg<seg>.checkpoint.json` — the `:PRICED_IN` write resume offset.
+  - `price_clusters_<cat>.csv` — L5 output.
+  - `proposals.json` / `profiling.csv` — `register` preview/handoff + spend ranking.
+- **The cluster catalog lives in Neo4j**, written only by `match --persist`:
+  `:ProductCluster` nodes + `:PRICED_IN` / `:REFINES` edges (migration `005`).
+  Reset it with `wipe-clusters --yes` (§4.10). The pipeline never modifies the
+  source graph.
 
 ---
 
@@ -1014,100 +445,68 @@ Outputs are split by **lifecycle**:
 
 **Conventions**
 
-- **`resolve` is a dry run by default** — nothing is written until `--persist`.
-  Every other read-only command is always safe.
-- **Fixed output filenames** — commands overwrite the same `data\` files each
-  run; pass a path flag (`--out`, `--csv`) only to keep a snapshot elsewhere.
+- **`match` is an offline report by default** — nothing is written until
+  `--persist`. `canonicalize` writes only its local store; every read-only command
+  is always safe.
+- **Fixed output filenames** — commands overwrite the same `data\` files each run;
+  pass a path flag (`--out`, `--csv`) only to keep a snapshot elsewhere.
 - **Destructive graph commands are gated** behind `--yes`; local-file cleanup is
   `clean`.
-- **stderr vs stdout** — progress/diagnostics go to **stderr**; the actual
-  report goes to **stdout**, so you can redirect the result cleanly (`... 2> run.log`).
-- **Nothing is force-fit** — a line matching no family is never shoved into the
-  wrong one: `--kind item` links it to a UNSPSC bucket; other kinds (or
-  `--fallback none`) record it `unresolved`. The biggest residual buckets are the
-  signal for the next `register` pass.
+- **stderr vs stdout** — progress/diagnostics go to **stderr**; the report goes to
+  **stdout**, so you can redirect the result cleanly (`... 2> run.log`).
+- **Run per `--segment`** — the profile store is a resumable cache, so canonicalize
+  a segment at a time rather than the whole corpus at once.
 
 **Troubleshooting**
 
 | Symptom | Cause / fix |
 |---|---|
-| `graph: unreachable` in `status` | Neo4j stopped (`instance start` — also rewrites `.mcp.json`). If *running* but bolt **times out**, `neo4j-sg` doesn't allow your client IP — add it. |
-| Lots of `unspsc_*` categories after `resolve` | Expected — fallback buckets. Run Phase 2 (§3) to convert coarse coverage into rich coverage. |
-| `register` / `generate-schemas` / `build-brand-lexicon` auth errors | Run `ant auth login` once (Claude Max). |
+| `graph: unreachable` in `status` | Neo4j stopped (`instance start` — also rewrites `.mcp.json`). If *running* but bolt **times out**, the security group doesn't allow your client IP — add it. |
 | `claude_oauth` backend: "needs a Max OAuth token" | Run `claude setup-token` and put `CLAUDE_CODE_OAUTH_TOKEN=…` in `secrets.env` (gitignored). |
+| `canonicalize` stops with "usage limit reached" | You hit the Max usage window. Re-run the same command after it resets — completed work is saved. |
 | A `--segment` run scans forever | The UNSPSC index is missing — run `migrate`. |
-| `price-series` prints "no price observations" | That category isn't persisted yet, or was resolved with a kind other than `item` (only `--kind item --persist` binds `:Product` prices). |
-| `resolve --resume` refuses | The invocation must match the checkpoint (kind/segment/contains/persist/limit). |
-| `data\` filling up | `chilecompra-er clean` (keeps the cached rankings + proposals; `--all` removes those too). |
+| `coherence-check --graph` reports orphan clusters (S9) | You matched a different segment than you canonicalized; match the **same** `--segment` (or all). |
+| `price-clusters` prints nothing | That category isn't persisted yet — run `match --persist` for its segment first. |
+| Stale clusters after a schema change | `wipe-clusters --yes`, then re-canonicalize and re-match. |
 
 ---
 
 ## 7. Internals & notes
 
-- The ingestion source is the graph itself — the transactional layer. Resolution
-  only *adds* the catalog layer and never mutates those nodes.
-- The tender-title property is one constant (`TENDER_NAME = l.titulo` in
-  `ingest/neo4j_source.py`); a missing/renamed property degrades gracefully to
-  item-only resolution.
-- `GenericProduct` identity is **exact match on present identity attribute
-  values** (same values, same absences), embedded in `identity_key` — the
-  uniqueness key that dedups a product across tenders. `PARENT_OF` builds the
-  coarse→specific hierarchy by strict-subset subsumption.
-- **Branded products (`Product = Brand × the offer's identity`).** A `:Product` is
-  the deduped `(generic, brand, offer-identity)` node —
-  `id = pr_<sha1(generic_id|brand=brand_id|attr=val|…)>`
-  (`resolve/assignment.py:branded_product_id`) — so every offer of the same brand
-  **and the same spec** collapses onto one **self-describing** node (the offer's
-  identity values live on the node), `VARIANT_OF` the item's generic and `OF_BRAND`
-  a shared `:Brand`. Brand and spec are independent axes, so one brand can have
-  several Products under one generic (one per distinct offer spec). Each bid is an
-  explicit `(:Oferta)-[:OFFERS {price…, conforming}]->(:Product)` edge: **the price
-  (and per-offer descriptives) are on the edge, not the node**. The brand for an
-  offer comes from the brand lexicon / offer text (`resolve/brand.py:extract_brand`)
-  during `_bind_offers` (`ingest/runner.py`); offers with no recognizable brand fall
-  to a shared `SIN_MARCA` sentinel. Schema (the `Brand.id` constraint +
-  `Product.identity_key` index) is in migration `003_branded_products.cypher`,
-  applied by `migrate`.
-- **Offer-aware binding & the spec chain.** An item's offers don't all collapse
-  onto its one generic. The generic is the buyer's demand, enriched **upward only**
-  by the offers' *minimum common* spec (`resolve/resolver.py:offer_identity_floor`
-  — dominant value adopted only when an awarded/winning offer carries it, else
-  strict). Each offer then routes (`ingest/runner.py:_offer_target`,
-  `stats.offer_routing`): `same` (== generic) / `refined` (a finer Product, same
-  generic) / `nonconforming` (vaguer-or-divergent, `conforming=false`, kept) /
-  `recategorized` (a confidently different family → its own generic,
-  `conforming=false`) / `conservative` (too terse to classify → item node). The
-  invariant is the chain `ItemLicitacion = GenericProduct ≤ Product ≤ Oferta`:
-  refinement rides the **Product**, never a finer generic (the generic hierarchy is
-  driven by demand only).
-- **`RESOLVED_TO` is direct and current-state only.** One
-  `(:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct)` edge per item, carrying the
-  resolution `evidence` (normalized text, classifier match + winning tier, attribute
-  values + provenance, price basis). Re-resolving **overwrites** it (DELETE old,
-  CREATE new) — no versioning, no SourceRecord, no lineage/event layer. The model is
-  deliberately flat: to update, re-run a full `resolve --persist`. (Migration
-  `004_drop_lineage.cypher` removed the old `SourceRecord` / `ResolveRun` /
-  `ResolutionEvent` / `ResolveState` schema.)
-- The Tier-2 **UNSPSC feature** was evaluated (`tier2-eval`) and showed no frontier
-  lift on this corpus — it trades precision for coverage like a threshold nudge — so
-  it is intentionally **not** wired into production; only the eval harness folds it in.
-- **Price-basis normalization** (unit vs box) is handled at read time in
-  `price-series` (`price/basis.py:normalize_unit_prices`): in Mercado Público
-  `total = qty × unit_price` is an accounting identity, so the basis is inferred
-  from price **magnitude** instead — per-unit prices for one GenericProduct
-  cluster, and a per-pack quote is divided by its stated pack size only when that
-  lands it in the cluster (positive evidence); offers that fit neither are flagged
-  `unknown` and excluded.
-- **Anchorless-rule guard (extraction safety).** An identity extraction rule that
-  could fire on a bare number (no unit or concept word) must now carry a
-  `requires` context guard naming the attribute's concept
-  (`categories/schema.py:Rule.requires`); the rule fires only when its guard also
-  matches the text — a guard can only narrow matches, never widen them. A lint
-  (`anchorless_identity_rules`) + test (`tests/test_schema_anchors.py`) enforce it
-  across all schemas, closing the false-merge class where "Ca 2,5 mEq" and
-  "cable 3x2,5 mm" were read as dextrose 2.5% (the `pr_fd4522…` bucket).
-- Known follow-ups: **brand canonicalization** (the `Brand` nodes still hold
-  spelling variants — `BIOLIGH`/`BIOLIGHT` — that should collapse), an `OFFERS`
-  edge `date` for offers whose source `fecha` is null, registering the largest
-  UNSPSC-fallback buckets as curated families, and a gold set for true Tier-2
-  precision (`tier2-label-sample` → `tier2-eval --gold`).
+- **The source is the graph itself** — the transactional layer. The pipeline only
+  *adds* the cluster catalog and never mutates source nodes.
+- **Evidence-anchoring** (`resolve/profile.py`). Every identity attribute carries
+  the source substring that names it; the L1 prompt forbids turning a bare number
+  into identity and asks for the full anchored span (`"70%"`, not `"70"`). This is
+  the structural answer to the false-merge class where "Ca 2,5 mEq" and "cable
+  3x2,5 mm" could read as "dextrose 2.5%".
+- **Constrained vocabulary** (`profile.category_vocabulary`). Each family's schema
+  identity attribute **names** are injected into the L1 prompt, and the model must
+  use exactly those names for that category (no `gauge` when the schema says
+  `calibre`), values Spanish/snake_case. This is what collapses false splits —
+  validated at 1.27→1.67 profiles/cluster on a 1,000-offer slice.
+- **`model_token` as a merge signal** (`resolve/matcher.py`). A shared
+  manufacturer model/reference token merges two bids even across brands; a
+  conflicting identity attribute is a hard cut. Blocking is by category, matching
+  by signature/model/attributes.
+- **Anchorless-rule guard** (`categories/schema.py`). A schema rule that could fire
+  on a bare number must carry a `requires` concept guard; a lint + test enforce it,
+  and the guard recognizes unit symbols (`°`, `%`, `µ`) as anchors.
+- **`normalized_price`** (`ingest/clusters.py`). Packaging is normalization, never
+  identity: a per-pack quote is divided by its stated pack size to a per-base-unit
+  price, stored on the `:PRICED_IN` edge. Offers are matched to clusters on the
+  composite offer key `(id_licitacion, id_item, id_oferta)` — the unique identity,
+  so one offer is priced into exactly one cluster (coherence S4).
+- **The coherence contract** (`coherence.py`). Structural invariants (S1/S2/S4/S5/
+  S7/S8/S9) are a CI gate; semantic checks (M1/M2/M4/S10) are ranked review
+  backlogs; health metrics are trend snapshots. The graph tier runs against the
+  persisted catalog.
+- **Max efficiency** (`llm.py`). The `claude_oauth` backend makes bare
+  `messages.create` calls billed to Max (~11× leaner than `claude -p`); L1 batches
+  `--group-size` items per call; a sustained rate/usage limit aborts the run
+  cleanly for a clean resume. L1 is on Haiku (the cheapest tier, ~5× gentler on the
+  Max limit than Opus) — the constrained vocabulary makes that the right
+  quality/cost point.
+- **Resumability.** The text-hash profile store and the verdict store *are* the
+  resume state; the `:PRICED_IN` write keeps a stream-offset checkpoint. Re-running
+  any stage skips finished work.
