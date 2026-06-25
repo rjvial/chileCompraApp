@@ -159,19 +159,26 @@ def adjudicate(questions: list[AdjQuestion], store: VerdictStore, *,
         log("dry run — no LLM calls (no API credits spent)")
         return stats
 
+    # Persist each verdict as it lands (the store is the resume state — a re-run
+    # skips cached keys), so a kill loses only the in-flight cases.
     from ..llm import complete_json_many
-    requests = [(q.key, q.prompt) for q in todo]
-    results = complete_json_many(requests, ADJUDICATION_SCHEMA, SYSTEM_PROMPT,
-                                 model=model, log=log)
-    to_store: dict[str, dict] = {}
-    for q in todo:
-        v = results.get(q.key)
-        if v is None:
-            stats.failed += 1
-            continue
-        to_store[q.key] = {**v, "kind": q.kind, "signatures": list(q.signatures)}
+    kind_by_key = {q.key: q.kind for q in todo}
+    sigs_by_key = {q.key: list(q.signatures) for q in todo}
+    buf: dict[str, dict] = {}
+
+    def persist(key, v):
+        buf[key] = {**v, "kind": kind_by_key.get(key), "signatures": sigs_by_key.get(key)}
         stats.adjudicated += 1
-    store.put_many(to_store)
+        if len(buf) >= 20:
+            store.put_many(buf)
+            buf.clear()
+
+    requests = [(q.key, q.prompt) for q in todo]
+    complete_json_many(requests, ADJUDICATION_SCHEMA, SYSTEM_PROMPT,
+                       model=model, on_result=persist, log=log)
+    if buf:
+        store.put_many(buf)
+    stats.failed = len(todo) - stats.adjudicated
     log(f"L3 done: {stats.adjudicated} adjudicated, {stats.failed} failed "
         f"(store now {len(store)})")
     return stats

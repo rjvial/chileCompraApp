@@ -880,6 +880,16 @@ comparison unit, so the summary answers both goals at once — per-base-unit pri
 spread among them). Needs a persisted catalog (`match --persist`). Only the
 Phase-6 cutover from the legacy `:GenericProduct` catalog remains.
 
+> **Every stage is killable and resumable.** `canonicalize` persists each profile
+> as it lands (durable every ~100) into the text-hash store and **skips anything
+> already there on re-run** — a kill loses only the in-flight calls; just re-run
+> the same command. `adjudicate` works the same way against its verdict store.
+> `match --persist` is idempotent (all writes are `MERGE`), and the long
+> `:PRICED_IN` write keeps a stream-offset checkpoint — re-run with `--resume` to
+> continue the edge write from where it stopped (same `--segment`). So the
+> practical Max workflow — run L1 per segment, killing and resuming freely — never
+> repeats finished work.
+
 ---
 
 ## 5. Files & outputs

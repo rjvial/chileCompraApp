@@ -1050,18 +1050,31 @@ def cmd_match(args) -> int:
 
     if args.persist:
         from .graphdb import get_connection
-        from .ingest.clusters import build_records, write_clusters, write_priced_in
+        from .ingest.clusters import (
+            build_records,
+            read_priced_in_checkpoint,
+            write_clusters,
+            write_priced_in,
+        )
         from .ingest.neo4j_source import fetch_offer_prices
         from .normalize import Normalizer
 
+        # Clustering is deterministic, so on resume the records rebuild identically
+        # and the cluster writes (MERGE) are idempotent; only the long edge write
+        # resumes from a checkpointed stream offset.
         node_rows, refines_rows, hash_to_cluster, pack_by_hash = build_records(res, items)
+        ckpt = Path(f"data/match_seg{args.segment if args.segment is not None else 'all'}.checkpoint.json")
+        start = read_priced_in_checkpoint(ckpt) if args.resume else 0
         conn = get_connection()
         try:
             print("PERSIST: writing clusters + binding offers", file=sys.stderr)
             write_clusters(conn, node_rows, refines_rows, log=log)
-            offers = fetch_offer_prices(conn, unspsc_segment=args.segment)
+            if start:
+                log(f"resuming PRICED_IN from offer {start:,}")
+            offers = fetch_offer_prices(conn, unspsc_segment=args.segment, skip=start)
             written, skipped = write_priced_in(
-                conn, offers, hash_to_cluster, pack_by_hash, Normalizer(), log=log)
+                conn, offers, hash_to_cluster, pack_by_hash, Normalizer(),
+                start=start, checkpoint_path=ckpt, log=log)
         finally:
             conn.close()
         print(f"\npersisted: {len(node_rows):,} clusters, {written:,} PRICED_IN edges "
@@ -1732,6 +1745,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--persist", action="store_true",
                    help="WRITE :ProductCluster/:REFINES + bind offers via :PRICED_IN "
                         "(default: offline report only)")
+    p.add_argument("--resume", action="store_true",
+                   help="resume the PRICED_IN write from its checkpoint (same scope)")
     p.add_argument("--segment", type=int, default=None,
                    help="UNSPSC segment scope for the offer-price read on --persist")
     p.add_argument("--show", type=int, default=15, help="top clusters to print")

@@ -198,11 +198,16 @@ _CLI_ALIASES = {"claude-haiku-4-5": "haiku", "claude-sonnet-4-6": "sonnet",
                 "claude-opus-4-8": "opus", "claude-opus-4-7": "opus"}
 
 
-def _cli_json_concurrent(requests, schema, system, *, model, max_workers, log):
+def _cli_json_concurrent(requests, schema, system, *, model, max_workers,
+                         on_result=None, log=lambda _m: None):
     """Run many structured calls through the Claude CLI (Max subscription) with a
     bounded thread pool — each call is a `claude -p` subprocess. No Batch API and
     no server-side prompt caching on this path (those are SDK-only), so this is
-    slower and bound by the Max usage limits; keep max_workers modest."""
+    slower and bound by the Max usage limits; keep max_workers modest.
+
+    `on_result(custom_id, dict)` is invoked from the main thread as each call
+    completes — the hook that lets callers persist incrementally, so a kill loses
+    only the in-flight calls."""
     cli_model = _CLI_ALIASES.get(model, model)
     out: dict[str, dict] = {}
     done = 0
@@ -217,6 +222,8 @@ def _cli_json_concurrent(requests, schema, system, *, model, max_workers, log):
             try:
                 cid, d = fut.result()
                 out[cid] = d
+                if on_result is not None:
+                    on_result(cid, d)
             except Exception as exc:  # noqa: BLE001 - one bad call shouldn't kill the run
                 log(f"  {futs[fut][:12]}: failed ({type(exc).__name__})")
             done += 1
@@ -228,7 +235,8 @@ def _cli_json_concurrent(requests, schema, system, *, model, max_workers, log):
 
 def complete_json_many(requests, schema, system, *,
                        model: str = "claude-haiku-4-5", max_workers: int = 8,
-                       poll_seconds: int = 30, log=lambda _m: None) -> dict[str, dict]:
+                       poll_seconds: int = 30, on_result=None,
+                       log=lambda _m: None) -> dict[str, dict]:
     """Run a batch of structured calls and return {custom_id: parsed_dict}, using
     whichever backend is configured:
 
@@ -236,12 +244,18 @@ def complete_json_many(requests, schema, system, *,
         subprocesses. No per-token cost; slower; bounded by Max usage limits.
       - anthropic_sdk (API credits): the Batch API (−50% + prompt caching).
 
-    `requests` is a list of (custom_id, user_message). The L1/L3 workhorse."""
+    `on_result(custom_id, dict)`, if given, fires as each result is ready so the
+    caller can persist incrementally (kill-resumable). `requests` is a list of
+    (custom_id, user_message). The L1/L3 workhorse."""
     if _backend() == "anthropic_sdk":
-        return complete_json_batch(requests, schema, system, model=model,
-                                   poll_seconds=poll_seconds, log=log)
+        out = complete_json_batch(requests, schema, system, model=model,
+                                  poll_seconds=poll_seconds, log=log)
+        if on_result is not None:
+            for cid, d in out.items():
+                on_result(cid, d)
+        return out
     return _cli_json_concurrent(requests, schema, system, model=model,
-                                max_workers=max_workers, log=log)
+                                max_workers=max_workers, on_result=on_result, log=log)
 
 
 def complete_text(prompt: str, system: str | None = None,

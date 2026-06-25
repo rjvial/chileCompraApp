@@ -72,6 +72,7 @@ class CanonStats:
 
 
 _BATCH_SIZE = 50_000  # under the API's 100k-requests / 256MB per-batch limit
+_FLUSH = 100          # persist to the store every N profiles (kill-resume granularity)
 
 
 def canonicalize(records, store: ProfileStore, *,
@@ -118,31 +119,37 @@ def canonicalize(records, store: ProfileStore, *,
         log("dry run — L0 only, no LLM calls (no API credits spent)")
         return stats
 
+    # Persist incrementally as each profile is canonicalized (flush every
+    # _FLUSH), so a kill loses at most the in-flight calls + the unflushed buffer.
+    # Re-running skips everything already in the store (store.has above) — the
+    # store IS the resume state, no separate checkpoint needed.
     items = list(todo.items())
+    from ..llm import complete_json_many
+    buf: dict[str, dict] = {}
+
+    def persist(h, d):
+        try:
+            buf[h] = P.profile_to_dict(P.parse_profile(d))
+            stats.canonicalized += 1
+        except (KeyError, TypeError) as exc:
+            log(f"  parse failed for {h[:12]}: {exc}")
+        if len(buf) >= _FLUSH:
+            store.put_many(buf)
+            buf.clear()
+            log(f"  ...persisted (store now {len(store):,})")
+
     for start in range(0, len(items), batch_size):
         chunk = items[start:start + batch_size]
-        from ..llm import complete_json_many
         requests = [
             (h, P.build_user_message(raw, unspsc=unspsc_by_hash.get(h)))
             for h, raw in chunk
         ]
-        results = complete_json_many(requests, P.PROFILE_SCHEMA, system,
-                                     model=model, max_workers=workers, log=log)
-        to_store: dict[str, dict] = {}
-        for h, _raw in chunk:
-            d = results.get(h)
-            if d is None:
-                stats.failed += 1
-                continue
-            try:
-                to_store[h] = P.profile_to_dict(P.parse_profile(d))
-                stats.canonicalized += 1
-            except (KeyError, TypeError) as exc:
-                stats.failed += 1
-                log(f"  parse failed for {h[:12]}: {exc}")
-        store.put_many(to_store)
-        log(f"  persisted batch {start // batch_size + 1}: "
-            f"{len(to_store)} profiles (store now {len(store):,})")
+        complete_json_many(requests, P.PROFILE_SCHEMA, system, model=model,
+                           max_workers=workers, on_result=persist, log=log)
+        if buf:
+            store.put_many(buf)
+            buf.clear()
+    stats.failed = len(items) - stats.canonicalized
     return stats
 
 

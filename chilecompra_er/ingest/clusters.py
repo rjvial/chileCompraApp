@@ -14,6 +14,8 @@ member is an index into the profile list, which is parallel to the store's
 from __future__ import annotations
 
 import hashlib
+import json
+from pathlib import Path
 
 from ..resolve.matcher import MatchResult
 
@@ -112,14 +114,35 @@ def write_clusters(conn, node_rows, refines_rows, *, chunk=_CHUNK, log=lambda _m
     log(f"wrote {len(refines_rows):,} REFINES edges")
 
 
+def read_priced_in_checkpoint(path) -> int:
+    """Offers already consumed from the stream (the resume offset). 0 if absent."""
+    try:
+        return int(json.loads(Path(path).read_text(encoding="utf-8"))["processed"])
+    except (OSError, ValueError, KeyError):
+        return 0
+
+
+def _write_priced_in_checkpoint(path, processed: int) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps({"processed": processed}), encoding="utf-8")
+
+
 def write_priced_in(conn, offer_rows, hash_to_cluster, pack_by_hash, normalizer,
-                    *, chunk=_CHUNK, log=lambda _m: None):
+                    *, chunk=_CHUNK, start=0, checkpoint_path=None,
+                    log=lambda _m: None):
     """Stream offers, route each to its cluster by normalized-text-hash, and MERGE
     the PRICED_IN edge with the per-base-unit price. Offers whose text didn't
-    canonicalize to a clustered profile are skipped (counted)."""
+    canonicalize to a clustered profile are skipped (counted).
+
+    Resumable: `offer_rows` must already be fetched with `skip=start` (the stream
+    order is stable). The checkpoint records the absolute stream position at every
+    flush; a killed run re-reads it, re-fetches from there, and continues. MERGE
+    makes every write idempotent, so even a re-run without a checkpoint is safe —
+    the checkpoint only saves repeating work."""
     from ..resolve.profile import text_hash
 
     written = skipped = 0
+    processed = start
     buf: list[dict] = []
 
     def flush():
@@ -139,22 +162,25 @@ def write_priced_in(conn, offer_rows, hash_to_cluster, pack_by_hash, normalizer,
             parameters={"rows": buf})
         written += len(buf)
         buf.clear()
+        if checkpoint_path:
+            _write_priced_in_checkpoint(checkpoint_path, processed)
 
     for o in offer_rows:
+        processed += 1
         text = o.get("text")
         h = text_hash(normalizer(text)) if text else None
         cid = hash_to_cluster.get(h) if h else None
         if cid is None:
             skipped += 1
-            continue
-        pack = pack_by_hash.get(h)
-        buf.append({"id": o.get("id"), "cluster_id": cid,
-                    "np": normalized_price(o.get("unit_price"), pack),
-                    "up": o.get("unit_price"), "cur": o.get("currency"),
-                    "rut": o.get("rut"), "date": o.get("date"), "pack": pack})
+        else:
+            pack = pack_by_hash.get(h)
+            buf.append({"id": o.get("id"), "cluster_id": cid,
+                        "np": normalized_price(o.get("unit_price"), pack),
+                        "up": o.get("unit_price"), "cur": o.get("currency"),
+                        "rut": o.get("rut"), "date": o.get("date"), "pack": pack})
         if len(buf) >= chunk:
             flush()
-            log(f"  PRICED_IN written {written:,} (skipped {skipped:,})")
+            log(f"  PRICED_IN written {written:,} (skipped {skipped:,}, pos {processed:,})")
     flush()
     log(f"PRICED_IN done: {written:,} edges, {skipped:,} offers unplaced")
     return written, skipped
