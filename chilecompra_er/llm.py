@@ -46,7 +46,12 @@ def _claude_exe() -> str:
 
 
 def _cli_complete(prompt: str, system: str | None, model: str) -> str:
-    cmd = [_claude_exe(), "-p", "--output-format", "json", "--model", model]
+    # --strict-mcp-config (with no --mcp-config) starts the headless session with
+    # NO MCP servers: these are pure text->JSON calls that need no tools and no
+    # Neo4j MCP connection, so we skip that per-call boot cost. Matters a lot at
+    # L1 scale, where each call is its own `claude -p` process.
+    cmd = [_claude_exe(), "-p", "--output-format", "json", "--model", model,
+           "--strict-mcp-config"]
     if system:
         cmd += ["--append-system-prompt", system]
     proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,

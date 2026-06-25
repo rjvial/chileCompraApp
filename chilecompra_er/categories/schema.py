@@ -152,14 +152,20 @@ def _parse_rule(d: dict) -> Rule:
 # collapsed cable gauge and calcium onto a "dextrose 2.5%" product. Such a rule
 # MUST carry a `requires` guard; the lint flags the ones that don't.
 
+# Unit symbols that anchor a number to a concept (degrees, percent, micro, ohm),
+# so evidence like "360°" or "5µm" counts as anchored, not bare.
+_UNIT_SYMBOLS = "%°ºµμΩ"
+
+
 def _is_anchorless_pattern(pattern: str) -> bool:
-    if "%" in pattern:
+    if any(u in pattern for u in _UNIT_SYMBOLS):
         return False
     s = pattern
     for tok in (r"\b", r"\s", r"\d", r"\w", r"\.", r"\-"):
         s = s.replace(tok, " ")
     s = re.sub(r"[*+?(){}\[\]|^$0-9.,\\\- ]", " ", s)
-    return re.search(r"[a-zA-Z]", s) is None
+    # any Unicode letter (incl. accented Spanish) anchors it; bare numbers don't
+    return re.search(r"[^\W\d_]", s) is None
 
 
 def anchorless_identity_rules(schema: CategorySchema) -> list[tuple[str, str]]:
