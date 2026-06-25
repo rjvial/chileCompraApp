@@ -850,6 +850,14 @@ writes `:ProductCluster` + `:REFINES` nodes and binds offers via
 `(:Oferta)-[:PRICED_IN {normalized_price, rut, date}]->(:ProductCluster)` (price
 per base unit on the edge); run `migrate` first (migration `005`).
 
+**`adjudicate [--store data\profiles.jsonl] [--verdicts data\adjudications.jsonl] [--model claude-sonnet-4-6] [--dry-run]`**
+— **L3**: Claude adjudicates the small residue the L2 matcher couldn't settle
+deterministically — a shared `model_token` whose specs conflict, and a coarse
+partial spec compatible with several divergent children. Each case becomes a
+structured verdict (`same` / `different` / `anchor`, with rationale), persisted by
+case key so re-runs don't re-pay. Uses Sonnet/Opus → **API credits**; `--dry-run`
+reports the case count with no spend.
+
 **`coherence-check [--store data\profiles.jsonl] [--graph] [--tier all] [--out <csv>]`**
 — **L4 auditor**: runs the named invariants in three tiers. **Structural** (e.g.
 S1 every identity attribute has evidence, S2 no anchorless-number evidence, S5
@@ -865,8 +873,8 @@ checks over the persisted catalog.
 (normalization already on the edge). A cluster is the substitutable-product
 comparison unit, so the summary answers both goals at once — per-base-unit price
 **over time** and **across competition** (distinct supplier RUTs + the price
-spread among them). Needs a persisted catalog (`match --persist`). L3 adjudication
-and the Phase-6 cutover from the legacy `:GenericProduct` catalog remain.
+spread among them). Needs a persisted catalog (`match --persist`). Only the
+Phase-6 cutover from the legacy `:GenericProduct` catalog remains.
 
 ---
 

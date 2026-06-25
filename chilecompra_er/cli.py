@@ -1069,6 +1069,40 @@ def cmd_match(args) -> int:
     return 0
 
 
+def cmd_adjudicate(args) -> int:
+    """L3 (redesign): Claude adjudicates the L2 matcher's residue (model-token
+    conflicts + ambiguous partials). Verdicts persisted by case key. Uses
+    Sonnet/Opus → API credits; --dry-run reports the case count with no spend."""
+    from .resolve.adjudicate import (
+        VerdictStore,
+        adjudicate,
+        build_questions,
+        signature_profiles,
+    )
+    from .resolve.canonicalize import ProfileStore
+    from .resolve.matcher import cluster
+
+    def log(msg) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
+    items = ProfileStore(args.store).items()
+    if not items:
+        print(f"no profiles in {args.store} — run `canonicalize` first")
+        return 1
+    result = cluster([p for _h, p in items])
+    questions = build_questions(result, signature_profiles(items))
+    store = VerdictStore(args.verdicts)
+    stats = adjudicate(questions, store, model=args.model,
+                       dry_run=args.dry_run, log=log)
+    print(f"cases       : {stats.questions:,}")
+    print(f"cached      : {stats.cached:,}")
+    if not args.dry_run:
+        print(f"adjudicated : {stats.adjudicated:,}")
+        print(f"failed      : {stats.failed:,}")
+        print(f"verdicts    : {args.verdicts} ({len(store):,} total)")
+    return 0
+
+
 def cmd_coherence_check(args) -> int:
     """Coherence auditor (redesign): run the named invariants over the L1
     profiles + L2 clusters (and, with --graph, the persisted catalog). STRUCTURAL
@@ -1700,6 +1734,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="UNSPSC segment scope for the offer-price read on --persist")
     p.add_argument("--show", type=int, default=15, help="top clusters to print")
     p.set_defaults(func=cmd_match)
+
+    p = sub.add_parser("adjudicate",
+                       help="L3 (redesign): Claude adjudicates the L2 residue "
+                            "(model-token conflicts + ambiguous partials)")
+    p.add_argument("--store", type=Path, default=Path("data/profiles.jsonl"),
+                   help="L1 profile store (default data\\profiles.jsonl)")
+    p.add_argument("--verdicts", type=Path, default=Path("data/adjudications.jsonl"),
+                   help="verdict store, keyed by case (default data\\adjudications.jsonl)")
+    p.add_argument("--model", default="claude-sonnet-4-6",
+                   help="L3 model (default Sonnet 4.6; Opus for the hardest)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report the case count only — no LLM calls, no credits")
+    p.set_defaults(func=cmd_adjudicate)
 
     p = sub.add_parser("coherence-check",
                        help="L4 (redesign): run coherence invariants over the L1 "
