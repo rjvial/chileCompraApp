@@ -840,14 +840,17 @@ never become identity (the redesign's answer to the `2.5pct` false-merge class).
 > API credits** (the `anthropic_sdk` backend), *not* the Claude Max subscription,
 > so load credits before running it.
 
-**`match [--store data\profiles.jsonl] [--attach-partials] [--show 15]`** — **L2**:
-clusters the L1 profile store into product clusters offline (no graph, no LLM).
-The pairwise rule: same `model_token` ⇒ same product (even cross-brand); a
-conflicting attribute is a hard cut; identical signatures collapse; a coarser
-partial spec is linked by `REFINES` rather than merged (unless `--attach-partials`
-and it has a unique finer child). Prints cluster/edge/residue counts and the top
-clusters. Graph persistence (`:ProductCluster`/`:PRICED_IN`) and L3 adjudication
-are the next Phase-2/3 steps.
+**`match [--store data\profiles.jsonl] [--attach-partials] [--persist] [--segment <n>] [--show 15]`**
+— **L2**: clusters the L1 profile store into product clusters. The pairwise rule:
+same `model_token` ⇒ same product (even cross-brand); a conflicting attribute is a
+hard cut; identical signatures collapse; a coarser partial spec is linked by
+`REFINES` rather than merged (unless `--attach-partials` and it has a unique finer
+child). Default is an offline report (no graph, no LLM). With **`--persist`** it
+writes `:ProductCluster` + `:REFINES` nodes and binds offers via
+`(:Oferta)-[:PRICED_IN {normalized_price, rut, date}]->(:ProductCluster)` (price
+per base unit on the edge); run `migrate` first (migration `005`). L3 adjudication,
+the coherence auditor, and the cutover from the legacy `:GenericProduct` catalog
+remain.
 
 ---
 

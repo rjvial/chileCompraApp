@@ -1022,17 +1022,21 @@ def cmd_canonicalize(args) -> int:
 
 
 def cmd_match(args) -> int:
-    """L2 (redesign): cluster the L1 profile store into product clusters.
-    Read-only report for now — graph persistence (ProductCluster/PRICED_IN) is
-    the next Phase-2 step. Runs offline against the JSONL store, no LLM."""
+    """L2 (redesign): cluster the L1 profile store into product clusters. Offline
+    report by default; with --persist, write :ProductCluster / :REFINES nodes and
+    bind offers via :PRICED_IN edges (price per base unit on the edge)."""
     from .resolve.canonicalize import ProfileStore
     from .resolve.matcher import cluster
 
+    def log(msg) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
     store = ProfileStore(args.store)
-    profiles = store.profiles()
-    if not profiles:
+    items = store.items()
+    if not items:
         print(f"no profiles in {args.store} — run `canonicalize` first")
         return 1
+    profiles = [p for _h, p in items]
     res = cluster(profiles, attach_partials=args.attach_partials)
     print(f"profiles        : {len(profiles):,}")
     print(f"product clusters : {len(res.clusters):,}")
@@ -1043,6 +1047,25 @@ def cmd_match(args) -> int:
     print(f"\ntop {args.show} clusters by bid count:")
     for c in top:
         print(f"  {len(c.members):>6}  {c.signature}")
+
+    if args.persist:
+        from .graphdb import get_connection
+        from .ingest.clusters import build_records, write_clusters, write_priced_in
+        from .ingest.neo4j_source import fetch_offer_prices
+        from .normalize import Normalizer
+
+        node_rows, refines_rows, hash_to_cluster, pack_by_hash = build_records(res, items)
+        conn = get_connection()
+        try:
+            print("PERSIST: writing clusters + binding offers", file=sys.stderr)
+            write_clusters(conn, node_rows, refines_rows, log=log)
+            offers = fetch_offer_prices(conn, unspsc_segment=args.segment)
+            written, skipped = write_priced_in(
+                conn, offers, hash_to_cluster, pack_by_hash, Normalizer(), log=log)
+        finally:
+            conn.close()
+        print(f"\npersisted: {len(node_rows):,} clusters, {written:,} PRICED_IN edges "
+              f"({skipped:,} offers unplaced)")
     return 0
 
 
@@ -1581,6 +1604,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--attach-partials", action="store_true",
                    help="merge a coarse partial spec into its unique finer cluster "
                         "(default off = keep separate, linked by REFINES)")
+    p.add_argument("--persist", action="store_true",
+                   help="WRITE :ProductCluster/:REFINES + bind offers via :PRICED_IN "
+                        "(default: offline report only)")
+    p.add_argument("--segment", type=int, default=None,
+                   help="UNSPSC segment scope for the offer-price read on --persist")
     p.add_argument("--show", type=int, default=15, help="top clusters to print")
     p.set_defaults(func=cmd_match)
 

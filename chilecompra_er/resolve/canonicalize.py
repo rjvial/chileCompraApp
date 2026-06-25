@@ -52,6 +52,12 @@ class ProfileStore:
         """Every stored profile, for the L2 matcher."""
         return [P.parse_profile(d) for d in self._cache.values()]
 
+    def items(self) -> list[tuple[str, P.Profile]]:
+        """(text_hash, profile) pairs — the matcher works on the profiles and
+        persistence maps each cluster member back to its text-hash (and so to its
+        offers) via this parallel order."""
+        return [(h, P.parse_profile(d)) for h, d in self._cache.items()]
+
     def __len__(self) -> int:
         return len(self._cache)
 

@@ -344,6 +344,29 @@ def fetch_offer_descriptions(conn, unspsc_segment: int | None = None,
         yield rec["text"], rec["unspsc"]
 
 
+def fetch_offer_prices(conn, unspsc_segment: int | None = None,
+                       limit: int | None = None, skip: int = 0) -> Iterator[dict]:
+    """Stream the fields the L2 PRICED_IN edge needs: the offer id (match key),
+    its description (-> text-hash -> cluster), unit price, currency, supplier RUT
+    (the competitor), and date. One streamed scan; segment-scopable to match the
+    canonicalize run that produced the profiles."""
+    seg_low, seg_high = segment_bounds(unspsc_segment)
+    cypher = """
+        MATCH (o:Oferta)-[:PARA_ITEM]->(i:ItemLicitacion)
+        WHERE o.descripcion_proveedor IS NOT NULL
+          AND ($seg_low IS NULL OR
+               (i.codigo_unspsc_producto >= $seg_low AND i.codigo_unspsc_producto < $seg_high))
+        RETURN o.id_oferta AS id, o.descripcion_proveedor AS text,
+               coalesce(o.precio_unitario_clean, o.precio_unitario) AS unit_price,
+               o.moneda AS currency, o.rut_proveedor AS rut, o.fecha AS date
+        SKIP $skip LIMIT $limit
+    """
+    params = {"skip": skip, "limit": limit if limit is not None else _NO_LIMIT,
+              "seg_low": seg_low, "seg_high": seg_high}
+    for rec in conn.stream(cypher, parameters=params, fetch_size=_BATCH):
+        yield dict(rec)
+
+
 def count_tender_items(conn, contains: str | None = None) -> int:
     rec = conn.query(
         """
