@@ -811,8 +811,9 @@ Never touches the graph (that's `wipe-catalog`).
 
 | Command | What it does |
 |---|---|
-| `wipe-category <id> --yes` | Delete one category's catalog nodes (and their RESOLVED_TO edges). |
-| `wipe-catalog --yes` | Delete ALL catalog data (Category / GenericProduct / Product / Brand). Source data + migrations untouched. |
+| `wipe-category <id> --yes` | Delete one category's **legacy** catalog nodes (and their RESOLVED_TO edges). |
+| `wipe-catalog --yes` | Delete ALL **legacy** catalog data (Category / GenericProduct / Product / Brand). Source data + migrations untouched. |
+| `wipe-clusters --yes` | Delete ONLY the **redesign** shadow catalog (`:ProductCluster` + `PRICED_IN`/`REFINES`). Edges dropped first (APOC-batched for scale), then nodes; clears the `match` checkpoints so a re-match starts fresh. **Legacy catalog and source untouched.** Use after changing the L1 prompt/vocabulary, before re-matching. |
 
 ### 4.9 Resolution redesign (L0→L3) — the new pipeline (shadow catalog)
 

@@ -1524,6 +1524,40 @@ def cmd_price_clusters(args) -> int:
     return 0
 
 
+def cmd_wipe_clusters(args) -> int:
+    """Delete ONLY the redesign's shadow catalog — `:ProductCluster` nodes and their
+    `:PRICED_IN` / `:REFINES` edges — leaving the legacy `:GenericProduct` catalog
+    and the source graph untouched. Use before re-matching after an L1 change.
+    Edges are dropped first (PRICED_IN can be millions → APOC-batched), then the
+    edge-free nodes; the match checkpoints are cleared so a re-run starts fresh."""
+    if not args.yes:
+        print("refusing to wipe clusters without --yes")
+        return 1
+    from .graphdb import get_connection
+
+    conn = get_connection()
+    try:
+        conn.query("CALL apoc.periodic.iterate("
+                   "'MATCH ()-[r:PRICED_IN]->() RETURN r', 'DELETE r', "
+                   "{batchSize: 10000})")
+        conn.query("MATCH ()-[r:REFINES]->() DELETE r")
+        rec = conn.query("CALL apoc.periodic.iterate("
+                         "'MATCH (c:ProductCluster) RETURN c', 'DELETE c', "
+                         "{batchSize: 10000}) YIELD total RETURN total")
+        deleted = rec[0]["total"] if rec else 0
+        print(f"wiped {deleted:,} ProductCluster nodes + PRICED_IN/REFINES edges "
+              "(legacy catalog + source untouched)")
+    finally:
+        conn.close()
+    cleared = 0
+    for p in Path("data").glob("match_seg*.checkpoint.json"):
+        p.unlink()
+        cleared += 1
+    if cleared:
+        print(f"cleared {cleared} match checkpoint(s) — re-match starts fresh")
+    return 0
+
+
 def cmd_wipe_catalog(args) -> int:
     """Delete ALL catalog data (Category/GenericProduct/Product/Brand).
     The transactional layer (Licitacion/Oferta/ItemLicitacion/...) and the schema
@@ -1983,6 +2017,13 @@ def build_parser() -> argparse.ArgumentParser:
                             "transactional source data untouched)")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_wipe_catalog)
+
+    p = sub.add_parser("wipe-clusters",
+                       help="delete ONLY the redesign's :ProductCluster shadow "
+                            "catalog + PRICED_IN/REFINES edges (destructive; legacy "
+                            "catalog and source untouched). Use before re-matching.")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_wipe_clusters)
 
     return parser
 
