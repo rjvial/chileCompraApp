@@ -842,6 +842,10 @@ token + packaging), persisted by text-hash so each distinct string is
 canonicalized **once** (a cached pure function). The cardinal rule: every
 identity attribute must quote the substring that anchors it — a bare number can
 never become identity (the redesign's answer to the `2.5pct` false-merge class).
+For a known family, the attribute **names** are constrained to that family's
+registered schema vocabulary (so the model can't drift between `gauge` and
+`calibre`), and values are Spanish/snake_case — which is what lets the L2 matcher
+actually merge equivalent bids.
 
 | Flag | Default | Meaning |
 |---|---|---|
