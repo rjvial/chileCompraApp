@@ -935,10 +935,16 @@ on the **same** segment you canonicalized (or with no `--segment` once all
 segments are canonicalized), else clusters for un-bound segments show up as orphan
 nodes in `coherence-check` (transient).
 
-**LLM backend selection** (applies to `register` / `generate-schemas` /
-`build-brand-lexicon` too): `CHILECOMPRA_LLM_BACKEND=claude_cli` (default) uses the
-Max subscription; `=anthropic_sdk` uses the API (Batch API for L1/L3) and bills
-API credits. The pipeline is set to **Max always** unless you change this.
+**LLM backend selection** (`CHILECOMPRA_LLM_BACKEND`, applies to every LLM command):
+- **`claude_cli`** (default) — Max via `claude -p`; correct but ~28K scaffolding/call.
+- **`claude_oauth`** — Max via the **`claude setup-token`** OAuth token used directly
+  with `messages.create` (Authorization: Bearer + the `oauth-2025-04-20` beta header).
+  **Bare, cacheable calls billed to Max — no agent scaffolding** (~14× leaner than
+  `claude_cli`, and fast: no subprocess). Set `CLAUDE_CODE_OAUTH_TOKEN` to the token
+  from `claude setup-token`. The efficient Max path.
+- **`anthropic_sdk`** — first-party API (Batch API for L1/L3); bills API credits.
+
+The pipeline stays on **Max** (`claude_cli` or `claude_oauth`) — never Bedrock.
 
 ---
 
