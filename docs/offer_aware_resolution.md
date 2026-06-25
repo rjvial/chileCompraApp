@@ -1,5 +1,53 @@
 # Design: Offer-Aware Resolution (Oferta ↔ Product ↔ GenericProduct consistency)
 
+## Update (2026-06-24): the specificity-chain model (supersedes §3–§4 below)
+
+The invariant is now a single **specificity chain** every conforming row obeys:
+
+```
+ItemLicitacion = GenericProduct ≤ Product ≤ Oferta
+   (demand)        (catalog id)    (branded SKU)  (the bid)
+```
+
+`=` is deliberate for the buyer↔generic link; `≤` (non-increasing specificity)
+for the rest. Concretely:
+
+- **A — the GenericProduct is the buyer's demand, enriched UPWARD ONLY by the
+  offer floor.** `generic.spec = S_item ⊔ F`, where `S_item` is the buyer line's
+  own extraction and `F` is the offers' *minimum common* spec. `F` only adds
+  identity attributes the buyer omitted; it never overrides or coarsens a value
+  the buyer fixed. `F` (`resolver.offer_identity_floor`): for each attribute, take
+  the **dominant** value across offers, adopt it **iff it is the value an awarded
+  ("winner") offer carries** (the award is ground truth, so the floor ⊆ every
+  winner and each winner conforms); with **no award**, fall back to **strict** —
+  adopt only attributes *every* offer agrees on. This pins a terse/rubric item to
+  the floor the offers realised, never to a single awarded offer's full spec.
+
+- **B — extra offer specificity rides the PRODUCT, not a finer generic.**
+  `:Product = Brand × the offer's identity`, `VARIANT_OF the item's ONE generic`.
+  A refining offer gets a finer **Product** under the shared generic; offers no
+  longer mint finer *generics* (the generic hierarchy is driven by demand only).
+  This partly reverses `b8afa95`'s pure-Product: identity attributes are back on
+  the Product key/node; descriptives + price stay on the OFFERS edge.
+
+- **C — an offer below the buyer's spec is NON-conforming, kept with its own
+  spec.** Vaguer-than or divergent-from the buyer line (same family): `conforming
+  = false`, `Product.spec = Oferta.spec` (un-clamped — never forced up to the
+  generic), still `VARIANT_OF` the item generic. A different *family* stays
+  `recategorized` (its own generic, `conforming=false`). The old "clamp a vaguer
+  offer up to the item node" branch is removed.
+
+Routing outcomes (`stats.offer_routing`): `same` (offer == generic), `refined`
+(strict superset, conforming), `nonconforming` (below/divergent, same family),
+`recategorized` (different family), `conservative` / `item_fallback`. Code:
+`resolver.offer_identity_floor` + `resolver.resolve_item` (A),
+`assignment.branded_product_id/merge_branded_product` (B),
+`runner._offer_target` (B+C). NB: Product ids are content-derived, so taking this
+live needs a re-resolve (every Product id changes).
+
+---
+
+
 > Status: **IMPLEMENTED (Phases 1–3) in `ingest/runner.py:_bind_offers`.**
 > Each offer now resolves to the generic its own text supports — equal→item
 > node, refinement→finer child (`PARENT_OF`), different family→its own generic

@@ -66,12 +66,8 @@ number (segment 42 = medical/lab supplies).
 |---|---|
 | `Category` | A product **family** (e.g. `sondas_foley`) with a typed attribute **schema** |
 | `GenericProduct` | A canonical product *within* a category, identified by its **identity attribute values** (Foley + 16Fr + latex). Shared across all tenders that describe it. |
-| `Product` | A **brand × generic pairing** — `(Foley 16Fr latex) × B.Braun`. Deduped: **one node per distinct (generic, brand)**, shared across every offer of it (not one per offer). Price-free — `VARIANT_OF` a GenericProduct and `OF_BRAND` a Brand; the price lives on the offer edge below. |
+| `Product` | A **brand × the offer's own spec** — `(Foley 16Fr latex 2-way) × B.Braun`. Deduped: **one node per distinct (generic, brand, offer identity)**, shared across every offer of that exact spec+brand. **Self-describing** (carries the offer's full identity values) and price-free — `VARIANT_OF` the item's GenericProduct and `OF_BRAND` a Brand; the price lives on the offer edge below. |
 | `Brand` | A first-class trade-name node (`b.braun`, `3m`), shared across products and categories. |
-| `SourceRecord` | A thin reference back to a source line/offer (`(ItemLicitacion)-[:HAS_RECORD]->`), with a `RESOLVED_TO` edge to its catalog node and a `content_hash` (the incremental-skip key). |
-| `ResolveRun` | One node per persist run (full / incremental / seed) — provenance for every event it emits. |
-| `ResolutionEvent` | An **immutable, append-only** record of one resolution touch — target, status, versions, and the full evidence. The lineage/audit log (`(SourceRecord)-[:HAS_EVENT]->(ResolutionEvent)<-[:EMITTED]-(ResolveRun)`). |
-| `ResolveState` | A singleton holding the set of ingestion `run_id`s already incorporated — the incremental watermark. |
 
 ```
   SOURCE GRAPH (read-only input)            CATALOG (written by `resolve`)
@@ -80,11 +76,11 @@ number (segment 42 = medical/lab supplies).
    Licitacion
       │ :TIENE_ITEM
       ▼
-   ItemLicitacion ──:HAS_RECORD──▶  SourceRecord ──:RESOLVED_TO──┐  (versioned)
-      ▲  buyer text + UNSPSC                                     │
-      │ :PARA_ITEM                                               ▼
+   ItemLicitacion ───────:RESOLVED_TO───────────────────┐
+      ▲  buyer text + UNSPSC                            │
+      │ :PARA_ITEM                                      ▼
    Oferta ─:OFFERS {price}─▶ Product ──:VARIANT_OF──▶  GenericProduct ──:IN_CATEGORY──▶ Category
-      supplier text          │  shared (generic,brand) │   ▲   shared node, deduped
+      supplier text          │  Brand × offer-spec      │   ▲   shared node, deduped
                              │  node — price NOT here   └───┘   by identity attributes
                        :OF_BRAND                     :PARENT_OF  (coarse → fine hierarchy)
                              ▼
@@ -93,12 +89,13 @@ number (segment 42 = medical/lab supplies).
   ──▶  stored edge        ┄┄▶  created by the resolver (a node, not a stored edge)
 ```
 
-Each `ItemLicitacion` becomes one `SourceRecord` (via `:HAS_RECORD`) that
-`RESOLVED_TO` a `GenericProduct`; each `Oferta` on that item attaches via an
+Each `ItemLicitacion` links **directly** to its `GenericProduct` via one
+`(:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct)` edge (carrying the evidence;
+overwritten on re-resolve). Each `Oferta` on that item attaches via an
 explicit `(:Oferta)-[:OFFERS {price…}]->(:Product)` edge, where the `Product` is
-the deduped `Brand × GenericProduct` pairing (`VARIANT_OF` the generic,
+the deduped `Brand × the offer's identity` node (`VARIANT_OF` the item's generic,
 `OF_BRAND` the brand). **The price lives on the OFFERS edge, not on the node** —
-so many offers of the same brand for the same generic collapse onto one shared
+so many offers of the same brand AND the same spec collapse onto one shared
 `Product`. Identical generics across different tenders collapse onto one shared
 `GenericProduct` (that is what makes cross-tender price comparison possible), and
 coarser nodes parent finer ones via `:PARENT_OF`.
@@ -129,13 +126,9 @@ priority and then runs steps 3–6 once for the chosen text:
    identity attributes anchors honestly on the **category root** (specificity 0);
    more-specific nodes hang under coarser ones via `PARENT_OF` (strict-subset
    hierarchy), so "Foley" parents "Foley 16Fr".
-6. **Persist** — upsert the `SourceRecord` (linked from its item via `:HAS_RECORD`,
-   carrying a `content_hash` of the item + its offers — the incremental-skip key)
-   and its `RESOLVED_TO` edge.
-   Re-resolving to the **same** target refreshes that edge in place (no new
-   version); a **changed** target retires the old edge and adds a new version.
-   Every touch also appends an immutable `:ResolutionEvent` — the full audit trail
-   (see §7).
+6. **Persist** — write the direct `(:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct)`
+   edge (carrying the evidence). One edge per item; re-resolving overwrites it
+   (DELETE old, CREATE new). No SourceRecord / lineage / versioning.
 
 ### The item-centric model (`--kind item`) — the recommended way
 
@@ -146,9 +139,14 @@ at a time**, pooling every signal it has:
   the item's offers) → tender title. Offers are the key lever — a buyer line that
   is just a rubric path ("Equipamiento médico / … / Sondas") gets its real
   category from the supplier offers that actually name the product.
-- **One generic product per item.** All of the item's offers bind beneath that
-  single generic — each via an `OFFERS` edge to the `Brand × generic` `Product`
-  for that offer's brand — so they can't scatter to different generics.
+- **One generic per item, offer-aware Products under it.** The buyer line gets
+  one `GenericProduct` (its demand), enriched **upward only** by the offers'
+  *minimum common* spec. Each offer then binds to a `Product` carrying that
+  **offer's own** identity, `VARIANT_OF` that generic: equal (`same`), more
+  specific (`refined`), or — when the offer is vaguer than or diverges from the
+  demand — kept but flagged `conforming=false` (`nonconforming`). An offer that is
+  plainly a **different family** resolves to its own generic (`recategorized`).
+  The spec chain stays consistent: `Item = Generic ≤ Product ≤ Oferta`.
 - **UNSPSC fallback** (see below) → coverage approaches **100%**.
 
 ### Curated vs fallback (the metric that matters)
@@ -260,8 +258,9 @@ too much lands on fallback, fix schemas / add families and re-run.
 
 **Step 3 — `resolve --persist`: build the catalog.** Same pipeline, now
 **writing** (resumable; checkpointed). MERGEs the canonical `GenericProduct` per
-item, links its `SourceRecord`, and binds **every offer via an `OFFERS {price}`
-edge to its `Brand × generic` `Product`** (the price on the edge). Unmatched
+item, links it via a direct `(:ItemLicitacion)-[:RESOLVED_TO]->` edge, and binds
+**every offer via an `OFFERS {price}` edge to its `Brand × offer-spec`
+`Product`** (the price on the edge). Unmatched
 items link to their `unspsc_<code>` bucket → **coverage ≈ 100%**. The items that
 landed on fallback are the **residue** Phase 2 attacks.
 
@@ -381,24 +380,13 @@ completes, keep iterating manually
 with the ↺ loop (Steps 4 → 6) until the fallback share stops shrinking. See §4.2
 for the nine stages and every flag.
 
-### Keeping the catalog current (incremental)
+### Keeping the catalog current
 
-The steps above are a **full** build. Once it exists, you don't re-resolve the
-whole corpus every time new tenders/items/offers land in the graph — you fold in
-only the delta:
-
-```powershell
-chilecompra-er resolve --seed-watermark         # once, after the full build: mark the current corpus resolved
-chilecompra-er resolve --incremental            # thereafter: resolve only what's new/changed since the last run
-```
-
-`--incremental` detects the delta from two index-backed signals already on the
-source nodes — the ingestion `run_id` (a watermark of which runs are already
-incorporated, kept in the `:ResolveState` node) and a `content_hash` of each item
-+ its offers (so an unchanged item is skipped, and a new offer on an existing item
-re-resolves it). It reuses the existing register / Tier-2 / brand artifacts (never
-retrains) and advances the watermark only on a fully successful run, so it's safe
-to re-run after an interruption. It is item-centric and always persists. See §4.4.
+The steps above are a **full** build. To fold in new tenders/items/offers, re-run
+`resolve --kind item --persist` — each `(:ItemLicitacion)-[:RESOLVED_TO]->`
+edge is overwritten in place, so a re-resolve simply refreshes every item to its
+current generic. (There is no incremental/watermark mode; the model is kept
+deliberately simple — one direct edge per item, no lineage layer.)
 
 ---
 
@@ -631,7 +619,7 @@ chilecompra-er resolve --kind item --segment 42 --persist --resume
 |---|---|---|
 | `--kind tender\|offer\|oc\|joint\|item` | `tender` | Unit / source of records — see below. |
 | `--fallback unspsc\|none` | `unspsc` | **`--kind item` only.** Unmatched items link to a coarse `unspsc_NNNNNNNN` node → ~100% link. `none` leaves them unresolved (curated-only). |
-| `--persist` | off | **WRITE** to the graph: SourceRecords (+ `HAS_RECORD`), GenericProducts + RESOLVED_TO, and (item kind) the offers as `OFFERS {price}` edges to their `Brand × generic` `Product`s. Off = dry run. |
+| `--persist` | off | **WRITE** to the graph: GenericProducts, the direct `(:ItemLicitacion)-[:RESOLVED_TO]->` edges, and (item kind) the offers as `OFFERS {price}` edges to their `Brand × offer-spec` `Product`s. Off = dry run. |
 | `--segment <n>` | none | UNSPSC segment filter (tender/offer/joint/item; ignored for oc). |
 | `--contains <str>` | none | Filter on buyer text (e.g. `foley`). |
 | `--limit <n>` | `200` | Max records. `all` (or `0`) = the whole filtered set. |
@@ -644,12 +632,10 @@ chilecompra-er resolve --kind item --segment 42 --persist --resume
 | `--tier2` | off | Add the trained Tier-2 classifier after Tier-1 (needs `train-tier2`). |
 | `--tier2-model <path>` | `data\tier2_model.joblib` | Tier-2 model file to load when `--tier2` is set. |
 | `--tier2-threshold <f>` | model default (`0.6`) | Override the Tier-2 confidence threshold for this run. |
-| `--incremental` | off | Fold in **only what's new/changed** since the last run (run_id watermark + content_hash). Implies `--kind item --persist`, unscoped; reuses tier2/brands; advances the `:ResolveState` watermark on success. See below. |
-| `--seed-watermark` | off | Mark every ingestion run currently present as resolved **without** resolving — the one-time handoff after a full build, so the next `--incremental` does only deltas. |
 
 **`--kind` values:** `item` *(recommended)* — whole `ItemLicitacion` at once
 (buyer line + offer consensus + title → one generic product; offers bound via
-`OFFERS {price}` edges to their `Brand × generic` Products; UNSPSC fallback).
+`OFFERS {price}` edges to their `Brand × offer-spec` Products; UNSPSC fallback).
 `tender` — one buyer line + its title as
 context (curated only). `joint` — one offer paired with its buyer line (offer
 wins; disagreement → review). `offer` — offers standalone. `oc` — purchase-order
@@ -668,6 +654,8 @@ curated by tier   : {'tier1': 1503, 'brand': 198, 'tier2': 108}  (which classifi
 price basis mix   : {'unknown': 1730, 'per_pack': 79}
 resolved w/o attrs: 412 (anchored on category roots — honest partials, no product info)
 offers bound      : 75 (as OFFERS edges to branded Products)
+offer routing     : {} (per-offer outcome; populated only on --persist:
+                        same / refined / nonconforming / recategorized / conservative)
 nodes created     : 847
 illegal values    : 452 (dropped, counted — schema dry-run metric)
 written: data\check_resoluciones.csv
@@ -690,24 +678,11 @@ checkpoint: data\check.checkpoint.json
 > the `pipeline` stages reuse the size precomputed at establishment (§4.2) rather
 > than counting again.
 
-> **Incremental runs (`--incremental`).** After the initial full build, fold in
-> only new/changed records instead of re-resolving everything:
-> ```powershell
-> chilecompra-er resolve --seed-watermark      # once: mark the current corpus resolved
-> chilecompra-er resolve --incremental         # thereafter: resolve only the delta
-> ```
-> The delta is "items from an ingestion `run_id` not yet in `:ResolveState`, **or**
-> items whose offers changed", minus anything whose stored `content_hash` still
-> matches. It's unscoped, item-centric, always persists, and reuses the existing
-> tier2/brands. The watermark advances only on a fully successful run, and the
-> `content_hash` skip makes a re-run after a kill idempotent (no `--resume` needed).
-> A first `--incremental` from an empty watermark is itself a full build.
->
-> ⚠️ **A register/schema change is NOT a content change.** `--incremental` keys on
-> the item's `content_hash`, which doesn't move when you edit `register.json` or a
-> schema — so after curating new families (Step 5) it would **skip** the very items
-> you want re-resolved. Apply register changes with a **full** `resolve --persist`
-> (the refresh-in-place edges retarget the recovered items), not `--incremental`.
+> **Keeping current.** There is no incremental mode — to fold in new
+> tenders/items/offers, re-run the full `resolve --kind item --persist`. Each
+> `(:ItemLicitacion)-[:RESOLVED_TO]->` edge is overwritten in place, so the
+> re-resolve just refreshes every item to its current generic (no duplicate edges,
+> no watermark to maintain).
 
 ### 4.5 Coverage tools (Phase 2)
 
@@ -826,8 +801,8 @@ Never touches the graph (that's `wipe-catalog`).
 
 | Command | What it does |
 |---|---|
-| `wipe-category <id> --yes` | Delete one category's catalog nodes + their SourceRecords. |
-| `wipe-catalog --yes` | Delete ALL catalog data (Category / GenericProduct / Product / Brand / SourceRecord). Source data + migrations untouched. |
+| `wipe-category <id> --yes` | Delete one category's catalog nodes (and their RESOLVED_TO edges). |
+| `wipe-catalog --yes` | Delete ALL catalog data (Category / GenericProduct / Product / Brand). Source data + migrations untouched. |
 
 ---
 
@@ -856,12 +831,10 @@ Outputs are split by **lifecycle**:
   - `tier2_model.joblib` (the trained classifier) also lives here but `clean`
     leaves it — regenerate it with `train-tier2`.
 - **The populated catalog lives in Neo4j**, written only by `resolve --persist`:
-  `Category` / `GenericProduct` / `Product` / `Brand` / `SourceRecord` nodes and
-  `IN_CATEGORY` / `HAS_RECORD` / `RESOLVED_TO` / `VARIANT_OF` / `OF_BRAND` /
-  `OFFERS {price}` / `PARENT_OF` edges, plus the
-  **lineage layer** — `ResolveRun` / `ResolutionEvent` nodes (`HAS_EVENT` /
-  `EMITTED` edges) and the `ResolveState` watermark singleton. `register` never
-  touches the graph.
+  `Category` / `GenericProduct` / `Product` / `Brand` nodes and the
+  `IN_CATEGORY` / `RESOLVED_TO` (direct, from `ItemLicitacion`) / `VARIANT_OF` /
+  `OF_BRAND` / `OFFERS {price}` / `PARENT_OF` edges. `register` never touches the
+  graph.
 
 ---
 
@@ -907,38 +880,41 @@ Outputs are split by **lifecycle**:
   values** (same values, same absences), embedded in `identity_key` — the
   uniqueness key that dedups a product across tenders. `PARENT_OF` builds the
   coarse→specific hierarchy by strict-subset subsumption.
-- **Branded products (`Product = Brand × GenericProduct`).** A `:Product` is the
-  deduped `(generic, brand)` pairing — `id = pr_<sha1(generic_id|brand=brand_id)>`
+- **Branded products (`Product = Brand × the offer's identity`).** A `:Product` is
+  the deduped `(generic, brand, offer-identity)` node —
+  `id = pr_<sha1(generic_id|brand=brand_id|attr=val|…)>`
   (`resolve/assignment.py:branded_product_id`) — so every offer of the same brand
-  for the same generic collapses onto one node, `VARIANT_OF` the generic and
-  `OF_BRAND` a shared `:Brand`. Each bid is an explicit
-  `(:Oferta)-[:OFFERS {price…}]->(:Product)` edge: **the price is on the edge, not
-  the node** (the node is brand-level identity only). The brand for an offer comes
-  from the brand lexicon / offer text (`resolve/brand.py:extract_brand`) during
-  `_bind_offers` (`ingest/runner.py`); offers with no recognizable brand fall to a
-  shared `SIN_MARCA` sentinel, so they collapse onto one `(generic, SIN_MARCA)`
-  Product. Schema (the `Brand.id` constraint + `Product.identity_key` index) is in
-  migration `003_branded_products.cypher`, applied by `migrate`.
-- `RESOLVED_TO` is the fast **current-state** pointer: re-resolving to the **same**
-  target refreshes the edge in place (updating `last_confirmed_at`, keeping
-  `first_resolved_at` and the version); a **changed** target retires the old edge
-  (`current=false`) and adds a new version. So the live edge never bloats, while
-  target changes stay versioned.
-- **Event-level lineage.** Every persist touch (full or incremental) appends an
-  immutable `:ResolutionEvent` carrying the target, status, versions, `content_hash`
-  and the **full evidence** (normalized text, classifier match + winning tier,
-  attribute values + provenance, price basis; unresolved touches carry the reason),
-  linked `(:SourceRecord)-[:HAS_EVENT]->(ev)<-[:EMITTED]-(:ResolveRun)`. Because
-  each event is self-contained, you can **reconstruct the past** as of any
-  timestamp — `resolve.lineage.resolution_as_of(conn, ts)` (latest event ≤ ts per
-  record) and `record_timeline(conn, record_key)`. The schema (run_id indexes +
-  `ResolveState`/`ResolveRun`/`ResolutionEvent` constraints) is applied by `migrate`.
-- **Incremental** runs key off the ingestion `run_id` watermark (`:ResolveState`)
-  plus the per-record `content_hash`. Two known gaps: deletions/retractions upstream
-  are **not** yet reconciled (a removed source item keeps its last resolution), and a
-  **register/schema edit doesn't change `content_hash`**, so `--incremental` skips it
-  — apply register changes with a full `resolve --persist` (a future fix folds the
-  register/extractor version into the skip key).
+  **and the same spec** collapses onto one **self-describing** node (the offer's
+  identity values live on the node), `VARIANT_OF` the item's generic and `OF_BRAND`
+  a shared `:Brand`. Brand and spec are independent axes, so one brand can have
+  several Products under one generic (one per distinct offer spec). Each bid is an
+  explicit `(:Oferta)-[:OFFERS {price…, conforming}]->(:Product)` edge: **the price
+  (and per-offer descriptives) are on the edge, not the node**. The brand for an
+  offer comes from the brand lexicon / offer text (`resolve/brand.py:extract_brand`)
+  during `_bind_offers` (`ingest/runner.py`); offers with no recognizable brand fall
+  to a shared `SIN_MARCA` sentinel. Schema (the `Brand.id` constraint +
+  `Product.identity_key` index) is in migration `003_branded_products.cypher`,
+  applied by `migrate`.
+- **Offer-aware binding & the spec chain.** An item's offers don't all collapse
+  onto its one generic. The generic is the buyer's demand, enriched **upward only**
+  by the offers' *minimum common* spec (`resolve/resolver.py:offer_identity_floor`
+  — dominant value adopted only when an awarded/winning offer carries it, else
+  strict). Each offer then routes (`ingest/runner.py:_offer_target`,
+  `stats.offer_routing`): `same` (== generic) / `refined` (a finer Product, same
+  generic) / `nonconforming` (vaguer-or-divergent, `conforming=false`, kept) /
+  `recategorized` (a confidently different family → its own generic,
+  `conforming=false`) / `conservative` (too terse to classify → item node). The
+  invariant is the chain `ItemLicitacion = GenericProduct ≤ Product ≤ Oferta`:
+  refinement rides the **Product**, never a finer generic (the generic hierarchy is
+  driven by demand only).
+- **`RESOLVED_TO` is direct and current-state only.** One
+  `(:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct)` edge per item, carrying the
+  resolution `evidence` (normalized text, classifier match + winning tier, attribute
+  values + provenance, price basis). Re-resolving **overwrites** it (DELETE old,
+  CREATE new) — no versioning, no SourceRecord, no lineage/event layer. The model is
+  deliberately flat: to update, re-run a full `resolve --persist`. (Migration
+  `004_drop_lineage.cypher` removed the old `SourceRecord` / `ResolveRun` /
+  `ResolutionEvent` / `ResolveState` schema.)
 - The Tier-2 **UNSPSC feature** was evaluated (`tier2-eval`) and showed no frontier
   lift on this corpus — it trades precision for coverage like a threshold nudge — so
   it is intentionally **not** wired into production; only the eval harness folds it in.

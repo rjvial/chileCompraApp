@@ -32,7 +32,7 @@ def test_resolution_buffers_no_writes_until_flush():
     joined = "\n".join(c for c, _ in conn.calls)
     assert "MERGE (c:Category" in joined
     assert "MERGE (g:GenericProduct" in joined
-    assert "MERGE (s:SourceRecord" in joined
+    assert "RESOLVED_TO" in joined          # the direct ItemLicitacion->generic edge
 
 
 def test_flush_orders_dependencies():
@@ -45,9 +45,9 @@ def test_flush_orders_dependencies():
     qs = [c for c, _ in conn.calls]
     cat_i = next(i for i, c in enumerate(qs) if "MERGE (c:Category" in c)
     gp_i = next(i for i, c in enumerate(qs) if "MERGE (g:GenericProduct" in c)
-    sr_i = next(i for i, c in enumerate(qs) if "MERGE (s:SourceRecord" in c)
+    rt_i = next(i for i, c in enumerate(qs) if "RESOLVED_TO" in c)
     # category before generic product before the resolution edge
-    assert cat_i < gp_i < sr_i
+    assert cat_i < gp_i < rt_i
 
 
 def test_auto_flush_at_batch_size():
@@ -60,7 +60,7 @@ def test_auto_flush_at_batch_size():
     assert _writes(conn)
 
 
-def test_unresolved_writes_sourcerecord_without_edge():
+def test_unresolved_writes_no_edge():
     conn = FakeConn()
     cat = BatchedNeo4jCatalog(conn, batch_size=10_000)
     r = Resolver(cat)
@@ -69,8 +69,9 @@ def test_unresolved_writes_sourcerecord_without_edge():
     assert rep.status == "unresolved"
     cat.flush()
     joined = "\n".join(c for c, _ in conn.calls)
-    assert "MERGE (s:SourceRecord" in joined
-    assert "RESOLVED_TO" not in joined  # no edge for an unresolved record
+    # an unresolved item leaves no RESOLVED_TO edge, and there is no SourceRecord layer
+    assert "RESOLVED_TO" not in joined
+    assert "SourceRecord" not in joined
 
 
 def test_batched_uses_unwind_not_per_row():
@@ -81,7 +82,7 @@ def test_batched_uses_unwind_not_per_row():
         r.resolve("SONDA FOLEY CH16 2 VIAS",
                   source=SourceRef("mp_item_licitacion", "L1", str(n), "SONDA FOLEY"))
     cat.flush()
-    # the 5 source records go out in ONE UNWIND, not five MERGEs
-    sr_calls = [(c, p) for c, p in conn.calls if "MERGE (s:SourceRecord" in c]
-    assert len(sr_calls) == 1
-    assert len(sr_calls[0][1]["rows"]) == 5
+    # the 5 resolution edges go out in ONE UNWIND, not five writes
+    rt_calls = [(c, p) for c, p in conn.calls if "RESOLVED_TO" in c]
+    assert len(rt_calls) == 1
+    assert len(rt_calls[0][1]["rows"]) == 5

@@ -27,8 +27,9 @@ re-profiling, or --from-fallback to rank candidates from the UNSPSC fallback
 residue in the graph instead of the whole-corpus profile.
 
 `resolve` is a DRY RUN by default (nothing written to the graph) — pass
---persist explicitly to write SourceRecords/RESOLVED_TO edges and catalog
-nodes. Destructive commands require --yes.
+--persist explicitly to write the catalog nodes + the direct
+(:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct) edges. Destructive commands
+require --yes.
 
 Coverage-improvement loop (cut items that land on UNSPSC fallback):
 `resolve --kind item --persist` -> `fallback-report` (what's missing) ->
@@ -89,11 +90,12 @@ def cmd_status(args) -> int:
             try:
                 rec = conn.query(
                     "OPTIONAL MATCH (g:GenericProduct) WITH count(g) AS gp "
-                    "OPTIONAL MATCH (s:SourceRecord) WITH gp, count(s) AS sr "
-                    "OPTIONAL MATCH (c:Category) RETURN gp, sr, count(c) AS cat"
+                    "OPTIONAL MATCH (:ItemLicitacion)-[rt:RESOLVED_TO]->(:GenericProduct) "
+                    "WITH gp, count(rt) AS res "
+                    "OPTIONAL MATCH (c:Category) RETURN gp, res, count(c) AS cat"
                 )[0]
                 print(f"graph            : {rec['cat']} categories, "
-                      f"{rec['gp']} generic products, {rec['sr']} source records")
+                      f"{rec['gp']} generic products, {rec['res']} resolved items")
             finally:
                 conn.close()
         except Exception as exc:  # status must never crash on a flaky graph
@@ -379,9 +381,7 @@ def cmd_tier2_label_sample(args) -> int:
 def cmd_resolve(args) -> int:
     from .graphdb import get_connection
     from .ingest import (
-        count_incremental_items,
         fetch_items,
-        fetch_items_incremental,
         fetch_oc_items,
         fetch_offers,
         fetch_tender_items,
@@ -403,16 +403,6 @@ def cmd_resolve(args) -> int:
     )
     from .ingest.runner import ResolutionStats
     from .resolve import BatchedNeo4jCatalog, InMemoryCatalog, Resolver
-
-    # Incremental mode is item-centric, unscoped, and always persists — it folds in
-    # only records new/changed since the last run (see resolve.lineage). --seed-watermark
-    # marks the current corpus as resolved without resolving (post-full-build handoff).
-    incremental = getattr(args, "incremental", False)
-    seed_watermark = getattr(args, "seed_watermark", False)
-    if incremental:
-        args.kind = "item"
-        args.persist = True
-        args.resume = False
 
     fetchers = {"tender": fetch_tender_items, "offer": fetch_offers,
                 "oc": fetch_oc_items, "joint": fetch_offers, "item": fetch_items}
@@ -479,67 +469,30 @@ def cmd_resolve(args) -> int:
 
     conn = get_connection()
     try:
-        from .resolve import lineage
+        # Resolve the deterministic loop size if the caller didn't supply one.
+        # A bounded run stops at --limit, so the limit IS the loop size. An unbounded
+        # run counts once (count_resolve_items mirrors the fetchers' filter exactly).
+        # Other kinds have no cheap precount -> loop_total stays None and progress
+        # falls back to a bare count.
+        if loop_total is None and args.kind in ("item", "tender"):
+            if args.limit:
+                loop_total = args.limit
+            else:
+                from .ingest.neo4j_source import count_resolve_items
+                loop_total = count_resolve_items(conn, contains=args.contains,
+                                                 unspsc_segment=args.segment)
+        elif loop_total is not None and args.limit:
+            # caller-supplied total (pipeline), still capped by an explicit limit
+            loop_total = min(loop_total, args.limit)
 
-        # --seed-watermark: mark every ingestion run currently present as resolved
-        # WITHOUT resolving — the one-time handoff after an initial full build, so the
-        # next --incremental processes only genuinely new/changed records.
-        if seed_watermark:
-            runs = lineage.all_source_runs(conn)
-            lineage.record_resolved_runs(conn, runs)
-            print(f"watermark seeded: {len(runs):,} ingestion run(s) marked resolved; "
-                  "`resolve --incremental` will now process only new/changed records")
-            return 0
+        kwargs = {"contains": args.contains, "limit": remaining_limit}
+        if args.kind in ("tender", "offer", "joint", "item"):
+            kwargs.update(skip=effective_skip, unspsc_segment=args.segment)
+        elif args.kind == "oc":
+            kwargs.update(skip=effective_skip)
+        items = fetchers[args.kind](conn, **kwargs)
 
-        run_uid = None
-        new_runs: set[str] = set()
-        resolved: set[str] = set()
-
-        if incremental:
-            # Coarse delta: ingestion runs not yet incorporated. Empty => up to date.
-            resolved = lineage.load_resolved_runs(conn)
-            new_runs = lineage.compute_new_runs(conn, resolved)
-            if not new_runs:
-                print("incremental: up to date — no new ingestion runs to resolve")
-                return 0
-            print(f"incremental: {len(new_runs):,} new ingestion run(s) to fold in")
-            # Upper-bound denominator (candidate count, pre content_hash skip).
-            loop_total = count_incremental_items(conn, new_runs, contains=args.contains)
-            items = fetch_items_incremental(conn, new_runs, contains=args.contains)
-        else:
-            # Resolve the deterministic loop size if the caller didn't supply one.
-            # A bounded run stops at --limit, so the limit IS the loop size — no need
-            # to count the whole corpus just to cap to a smaller number. An unbounded
-            # run counts once (count_resolve_items mirrors the item/tender fetchers'
-            # filter exactly). Other kinds have no cheap precount -> loop_total stays
-            # None and progress falls back to a bare count.
-            if loop_total is None and args.kind in ("item", "tender"):
-                if args.limit:
-                    loop_total = args.limit
-                else:
-                    from .ingest.neo4j_source import count_resolve_items
-                    loop_total = count_resolve_items(conn, contains=args.contains,
-                                                     unspsc_segment=args.segment)
-            elif loop_total is not None and args.limit:
-                # caller-supplied total (pipeline), still capped by an explicit limit
-                loop_total = min(loop_total, args.limit)
-
-            kwargs = {"contains": args.contains, "limit": remaining_limit}
-            if args.kind in ("tender", "offer", "joint", "item"):
-                kwargs.update(skip=effective_skip, unspsc_segment=args.segment)
-            elif args.kind == "oc":
-                kwargs.update(skip=effective_skip)
-            items = fetchers[args.kind](conn, **kwargs)
-
-        # Every persist run opens a :ResolveRun so its events are auditable; the
-        # watermark only advances when an incremental run completes (below).
-        if args.persist:
-            run_uid = lineage.start_run(
-                conn, "incremental" if incremental else "full", new_runs)
-            print(f"lineage: opened ResolveRun {run_uid}")
-
-        catalog = (BatchedNeo4jCatalog(conn, run_uid=run_uid) if args.persist
-                   else InMemoryCatalog())
+        catalog = BatchedNeo4jCatalog(conn) if args.persist else InMemoryCatalog()
         if args.persist:
             # One bulk snapshot read instead of one per category — collapses the
             # dominant round-trip cost on a high-latency link (see preload()).
@@ -659,19 +612,6 @@ def cmd_resolve(args) -> int:
             "resolved": stats.by_status.get("resolved_generic", 0),
             "unresolved": stats.by_status.get("unresolved", 0),
             "created": stats.nodes_created, "done": True})
-
-        # Close the lineage run, then (incremental only) advance the watermark —
-        # ONLY after a full, successful pass, so a crashed run re-derives the same
-        # delta next time (the content_hash skip makes the retry cheap).
-        if run_uid is not None:
-            lineage.finish_run(conn, run_uid, {
-                "processed": stats.total,
-                "created": stats.nodes_created,
-                "unresolved": stats.by_status.get("unresolved", 0)})
-        if incremental:
-            lineage.record_resolved_runs(conn, resolved | new_runs)
-            print(f"watermark advanced: +{len(new_runs):,} run(s) now resolved "
-                  f"({len(resolved | new_runs):,} total)")
 
         print(stats.summary())
         print(f"written: {res_csv}")
@@ -1356,12 +1296,11 @@ def cmd_price_series(args) -> int:
 
 
 def cmd_wipe_catalog(args) -> int:
-    """Delete ALL catalog data (Category/GenericProduct/Product/Brand/SourceRecord).
-    The transactional layer (Licitacion/Oferta/...) and the schema migrations
-    are untouched — this resets the catalog, not the source data. DETACH DELETE on
-    these nodes also removes the catalog-side edges that hang off them — including
-    the new OFFERS / OF_BRAND / HAS_RECORD edges — leaving the source Oferta/
-    ItemLicitacion nodes edge-free."""
+    """Delete ALL catalog data (Category/GenericProduct/Product/Brand).
+    The transactional layer (Licitacion/Oferta/ItemLicitacion/...) and the schema
+    migrations are untouched — this resets the catalog, not the source data. DETACH
+    DELETE on these nodes also removes the catalog-side edges that hang off them —
+    the RESOLVED_TO / OFFERS / OF_BRAND edges — leaving the source nodes edge-free."""
     if not args.yes:
         print("refusing to wipe the entire catalog without --yes")
         return 1
@@ -1372,7 +1311,7 @@ def cmd_wipe_catalog(args) -> int:
         rec = conn.query(
             """
             MATCH (n)
-            WHERE n:GenericProduct OR n:Product OR n:Brand OR n:SourceRecord OR n:Category
+            WHERE n:GenericProduct OR n:Product OR n:Brand OR n:Category
             WITH n LIMIT 100000
             DETACH DELETE n
             RETURN count(*) AS deleted
@@ -1388,7 +1327,7 @@ def cmd_wipe_catalog(args) -> int:
 def cmd_wipe_category(args) -> int:
     if not args.yes:
         print("refusing to wipe without --yes (deletes the category's catalog "
-              "nodes and their SourceRecords from the graph)")
+              "nodes from the graph)")
         return 1
     from .graphdb import get_connection
 
@@ -1397,8 +1336,7 @@ def cmd_wipe_category(args) -> int:
         conn.query(
             """
             MATCH (g:GenericProduct {category_id: $cid})
-            OPTIONAL MATCH (g)<-[:RESOLVED_TO]-(s:SourceRecord)
-            DETACH DELETE g, s
+            DETACH DELETE g
             """,
             parameters={"cid": args.category_id},
         )
@@ -1504,16 +1442,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--resume", action="store_true",
                    help="continue the run recorded in <out>.checkpoint.json "
                         "(must match kind/segment/contains/persist/limit)")
-    p.add_argument("--incremental", action="store_true",
-                   help="INCREMENTAL item-centric persist: fold in only records new/"
-                        "changed since the last run (run_id watermark + content_hash). "
-                        "Implies --kind item --persist, unscoped; reuses existing "
-                        "tier2/brand artifacts. Opens a :ResolveRun and advances the "
-                        "watermark on success.")
-    p.add_argument("--seed-watermark", action="store_true",
-                   help="mark every ingestion run currently present as resolved WITHOUT "
-                        "resolving — the one-time handoff after an initial full build, "
-                        "so the next --incremental processes only new/changed records")
     p.add_argument("--brands", action="store_true",
                    help="add the brand-lexicon tier (categories/brand_lexicon.json) "
                         "after Tier-1 to catch brand-only lines")

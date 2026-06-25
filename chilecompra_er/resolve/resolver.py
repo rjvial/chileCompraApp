@@ -2,7 +2,7 @@
 
 (1) normalize -> (2) classify -> (3) extract -> (4) price basis ->
 (5) find home node -> (6) create if absent (computing parent) ->
-(7) persist :SourceRecord + versioned :RESOLVED_TO.
+(7) persist the direct (:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct) edge.
 
 Each step gates the next; an unclassified description stops at (2) and is
 persisted as explicitly unresolved. Offers are bound into the branded catalog by
@@ -54,6 +54,59 @@ def is_rubric(text: str | None) -> bool:
     ' / ' separators. Single source of this rule on the Python side (mirrored in
     Cypher by ingest.neo4j_source.NOT_RUBRIC)."""
     return bool(text) and text.count(" / ") >= 2
+
+
+def offer_identity_floor(
+    offer_identities: list[tuple[dict[str, str], bool]],
+) -> dict[str, str]:
+    """The *minimum common* identity spec across an item's offers — the floor
+    `F` used to enrich a terse buyer line (design "Offer-aware A").
+
+    `offer_identities` is one `(identity_values, awarded)` pair per offer that
+    classified into the item's family. For each identity attribute present in at
+    least one offer:
+
+      - take the **dominant** (most common) value among the offers that named it;
+      - adopt it **iff an awarded ("winner") offer carries that dominant value**
+        — the award is the real transaction, so the majority of *bids* counts
+        only when corroborated by what actually won;
+      - otherwise fall back to **strict**: adopt the value only if *every* offer
+        that named the attribute agrees on it (and with no winner to corroborate,
+        a contested attribute is simply left out).
+
+    The result is a lower bound that the **awarded** offer(s) themselves satisfy
+    (the floor is a subset of what the winner carried), so the enriched generic
+    stays `≤` those offers — every winner conforms, by construction.
+    """
+    all_offers = [idv for idv, _ in offer_identities]
+    awarded = [idv for idv, won in offer_identities if won]
+    if not all_offers:
+        return {}
+
+    floor: dict[str, str] = {}
+    if awarded:
+        # The winner is ground truth: only attributes EVERY awarded offer fixes to
+        # one common value `w` are candidates (so the floor ⊆ each winner). Adopt
+        # `w` when it is (co-)dominant across all offers — the majority of bids
+        # corroborating what won; otherwise the attribute is contested and dropped.
+        candidates = set.intersection(*[set(idv) for idv in awarded])
+        for k in candidates:
+            wvals = {idv[k] for idv in awarded}
+            if len(wvals) != 1:
+                continue                    # winners disagree -> can't pin k
+            w = next(iter(wvals))
+            counts = Counter(idv[k] for idv in all_offers if k in idv)
+            top = max(counts.values())
+            if w in {v for v, c in counts.items() if c == top}:
+                floor[k] = w
+    else:
+        # No award to anchor to -> strict: adopt only attributes EVERY offer carries
+        # with a single agreed value (a true unanimous common spec).
+        for k in set.intersection(*[set(idv) for idv in all_offers]):
+            vals = {idv[k] for idv in all_offers}
+            if len(vals) == 1:
+                floor[k] = next(iter(vals))
+    return floor
 
 
 def unspsc_fallback_schema(unspsc: int | str) -> CategorySchema:
@@ -317,11 +370,25 @@ class Resolver:
         schema = self.schema(chosen_cat)
         win_ext = extract(win_norm, schema) if win_norm else Extraction()
         b_ext = extract(b_norm, schema) if b_norm else Extraction()
-        # winning text wins; the buyer line fills attributes it omits
-        values = {**b_ext.values, **win_ext.values}
+
+        # The generic's identity is the BUYER's demand, enriched UPWARD ONLY by
+        # the offers' minimum common spec: start from the buyer line, then adopt
+        # an offer-floor value only for an identity attribute the buyer omitted
+        # (offers can make the demand more specific, never override or coarsen a
+        # value the buyer fixed). This keeps Item ≡ Generic and Generic ≤ Oferta.
+        offer_identities = [
+            (extract(n, schema).identity_values, bool(o.get("awarded")))
+            for o, n, c in offer_sig
+            if c.status == CLASSIFIED and c.category_id == chosen_cat and n
+        ]
+        floor = offer_identity_floor(offer_identities)
+        b_idv = b_ext.identity_values
+        enriched = {k: v for k, v in floor.items() if k not in b_idv}
+        # identity = buyer identity ∪ floor-fill; descriptives ride the offer edge
+        values = {**b_ext.values, **enriched}
         provenance = {k: {**v, "text": "buyer"} for k, v in b_ext.provenance.items()}
-        provenance.update({k: {**v, "text": category_source}
-                           for k, v in win_ext.provenance.items()})
+        provenance.update({k: {"text": "offer_floor", "role": "identity"}
+                           for k in enriched})
         extraction = Extraction(values=values, provenance=provenance,
                                 illegal=win_ext.illegal + b_ext.illegal)
 

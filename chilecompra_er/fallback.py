@@ -60,9 +60,9 @@ def fetch_fallback_items(conn) -> list[dict]:
     its items — enough signal to rank families without an item<->offer join.
     """
     items = conn.query(
-        "MATCH (s:SourceRecord)-[:RESOLVED_TO]->(g:GenericProduct) "
+        "MATCH (i:ItemLicitacion)-[:RESOLVED_TO]->(g:GenericProduct) "
         "WHERE g.category_id STARTS WITH $p "
-        "RETURN g.category_id AS code, s.raw_text AS text",
+        "RETURN g.category_id AS code, i.descripcion_comprador AS text",
         parameters={"p": FALLBACK_PREFIX})
     spend = conn.query(
         "MATCH (:Oferta)-[r:OFFERS]->(p:Product)-[:VARIANT_OF]->(g:GenericProduct) "

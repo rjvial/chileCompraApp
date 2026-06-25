@@ -8,8 +8,8 @@ Responsibilities, in one code path only:
     same-category node whose present attributes are a strict matching subset);
   - re-pointing existing children whose best parent the new node becomes;
   - derived flags specificity / is_complete at write time;
-  - :SourceRecord upsert + versioned :RESOLVED_TO edges (re-resolution adds a
-    version, never overwrites).
+  - the direct (:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct) edge — one per
+    item, overwritten on re-resolve (no SourceRecord / lineage / versioning).
 
 The planning logic is pure (plan_assignment over a snapshot of the category's
 nodes) so it is unit-testable offline; catalogs (in-memory / Neo4j) load the
@@ -43,16 +43,26 @@ def node_id_for(key: str) -> str:
     return "gp_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
-def branded_identity_key(generic_id: str, brand_id: str) -> str:
-    """A :Product is the pairing Brand × GenericProduct; its identity is the
-    generic node id plus the brand id."""
-    return f"{generic_id}|brand={brand_id}"
+def branded_identity_key(generic_id: str, brand_id: str,
+                         identity_values: dict[str, str] | None = None) -> str:
+    """A :Product is Brand × the OFFER's FULL identity, `VARIANT_OF` the item's
+    GenericProduct. Its key is the generic node id, the brand id, and every one of
+    the offer's identity attribute values — so the Product is self-describing (all
+    spec values live on the node, not only on the generic) and offers that refine,
+    or non-conformingly diverge from, the generic each get their own Product under
+    that one generic. The identity attributes ride the Product, not a finer generic."""
+    base = f"{generic_id}|brand={brand_id}"
+    if identity_values:
+        spec = "|".join(f"{k}={identity_values[k]}" for k in sorted(identity_values))
+        base = f"{base}|{spec}"
+    return base
 
 
-def branded_product_id(generic_id: str, brand_id: str) -> str:
-    """Stable :Product id for the (generic, brand) pairing — every offer of the
-    same brand for the same generic collapses onto this one node."""
-    key = branded_identity_key(generic_id, brand_id)
+def branded_product_id(generic_id: str, brand_id: str,
+                       identity_values: dict[str, str] | None = None) -> str:
+    """Stable :Product id for Brand × the offer's identity under a generic — every
+    offer of the same brand AND the same identity collapses onto this one node."""
+    key = branded_identity_key(generic_id, brand_id, identity_values)
     return "pr_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
@@ -154,18 +164,17 @@ def plan_assignment(
 
 @dataclass(frozen=True)
 class SourceRef:
-    """Reference to an original record: identifiers plus the raw text, which is
-    stored verbatim on the :SourceRecord node."""
+    """Identifies the source record being resolved. `tender_id` (id_licitacion) +
+    `line_no` (id_item) locate the :ItemLicitacion the RESOLVED_TO edge attaches to."""
     source: str          # e.g. "mercado_publico"
     tender_id: str
     line_no: str
-    raw_text: str        # stored verbatim on the SourceRecord node
-    content_hash: str | None = None  # composite hash of the source content (item
-                                     # + its offers); the incremental skip key
-                                     # stored on :SourceRecord. None for offers.
+    raw_text: str        # the buyer text (carried for evidence / dry-run output)
+    content_hash: str | None = None  # unused; kept for call-site compatibility
 
     @property
     def record_key(self) -> str:
+        """Stable per-item key (used only to dedup rows within a write batch)."""
         return f"{self.source}|{self.tender_id}|{self.line_no}"
 
 
@@ -184,23 +193,22 @@ class InMemoryCatalog:
         self.products: dict[str, dict] = {}   # branded Product (generic × brand)
         self.brands: dict[str, dict] = {}     # brand_id -> {id, name}
         self.offers: list[dict] = []          # one per (:Oferta)-[:OFFERS]->(:Product)
-        self.has_record: set[tuple[str, str]] = set()  # (record_key, item_key) edges
-        self.events: list[dict] = []   # append-only lineage, one per persist touch
         self.run_uid = run_uid
-        self._tick = 0                 # monotonic stamp (deterministic for tests)
 
     def merge_branded_product(self, generic_id: str, brand_id: str,
-                              brand_name: str) -> str:
-        """Upsert the Brand node and the (generic × brand) Product pairing. The
-        Product is a PURE pairing — no own attributes — so it is exactly as
-        specific as its GenericProduct; per-offer descriptive values live on the
-        OFFERS edge, not smeared/frozen onto the node. Returns the Product id."""
+                              brand_name: str,
+                              identity_values: dict[str, str] | None = None) -> str:
+        """Upsert the Brand node and the Brand × (offer-identity) Product, linked
+        VARIANT_OF the item's generic. The offer's FULL identity spec rides the
+        Product node (self-describing: all spec values + brand on the node); per-offer
+        DESCRIPTIVE values still live on the OFFERS edge. Returns the Product id."""
         self.brands.setdefault(brand_id, {"id": brand_id, "name": brand_name})
-        pid = branded_product_id(generic_id, brand_id)
+        pid = branded_product_id(generic_id, brand_id, identity_values)
         if pid not in self.products:
             self.products[pid] = {
                 "id": pid, "generic_id": generic_id, "brand_id": brand_id,
-                "identity_key": branded_identity_key(generic_id, brand_id)}
+                "identity_key": branded_identity_key(generic_id, brand_id, identity_values),
+                **(identity_values or {})}
         return pid
 
     def link_offer(self, oferta_id, product_id: str, price_props: dict) -> None:
@@ -209,7 +217,9 @@ class InMemoryCatalog:
         Product) replaces its edge rather than adding a second one."""
         self.offers = [o for o in self.offers if o["oferta_id"] != oferta_id]
         self.offers.append({"oferta_id": oferta_id, "product_id": product_id,
-                            "run_uid": self.run_uid, **price_props})
+                            "run_uid": self.run_uid,
+                            "resolved_identity": self.products.get(product_id, {}).get("identity_key"),
+                            **price_props})
 
     def flush(self) -> None:
         """No-op: in-memory writes are already applied. Present so callers can
@@ -234,64 +244,18 @@ class InMemoryCatalog:
 
     def persist_resolution(self, source: SourceRef, status: str, target_id: str | None,
                            target_label: str = GENERIC_LABEL, **edge_props) -> None:
-        # Refresh-in-place: a re-resolution to the SAME (target, label) updates the
-        # current edge's provenance instead of appending a redundant version; a new
-        # version is added only when the resolution actually changes the target.
-        # Every touch also appends an immutable lineage event (event-level audit).
-        self._tick += 1
-        ts = self._tick
-        content_hash = source.content_hash
-        # explicit (:ItemLicitacion)-[:HAS_RECORD]->(:SourceRecord) edge
-        self.has_record.add((source.record_key, f"{source.tender_id}|{source.line_no}"))
-        cur = next((r for r in self.resolutions
-                    if r["record_key"] == source.record_key and r["current"]), None)
-        same = (cur is not None and target_id is not None
-                and cur.get("target_id") == target_id
-                and cur.get("target_label") == target_label)
-        if target_id is None:
-            event_kind = "unresolved"
-        elif cur is None:
-            event_kind = "new"
-        elif same:
-            event_kind = "confirm"
-        else:
-            event_kind = "retarget"
-
-        if target_id is None:
-            # Unresolved: no edge row (mirrors the graph's "no RESOLVED_TO"), only
-            # the lineage event below.
-            version = 0
-        elif same:
-            cur.update({"status": status, "last_confirmed_at": ts,
-                        "content_hash": content_hash, **edge_props})
-            version = cur["version"]
-        else:
-            version = 1 + sum(1 for r in self.resolutions if r["record_key"] == source.record_key)
-            for r in self.resolutions:
-                if r["record_key"] == source.record_key:
-                    r["current"] = False
+        """Record the item's direct resolution: one
+        (:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct) per item, overwritten
+        on re-resolve. Unresolved (target_id is None) -> no edge. No SourceRecord,
+        lineage events, or versioning."""
+        item_key = (source.tender_id, source.line_no)
+        self.resolutions = [r for r in self.resolutions if r.get("item_key") != item_key]
+        if target_id is not None:
             self.resolutions.append({
-                "record_key": source.record_key,
-                "status": status,
-                "target_id": target_id,
-                "target_label": target_label,
-                "version": version,
-                "current": True,
-                "first_resolved_at": ts,
-                "last_confirmed_at": ts,
-                "content_hash": content_hash,
+                "item_key": item_key, "status": status,
+                "target_id": target_id, "target_label": target_label,
                 **edge_props,
             })
-
-        self.events.append({
-            "ts": ts, "record_key": source.record_key, "target_id": target_id,
-            "target_label": target_label, "status": status, "event_kind": event_kind,
-            "version": version, "content_hash": content_hash, "run_uid": self.run_uid,
-            "evidence": edge_props.get("evidence"),
-            "extractor_version": edge_props.get("extractor_version"),
-            "schema_version": edge_props.get("schema_version"),
-            "normalizer_version": edge_props.get("normalizer_version"),
-        })
 
 
 class Neo4jCatalog:
@@ -304,7 +268,7 @@ class Neo4jCatalog:
 
     def __init__(self, conn, run_uid: str | None = None):
         self.conn = conn
-        self.run_uid = run_uid   # :ResolveRun this persist run's events link to
+        self.run_uid = run_uid   # optional provenance stamp on OFFERS edges
         self._categories_synced: set[str] = set()
         self._snapshots: dict[str, dict[str, NodeView]] = {}
         # Raw preloaded GenericProduct rows grouped by category (filled by
@@ -452,25 +416,27 @@ class Neo4jCatalog:
             )
 
     def merge_branded_product(self, generic_id: str, brand_id: str,
-                              brand_name: str) -> str:
-        """Upsert the :Brand node and the deduped :Product = Brand × GenericProduct
-        pairing, linked VARIANT_OF the generic and OF_BRAND the brand. The Product
-        is a PURE pairing (no own attributes) — exactly as specific as its generic;
-        per-offer descriptives ride the OFFERS edge. Returns the Product id."""
-        pid = branded_product_id(generic_id, brand_id)
+                              brand_name: str,
+                              identity_values: dict[str, str] | None = None) -> str:
+        """Upsert the :Brand node and the deduped :Product = Brand × the offer's
+        identity, linked VARIANT_OF the item's generic and OF_BRAND the brand. The
+        offer's own identity attributes ride the Product (so it is as specific as
+        the offer); descriptives ride the OFFERS edge. Returns the Product id."""
+        pid = branded_product_id(generic_id, brand_id, identity_values)
         self.conn.query(
             """
             MERGE (b:Brand {id: $brand_id}) ON CREATE SET b.name = $brand_name
             MERGE (p:Product {id: $pid})
               ON CREATE SET p.identity_key = $ik, p.generic_id = $gid
+            SET p += $idprops
             WITH p, b
             MATCH (g:GenericProduct {id: $gid})
             MERGE (p)-[:VARIANT_OF]->(g)
             MERGE (p)-[:OF_BRAND]->(b)
             """,
             parameters={"pid": pid, "gid": generic_id, "brand_id": brand_id,
-                        "brand_name": brand_name,
-                        "ik": branded_identity_key(generic_id, brand_id)},
+                        "brand_name": brand_name, "idprops": identity_values or {},
+                        "ik": branded_identity_key(generic_id, brand_id, identity_values)},
         )
         return pid
 
@@ -489,6 +455,7 @@ class Neo4jCatalog:
             MATCH (p:Product {id: $pid})
             MERGE (o)-[r:OFFERS]->(p)
             SET r += $price, r.resolved_at = datetime(), r.run_uid = $run
+            SET o.resolved_identity = p.identity_key
             """,
             parameters={"oid": oferta_id, "pid": product_id, "price": price_props,
                         "run": self.run_uid},
@@ -496,90 +463,34 @@ class Neo4jCatalog:
 
     def persist_resolution(self, source: SourceRef, status: str, target_id: str | None,
                            target_label: str = GENERIC_LABEL, **edge_props) -> None:
-        """Upsert :SourceRecord (carrying the incremental content_hash), refresh
-        or version the :RESOLVED_TO edge, and append an immutable :ResolutionEvent
-        for the touch. Unresolved records get the status + an 'unresolved' event,
-        no edge — still total and explicit, nothing silently dropped."""
-        params = {
-            "rk": source.record_key, "src": source.source, "tid": source.tender_id,
-            "line": source.line_no, "text": source.raw_text, "status": status,
-            "chash": source.content_hash, "run_uid": self.run_uid,
-            "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
-            "extractor_version": edge_props.get("extractor_version", ""),
-            "schema_version": edge_props.get("schema_version", ""),
-            "normalizer_version": edge_props.get("normalizer_version", ""),
-        }
-        self.conn.query(
-            """
-            MERGE (s:SourceRecord {record_key: $rk})
-            ON CREATE SET s.source = $src, s.tender_id = $tid, s.line_no = $line
-            SET s.raw_text = $text, s.resolution_status = $status, s.content_hash = $chash
-            WITH s
-            OPTIONAL MATCH (i:ItemLicitacion {id_licitacion: $tid, id_item: toInteger($line)})
-            FOREACH (ii IN CASE WHEN i IS NOT NULL THEN [i] ELSE [] END |
-                MERGE (ii)-[:HAS_RECORD]->(s))
-            """,
-            parameters=params,
-        )
+        """Write the item's direct (:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct)
+        edge — one per item, overwritten on re-resolve (DELETE old, CREATE new).
+        Unresolved (target_id is None) leaves the item with no RESOLVED_TO edge."""
         if target_id is None:
-            # Unresolved touch: no edge, but still an auditable lineage event.
-            self.conn.query(
-                """
-                MATCH (s:SourceRecord {record_key: $rk})
-                OPTIONAL MATCH (run:ResolveRun {run_uid: $run_uid})
-                CREATE (s)-[:HAS_EVENT]->(ev:ResolutionEvent {
-                    ts: datetime(), record_key: $rk, status: $status,
-                    event_kind: 'unresolved', content_hash: $chash, evidence: $evidence,
-                    extractor_version: $extractor_version,
-                    schema_version: $schema_version, normalizer_version: $normalizer_version})
-                FOREACH (r IN CASE WHEN run IS NOT NULL THEN [run] ELSE [] END |
-                    CREATE (r)-[:EMITTED]->(ev))
-                """,
-                parameters=params,
-            )
             return
         if target_label not in (GENERIC_LABEL, PRODUCT_LABEL):
             raise ValueError(f"invalid resolution target label {target_label!r}")
-        # Single round trip: refresh-in-place when the current edge already points
-        # at this target (no new version), else retire + version; then emit the event.
-        params["target"] = target_id
-        params["label"] = target_label
         self.conn.query(
             f"""
-            MATCH (s:SourceRecord {{record_key: $rk}})
+            MATCH (i:ItemLicitacion {{id_licitacion: $tid, id_item: toInteger($line)}})
             MATCH (t:{target_label} {{id: $target}})
-            OPTIONAL MATCH (run:ResolveRun {{run_uid: $run_uid}})
-            OPTIONAL MATCH (s)-[cur:RESOLVED_TO {{current: true}}]->(curt)
-            WITH s, t, run, cur, (curt IS NULL) AS isnew,
-                 (curt IS NOT NULL AND curt.id = t.id) AS same,
-                 [(s)-[e:RESOLVED_TO]->() | e.version] AS versions
-            WITH s, t, run, cur, isnew, same,
-                 reduce(m = 0, v IN versions | CASE WHEN v > m THEN v ELSE m END) AS maxv
-            FOREACH (r IN CASE WHEN same THEN [cur] ELSE [] END |
-                SET r.resolved_at = datetime(), r.last_confirmed_at = datetime(),
-                    r.evidence = $evidence, r.extractor_version = $extractor_version,
-                    r.schema_version = $schema_version, r.normalizer_version = $normalizer_version)
-            FOREACH (r IN CASE WHEN (NOT same) AND cur IS NOT NULL THEN [cur] ELSE [] END |
-                SET r.current = false)
-            FOREACH (_x IN CASE WHEN same THEN [] ELSE [1] END |
-                CREATE (s)-[:RESOLVED_TO {{
-                    current: true, version: maxv + 1, resolved_at: datetime(),
-                    first_resolved_at: datetime(), last_confirmed_at: datetime(),
-                    evidence: $evidence, extractor_version: $extractor_version,
-                    schema_version: $schema_version, normalizer_version: $normalizer_version
-                }}]->(t))
-            WITH s, t, run, same, isnew,
-                 CASE WHEN same THEN maxv ELSE maxv + 1 END AS version
-            CREATE (s)-[:HAS_EVENT]->(ev:ResolutionEvent {{
-                ts: datetime(), record_key: $rk, target_id: $target, target_label: $label,
-                status: $status, version: version, content_hash: $chash, evidence: $evidence,
-                event_kind: CASE WHEN isnew THEN 'new' WHEN same THEN 'confirm' ELSE 'retarget' END,
+            OPTIONAL MATCH (i)-[old:RESOLVED_TO]->()
+            DELETE old
+            CREATE (i)-[:RESOLVED_TO {{
+                status: $status, resolved_at: datetime(), evidence: $evidence,
                 extractor_version: $extractor_version, schema_version: $schema_version,
-                normalizer_version: $normalizer_version}})
-            FOREACH (r IN CASE WHEN run IS NOT NULL THEN [run] ELSE [] END |
-                CREATE (r)-[:EMITTED]->(ev))
+                normalizer_version: $normalizer_version
+            }}]->(t)
+            SET i.resolved_identity = t.identity_key
             """,
-            parameters=params,
+            parameters={
+                "tid": source.tender_id, "line": source.line_no, "target": target_id,
+                "status": status,
+                "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
+                "extractor_version": edge_props.get("extractor_version", ""),
+                "schema_version": edge_props.get("schema_version", ""),
+                "normalizer_version": edge_props.get("normalizer_version", ""),
+            },
         )
 
     def flush(self) -> None:
@@ -647,12 +558,13 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
             self._repoint_buf.append({"chid": child_id, "pid": new_parent})
 
     def merge_branded_product(self, generic_id: str, brand_id: str,
-                              brand_name: str) -> str:
-        pid = branded_product_id(generic_id, brand_id)
+                              brand_name: str,
+                              identity_values: dict[str, str] | None = None) -> str:
+        pid = branded_product_id(generic_id, brand_id, identity_values)
         self._branded_buf.append({
             "pid": pid, "gid": generic_id, "brand_id": brand_id,
-            "brand_name": brand_name,
-            "ik": branded_identity_key(generic_id, brand_id)})
+            "brand_name": brand_name, "idprops": identity_values or {},
+            "ik": branded_identity_key(generic_id, brand_id, identity_values)})
         return pid
 
     def link_offer(self, oferta_id, product_id: str, price_props: dict) -> None:
@@ -663,9 +575,9 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
         if target_id is not None and target_label not in (GENERIC_LABEL, PRODUCT_LABEL):
             raise ValueError(f"invalid resolution target label {target_label!r}")
         self._res_buf.append({
-            "rk": source.record_key, "src": source.source, "tid": source.tender_id,
-            "line": source.line_no, "text": source.raw_text, "status": status,
-            "target": target_id, "label": target_label, "chash": source.content_hash,
+            "rk": source.record_key, "tid": source.tender_id,
+            "line": source.line_no, "status": status,
+            "target": target_id, "label": target_label,
             "evidence": json.dumps(edge_props.get("evidence", {}), ensure_ascii=False),
             "extractor": edge_props.get("extractor_version", ""),
             "schema": edge_props.get("schema_version", ""),
@@ -725,6 +637,7 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
                 MERGE (b:Brand {id: row.brand_id}) ON CREATE SET b.name = row.brand_name
                 MERGE (p:Product {id: row.pid})
                   ON CREATE SET p.identity_key = row.ik, p.generic_id = row.gid
+                SET p += row.idprops
                 WITH p, b, row
                 MATCH (g:GenericProduct {id: row.gid})
                 MERGE (p)-[:VARIANT_OF]->(g)
@@ -746,6 +659,7 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
                 MATCH (p:Product {id: row.pid})
                 MERGE (o)-[r:OFFERS]->(p)
                 SET r += row.price, r.resolved_at = datetime(), r.run_uid = $run
+                SET o.resolved_identity = p.identity_key
                 """, parameters={"rows": rows, "run": self.run_uid})
             self._offers_buf = []
         if self._res_buf:
@@ -753,84 +667,27 @@ class BatchedNeo4jCatalog(Neo4jCatalog):
             self._res_buf = []
 
     def _flush_resolutions(self, rows: list[dict]) -> None:
-        # Collapse duplicate source rows (same record_key) to their last occurrence
-        # before writing. Within a run such duplicates carry the SAME target (a
-        # record resolves deterministically once); UNWIND has no reliable
-        # read-your-writes, so two identical rows would otherwise each append an
-        # edge. Last wins — same "latest run" semantics as the single-write path.
+        # Collapse duplicate rows (same item) to their last occurrence; UNWIND has
+        # no read-your-writes, so two rows for one item would each touch the edge.
         rows = list({r["rk"]: r for r in rows}.values())
-        # SourceRecord upserts always (carrying the incremental content_hash); the
-        # versioned RESOLVED_TO edge + its event only when a target exists, split by
-        # target label so the MATCH uses the right index.
-        self.conn.query(
-            """
-            UNWIND $rows AS row
-            MERGE (s:SourceRecord {record_key: row.rk})
-              ON CREATE SET s.source = row.src, s.tender_id = row.tid, s.line_no = row.line
-            SET s.raw_text = row.text, s.resolution_status = row.status,
-                s.content_hash = row.chash
-            WITH s, row
-            OPTIONAL MATCH (i:ItemLicitacion {id_licitacion: row.tid, id_item: toInteger(row.line)})
-            FOREACH (ii IN CASE WHEN i IS NOT NULL THEN [i] ELSE [] END |
-                MERGE (ii)-[:HAS_RECORD]->(s))
-            """, parameters={"rows": rows})
-        # Unresolved touches emit an 'unresolved' lineage event (no edge).
-        unresolved = [r for r in rows if r["target"] is None]
-        if unresolved:
-            self.conn.query(
-                """
-                OPTIONAL MATCH (run:ResolveRun {run_uid: $run_uid})
-                UNWIND $rows AS row
-                MATCH (s:SourceRecord {record_key: row.rk})
-                CREATE (s)-[:HAS_EVENT]->(ev:ResolutionEvent {
-                    ts: datetime(), record_key: row.rk, status: row.status,
-                    event_kind: 'unresolved', content_hash: row.chash, evidence: row.evidence,
-                    extractor_version: row.extractor, schema_version: row.schema,
-                    normalizer_version: row.norm})
-                FOREACH (r IN CASE WHEN run IS NOT NULL THEN [run] ELSE [] END |
-                    CREATE (r)-[:EMITTED]->(ev))
-                """, parameters={"rows": unresolved, "run_uid": self.run_uid})
+        # Direct (:ItemLicitacion)-[:RESOLVED_TO]->(target) edge: one per item,
+        # overwritten on re-resolve (DELETE old, CREATE new). Unresolved rows
+        # (target None) write nothing. Split by label so the MATCH uses its index.
         for label in (GENERIC_LABEL, PRODUCT_LABEL):
             targeted = [r for r in rows if r["target"] is not None and r["label"] == label]
             if not targeted:
                 continue
-            # Refresh-in-place: re-resolution to the same target updates the current
-            # edge's provenance; a new version is created only when the target changes.
-            # Every touch appends an immutable :ResolutionEvent linked to the run.
             self.conn.query(
                 f"""
-                OPTIONAL MATCH (run:ResolveRun {{run_uid: $run_uid}})
                 UNWIND $rows AS row
-                MATCH (s:SourceRecord {{record_key: row.rk}})
+                MATCH (i:ItemLicitacion {{id_licitacion: row.tid, id_item: toInteger(row.line)}})
                 MATCH (t:{label} {{id: row.target}})
-                OPTIONAL MATCH (s)-[cur:RESOLVED_TO {{current: true}}]->(curt)
-                WITH run, row, s, t, cur, (curt IS NULL) AS isnew,
-                     (curt IS NOT NULL AND curt.id = t.id) AS same,
-                     [(s)-[e:RESOLVED_TO]->() | e.version] AS versions
-                WITH run, row, s, t, cur, isnew, same,
-                     reduce(m = 0, v IN versions | CASE WHEN v > m THEN v ELSE m END) AS maxv
-                FOREACH (r IN CASE WHEN same THEN [cur] ELSE [] END |
-                    SET r.resolved_at = datetime(), r.last_confirmed_at = datetime(),
-                        r.evidence = row.evidence, r.extractor_version = row.extractor,
-                        r.schema_version = row.schema, r.normalizer_version = row.norm)
-                FOREACH (r IN CASE WHEN (NOT same) AND cur IS NOT NULL THEN [cur] ELSE [] END |
-                    SET r.current = false)
-                FOREACH (_x IN CASE WHEN same THEN [] ELSE [1] END |
-                    CREATE (s)-[:RESOLVED_TO {{
-                        current: true, version: maxv + 1, resolved_at: datetime(),
-                        first_resolved_at: datetime(), last_confirmed_at: datetime(),
-                        evidence: row.evidence, extractor_version: row.extractor,
-                        schema_version: row.schema, normalizer_version: row.norm
-                    }}]->(t))
-                WITH run, row, s, isnew, same,
-                     CASE WHEN same THEN maxv ELSE maxv + 1 END AS version
-                CREATE (s)-[:HAS_EVENT]->(ev:ResolutionEvent {{
-                    ts: datetime(), record_key: row.rk, target_id: row.target,
-                    target_label: row.label, status: row.status, version: version,
-                    content_hash: row.chash, evidence: row.evidence,
-                    event_kind: CASE WHEN isnew THEN 'new' WHEN same THEN 'confirm' ELSE 'retarget' END,
+                OPTIONAL MATCH (i)-[old:RESOLVED_TO]->()
+                DELETE old
+                CREATE (i)-[:RESOLVED_TO {{
+                    status: row.status, resolved_at: datetime(), evidence: row.evidence,
                     extractor_version: row.extractor, schema_version: row.schema,
-                    normalizer_version: row.norm}})
-                FOREACH (r IN CASE WHEN run IS NOT NULL THEN [run] ELSE [] END |
-                    CREATE (r)-[:EMITTED]->(ev))
-                """, parameters={"rows": targeted, "run_uid": self.run_uid})
+                    normalizer_version: row.norm
+                }}]->(t)
+                SET i.resolved_identity = t.identity_key
+                """, parameters={"rows": targeted})

@@ -175,12 +175,14 @@ def test_offers_same_brand_dedup_to_one_product():
     prod = next(iter(catalog.products.values()))
     assert prod["brand_id"] == "(sin marca)"
     assert "(sin marca)" in catalog.brands
-    # price is NOT on the Product; it rides each (:Oferta)-[:OFFERS]->(:Product) edge
+    # the Product node is self-describing: it carries the full identity spec...
+    assert prod["tipo"] == "foley" and prod["vias"] == "2_vias"
+    # ...and the brand, but NOT the price (that rides each OFFERS edge)
     assert "unit_price" not in prod
     assert len(catalog.offers) == 2
     assert {o["unit_price"] for o in catalog.offers} == {1000.0, 1200.0}
-    # the explicit (:ItemLicitacion)-[:HAS_RECORD]->(:SourceRecord) edge for the item
-    assert ("mp_item_licitacion|L1|1", "L1|1") in catalog.has_record
+    # the item resolves directly to its GenericProduct (no SourceRecord layer)
+    assert any(r["item_key"] == ("L1", "1") for r in catalog.resolutions)
 
 
 def _item_with_branded_offers():
@@ -209,25 +211,36 @@ def test_distinct_brands_make_distinct_products_one_generic():
 
 # --- offer-aware resolution (Oferta↔Product↔Generic consistency) -------------
 
-def test_offer_more_specific_refines_to_finer_generic():
-    # buyer/consensus generic = foley 16Fr 2-vias; a second offer is a DIFFERENT,
-    # more-specific spec (18Fr silicona) -> it earns its own (finer) generic
-    # instead of being force-merged onto the item's node.
+def test_offer_refinement_rides_product_not_a_finer_generic():
+    # The item generic is the buyer's demand enriched by the offer FLOOR: the
+    # awarded offer fixes {16Fr, 2-vias}, so that is the generic (silicona, named
+    # by only the non-awarded offer, is NOT common to the winner -> not in the
+    # floor). The silicona offer REFINES that generic; its extra identity rides a
+    # finer PRODUCT under the SAME one generic — no finer generic is minted (B).
     item = SourceItem(
         ref=SourceRef("mp_item_licitacion", "L1", "1", RUBRIC),
         kind="item", raw_text=RUBRIC, unspsc=42182200,
         extra={"tender_text": None, "offers": [
             {"offer_id": "o1", "text": "SONDA FOLEY CH16 2 VIAS",
              "unit_price": 1000.0, "awarded": True},
-            {"offer_id": "o2", "text": "SONDA FOLEY CH18 SILICONA",
+            {"offer_id": "o2", "text": "SONDA FOLEY CH16 2 VIAS SILICONA",
              "unit_price": 1200.0, "awarded": False}]},
     )
     catalog = InMemoryCatalog()
-    stats, _ = resolve_items(Resolver(catalog), [item], persist=True, item_mode=True)
-    assert len({p["generic_id"] for p in catalog.products.values()}) == 2
+    stats, reports = resolve_items(Resolver(catalog), [item], persist=True,
+                                   item_mode=True, collect_reports=True)
+    item_gid = reports[0].node_id
+    # ONE generic; two Products (pure pairing + a finer one carrying silicona),
+    # both VARIANT_OF the one item generic.
+    assert len(catalog.nodes) == 1
+    assert {p["generic_id"] for p in catalog.products.values()} == {item_gid}
+    assert len(catalog.products) == 2
     assert stats.offer_routing["refined"] == 1
     assert stats.offer_routing["same"] == 1
-    # both stay in-family -> conforming
+    # the refined Product carries the offer's extra identity (silicona)
+    finer = next(p for p in catalog.products.values() if p.get("material") == "silicona")
+    assert finer["generic_id"] == item_gid
+    # both equal-or-finer than the generic -> conforming
     assert all(o["conforming"] for o in catalog.offers)
 
 
@@ -291,9 +304,22 @@ def test_offer_rebinding_is_idempotent():
     assert len(edges) == 1 and edges[0]["product_id"] == "pr_new"
 
 
-def test_balloon_size_splits_generics_and_product_is_pure_pairing():
-    # capacidad_balon promoted to identity: same gastrostomia/18fr/silicona with
-    # 5cc vs 20cc balloon now resolves to TWO distinct generics (was one).
+def _assert_generic_le_product(catalog):
+    """The invariant: every Product is at least as specific as the GenericProduct it
+    is VARIANT_OF — it carries every one of the generic's identity values."""
+    ID = {"id", "generic_id", "brand_id", "identity_key"}
+    for p in catalog.products.values():
+        gspec = catalog.nodes[p["generic_id"]].identity_values
+        pspec = {k: v for k, v in p.items() if k not in ID}
+        for k, v in gspec.items():
+            assert pspec.get(k) == v, \
+                f"Product {p['id']} missing generic spec {k}={v}: {pspec}"
+
+
+def test_balloon_divergence_binds_offer_to_its_own_generic():
+    # buyer omits the balloon; the AWARDED offer fixes 5cc, so the generic carries
+    # capacidad_balon=5cc. The 20cc offer diverges -> NON-conforming, so it binds to
+    # its OWN generic (a sibling carrying 20cc), keeping Generic <= Product. Two generics.
     item = SourceItem(
         ref=SourceRef("mp_item_licitacion", "LB", "1", "SONDA GASTROSTOMIA 18FR SILICONA"),
         kind="item", raw_text="SONDA GASTROSTOMIA 18FR SILICONA", unspsc=42182200,
@@ -304,13 +330,123 @@ def test_balloon_size_splits_generics_and_product_is_pure_pairing():
              "unit_price": 200.0}]},
     )
     catalog = InMemoryCatalog()
-    stats, _ = resolve_items(Resolver(catalog), [item], persist=True, item_mode=True)
-    # 5cc and 20cc -> distinct (finer) generics
-    assert len({p["generic_id"] for p in catalog.products.values()}) == 2
-    assert stats.offer_routing["refined"] == 2
-    # Product is a PURE pairing — no descriptive smeared onto the node
-    for p in catalog.products.values():
-        assert set(p) == {"id", "generic_id", "brand_id", "identity_key"}
-    # the offer's own descriptive (esteril) rides ITS OFFERS edge
+    stats, reports = resolve_items(Resolver(catalog), [item], persist=True,
+                                   item_mode=True, collect_reports=True)
+    item_gid = reports[0].node_id
+    assert stats.offer_routing["same"] == 1              # awarded 5cc == generic
+    assert stats.offer_routing["nonconforming"] == 1     # 20cc diverges
+    conforming = {o["oferta_id"]: o["conforming"] for o in catalog.offers}
+    assert conforming["a"] is True and conforming["b"] is False
+    prod_a = catalog.products[next(o for o in catalog.offers if o["oferta_id"] == "a")["product_id"]]
+    prod_b = catalog.products[next(o for o in catalog.offers if o["oferta_id"] == "b")["product_id"]]
+    assert prod_a["generic_id"] == item_gid              # conforming -> item generic
+    assert prod_b["generic_id"] != item_gid              # divergent -> its own generic
+    assert prod_b["capacidad_balon"] == "20ml"
+    _assert_generic_le_product(catalog)                  # the invariant holds for both
     edge_a = next(o for o in catalog.offers if o["oferta_id"] == "a")
-    assert edge_a.get("esteril") == "esteril"
+    assert edge_a.get("esteril") == "esteril"            # descriptive on the edge
+
+
+def test_vaguer_offer_binds_to_coarser_ancestor_generic():
+    # buyer fixes capacidad_balon (5cc). An offer that OMITS the balloon is vaguer ->
+    # NON-conforming, binds to the COARSER generic matching its own spec (no balloon),
+    # an ancestor of the demand. Generic <= Product holds (they are equal).
+    item = SourceItem(
+        ref=SourceRef("mp_item_licitacion", "LB", "1",
+                      "SONDA GASTROSTOMIA 18FR SILICONA BALON 5CC"),
+        kind="item", raw_text="SONDA GASTROSTOMIA 18FR SILICONA BALON 5CC", unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "a", "text": "SONDA GASTROSTOMIA 18FR SILICONA",
+             "unit_price": 100.0}]},
+    )
+    catalog = InMemoryCatalog()
+    stats, reports = resolve_items(Resolver(catalog), [item], persist=True,
+                                   item_mode=True, collect_reports=True)
+    item_gid = reports[0].node_id
+    assert stats.offer_routing["nonconforming"] == 1
+    prod = next(iter(catalog.products.values()))
+    assert prod["generic_id"] != item_gid                # its own coarser generic
+    assert "capacidad_balon" not in catalog.nodes[prod["generic_id"]].identity_values
+    assert catalog.offers[0]["conforming"] is False
+    _assert_generic_le_product(catalog)
+
+
+def test_divergent_offer_binds_to_its_own_generic():
+    # Buyer {gastrostomia, 18fr, silicona}; an offer {gastrostomia, 20fr} diverges on
+    # calibre -> NON-conforming, binds to its OWN generic {gastrostomia, 20fr}.
+    item = SourceItem(
+        ref=SourceRef("mp_item_licitacion", "LB", "1", "SONDA GASTROSTOMIA 18FR SILICONA"),
+        kind="item", raw_text="SONDA GASTROSTOMIA 18FR SILICONA", unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "a", "text": "SONDA GASTROSTOMIA 20FR", "unit_price": 100.0}]},
+    )
+    catalog = InMemoryCatalog()
+    stats, reports = resolve_items(Resolver(catalog), [item], persist=True,
+                                   item_mode=True, collect_reports=True)
+    item_gid = reports[0].node_id
+    assert stats.offer_routing["nonconforming"] == 1
+    prod = next(iter(catalog.products.values()))
+    assert prod["generic_id"] != item_gid
+    assert prod["calibre"] == "20fr"
+    assert catalog.nodes[prod["generic_id"]].identity_values.get("calibre") == "20fr"
+    assert catalog.offers[0]["conforming"] is False
+    _assert_generic_le_product(catalog)
+
+
+def test_wrong_size_offer_binds_to_its_own_sibling_generic():
+    # buyer {gastrostomia, 16fr, silicona}; an offer of the SAME specificity but the
+    # WRONG size {gastrostomia, 18fr, silicona} is NON-conforming -> it binds to its
+    # OWN 18fr sibling generic (NOT the 16fr demand generic), so Generic <= Product holds.
+    item = SourceItem(
+        ref=SourceRef("mp_item_licitacion", "LW", "1", "SONDA GASTROSTOMIA 16FR SILICONA"),
+        kind="item", raw_text="SONDA GASTROSTOMIA 16FR SILICONA", unspsc=42182200,
+        extra={"tender_text": None, "offers": [
+            {"offer_id": "a", "text": "SONDA GASTROSTOMIA 18FR SILICONA", "unit_price": 100.0}]},
+    )
+    catalog = InMemoryCatalog()
+    stats, reports = resolve_items(Resolver(catalog), [item], persist=True,
+                                   item_mode=True, collect_reports=True)
+    item_gid = reports[0].node_id
+    assert stats.offer_routing["nonconforming"] == 1
+    assert stats.offer_routing["refined"] == 0
+    prod = next(iter(catalog.products.values()))
+    assert prod["generic_id"] != item_gid                # its own sibling generic
+    assert prod["calibre"] == "18fr"
+    assert catalog.nodes[prod["generic_id"]].identity_values["calibre"] == "18fr"
+    assert catalog.offers[0]["conforming"] is False
+    _assert_generic_le_product(catalog)
+
+
+def test_offer_identity_floor_dominant_corroborated_by_winner():
+    from chilecompra_er.resolve.resolver import offer_identity_floor
+    # awarded offer fixes {calibre:16, vias:2}; a non-awarded offer adds material.
+    # material is NOT carried by the winner -> excluded from the floor. calibre/vias
+    # are winner-corroborated -> kept.
+    floor = offer_identity_floor([
+        ({"calibre": "16fr", "vias": "2_vias"}, True),
+        ({"calibre": "16fr", "vias": "2_vias", "material": "silicona"}, False),
+    ])
+    assert floor == {"calibre": "16fr", "vias": "2_vias"}
+
+
+def test_offer_identity_floor_no_winner_is_strict_unanimous():
+    from chilecompra_er.resolve.resolver import offer_identity_floor
+    # no award -> strict: only attributes EVERY offer agrees on. calibre unanimous;
+    # material present on only one offer -> dropped.
+    floor = offer_identity_floor([
+        ({"calibre": "16fr", "material": "silicona"}, False),
+        ({"calibre": "16fr"}, False),
+    ])
+    assert floor == {"calibre": "16fr"}
+
+
+def test_offer_identity_floor_contested_attr_dropped():
+    from chilecompra_er.resolve.resolver import offer_identity_floor
+    # winner says 16fr but the majority of bids say 18fr -> calibre is contested
+    # (winner not dominant) and left out, rather than overriding the award.
+    floor = offer_identity_floor([
+        ({"calibre": "16fr"}, True),
+        ({"calibre": "18fr"}, False),
+        ({"calibre": "18fr"}, False),
+    ])
+    assert "calibre" not in floor

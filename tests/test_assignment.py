@@ -82,41 +82,37 @@ def test_write_path_rejects_illegal_values():
         plan_assignment(schema, {"not_an_attr": "x"}, {})
 
 
-def test_versioned_resolutions_never_overwrite():
+def test_reresolve_overwrites_single_resolution():
+    # One direct (:ItemLicitacion)-[:RESOLVED_TO]->(:GenericProduct) per item;
+    # retargeting overwrites it (no versioning, no SourceRecord/events).
     from chilecompra_er.resolve import SourceRef
 
     cat = InMemoryCatalog()
     src = SourceRef("mp", "T-1", "1", "SONDA FOLEY 16")
     cat.persist_resolution(src, "resolved_generic", "gp_x")
-    cat.persist_resolution(src, "resolved_generic", "gp_y")  # promotion = new version
-    versions = [r for r in cat.resolutions if r["record_key"] == src.record_key]
-    assert [r["version"] for r in versions] == [1, 2]
-    assert [r["current"] for r in versions] == [False, True]
+    cat.persist_resolution(src, "resolved_generic", "gp_y")  # retarget -> overwrite
+    rows = [r for r in cat.resolutions if r["item_key"] == ("T-1", "1")]
+    assert len(rows) == 1
+    assert rows[0]["target_id"] == "gp_y"
 
 
-def test_same_target_refreshes_in_place_no_new_version():
+def test_reresolve_same_target_keeps_latest_provenance():
     from chilecompra_er.resolve import SourceRef
 
     cat = InMemoryCatalog()
     src = SourceRef("mp", "T-1", "1", "SONDA FOLEY 16")
     cat.persist_resolution(src, "resolved_generic", "gp_x", extractor_version="v1")
-    cat.persist_resolution(src, "resolved_generic", "gp_x", extractor_version="v2")  # re-resolve, same target
-    versions = [r for r in cat.resolutions if r["record_key"] == src.record_key]
-    # no redundant version: one edge, provenance refreshed to the latest run
-    assert [r["version"] for r in versions] == [1]
-    assert versions[0]["current"] is True
-    assert versions[0]["extractor_version"] == "v2"
+    cat.persist_resolution(src, "resolved_generic", "gp_x", extractor_version="v2")
+    rows = [r for r in cat.resolutions if r["item_key"] == ("T-1", "1")]
+    assert len(rows) == 1 and rows[0]["extractor_version"] == "v2"
 
 
-def test_retarget_after_refresh_bumps_version_once():
+def test_unresolved_writes_no_resolution():
+    # Unresolved (target None) leaves the item with no RESOLVED_TO edge — nothing
+    # recorded, no SourceRecord/event.
     from chilecompra_er.resolve import SourceRef
 
     cat = InMemoryCatalog()
-    src = SourceRef("mp", "T-1", "1", "SONDA FOLEY 16")
-    cat.persist_resolution(src, "resolved_generic", "gp_x")
-    cat.persist_resolution(src, "resolved_generic", "gp_x")  # refresh in place (no bump)
-    cat.persist_resolution(src, "resolved_generic", "gp_y")  # real change -> v2
-    versions = [r for r in cat.resolutions if r["record_key"] == src.record_key]
-    assert [r["version"] for r in versions] == [1, 2]
-    assert [r["current"] for r in versions] == [False, True]
-    assert [r["target_id"] for r in versions] == ["gp_x", "gp_y"]
+    src = SourceRef("mp", "T-1", "1", "junk")
+    cat.persist_resolution(src, "unresolved", None)
+    assert [r for r in cat.resolutions if r["item_key"] == ("T-1", "1")] == []

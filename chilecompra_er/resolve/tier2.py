@@ -143,17 +143,13 @@ def train(texts: list[str], labels: list[str],
 
 
 def fetch_training_rows(conn) -> list[tuple[str, str, object]]:
-    """(raw_text, category_id, unspsc) for every item resolved to a CURATED family
+    """(buyer_text, category_id, unspsc) for every item resolved to a CURATED family
     (not a UNSPSC fallback bucket) — the Tier-1 labels to learn from. The UNSPSC
-    commodity code is joined back from the ItemLicitacion (the record_key encodes
-    its id_licitacion|id_item) so it can be used as a feature; null when the item
-    can't be matched."""
+    commodity code rides the ItemLicitacion directly, used as a feature."""
     rows = conn.query(
-        "MATCH (s:SourceRecord)-[:RESOLVED_TO]->(g:GenericProduct) "
-        "WHERE NOT g.category_id STARTS WITH $p AND s.raw_text IS NOT NULL "
-        "OPTIONAL MATCH (i:ItemLicitacion {id_licitacion: s.tender_id, "
-        "                                  id_item: toInteger(s.line_no)}) "
-        "RETURN s.raw_text AS text, g.category_id AS label, "
+        "MATCH (i:ItemLicitacion)-[:RESOLVED_TO]->(g:GenericProduct) "
+        "WHERE NOT g.category_id STARTS WITH $p AND i.descripcion_comprador IS NOT NULL "
+        "RETURN i.descripcion_comprador AS text, g.category_id AS label, "
         "       i.codigo_unspsc_producto AS unspsc",
         parameters={"p": UNSPSC_PREFIX})
     return [(r["text"], r["label"], r["unspsc"]) for r in rows]

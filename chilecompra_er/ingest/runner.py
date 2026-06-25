@@ -250,28 +250,36 @@ def _assign_generic(resolver, schema, values: dict) -> str:
 
 def _offer_target(resolver, text: str, item_gid: str, item_cat: str | None,
                   item_idv: dict, item_fallback: bool, item_schema):
-    """Resolve an offer to the generic its OWN text supports (offer-aware
-    binding). Returns (generic_id, conforming, descriptive, outcome):
+    """Resolve an offer under the offer-aware model. Returns
+    (generic_id, conforming, descriptive, outcome, product_idv):
 
-      same          -> offer adds no new identity; inherit the item's node
-      refined        -> offer is more specific (Case A); its finer node, PARENT_OF g
-      recategorized  -> offer is a different family (Case B); its own node, conforming=False
-      conservative   -> unclassified/ambiguous/bundle/low-confidence; keep on item node
-    """
+      same          -> offer identity == the item's; on the item node
+      refined        -> offer is MORE specific; its extra identity rides the Product,
+                        still VARIANT_OF the item's generic (Generic <= Product holds)
+      nonconforming  -> same family but vaguer than / divergent from the buyer line;
+                        binds to the generic matching its OWN (coarser/sibling)
+                        identity so Generic <= Product still holds, conforming=False
+      recategorized  -> a different family; its own generic, conforming=False
+      conservative   -> unclassified/ambiguous/bundle/low-confidence; item node
+    `product_idv` is the FULL identity spec stamped on the Product node and folded
+    into its key, so every Product is self-describing (all spec values + brand on
+    the node). It is the offer's own identity where we trust one (same family or
+    recategorized), else the item generic's identity (conservative/fallback)."""
     norm = resolver.normalizer(text) if text else ""
     # No usable text, or a UNSPSC-fallback item (no schema identity to compare):
-    # keep the offer on the item's node, as before.
+    # keep the offer on the item's node, carrying the item generic's spec.
     if not norm or item_fallback or item_schema is None:
         desc = _descriptive_values(item_schema, extract(norm, item_schema)) \
             if (item_schema is not None and norm) else {}
-        return item_gid, True, desc, ("item_fallback" if item_fallback else "conservative")
+        return (item_gid, True, desc,
+                ("item_fallback" if item_fallback else "conservative"), dict(item_idv))
 
     cls = resolver.classifier.classify(norm)
     # Unclassified / ambiguous / multi-product bundle: ambiguity is the right
-    # answer — never invent a target, bind to the item's node.
+    # answer — never invent a target, bind to the item's node (carry its spec).
     if cls.status != CLASSIFIED or looks_like_bundle(norm):
         desc = _descriptive_values(item_schema, extract(norm, item_schema))
-        return item_gid, True, desc, "conservative"
+        return item_gid, True, desc, "conservative", dict(item_idv)
 
     off_schema = resolver.schema(cls.category_id)
     off_ext = extract(norm, off_schema)
@@ -279,30 +287,44 @@ def _offer_target(resolver, text: str, item_gid: str, item_cat: str | None,
     off_idv = off_ext.identity_values
 
     if cls.category_id == item_cat:
-        # Same family. A subset of the item's identity is just a vaguer wording of
-        # the same product -> inherit the item node; otherwise it's more specific
-        # (or diverges) and earns its own (finer) node under the item generic.
-        if all(item_idv.get(k) == v for k, v in off_idv.items()):
-            return item_gid, True, descriptive, "same"
-        return _assign_generic(resolver, off_schema, off_ext.values), True, descriptive, "refined"
+        # Same family. The bid is CONFORMING iff its identity covers every attribute
+        # the item fixes with the same value:
+        #   equal -> "same", strict superset -> "refined". A conforming Product is at
+        #   least as specific as the demand, so it hangs off the item's generic and
+        #   the invariant Generic <= Product holds.
+        # Otherwise it is a real but NON-CONFORMING bid (vaguer, or a divergent value).
+        #   It must NOT point at the (more specific) demand generic — that would break
+        #   Generic <= Product. Instead it binds to the generic matching its OWN
+        #   identity: a coarser ANCESTOR (vaguer) or a SIBLING (divergent), found-or-
+        #   created via plan_assignment (PARENT_OF wires the hierarchy). Now every
+        #   Product is at least as specific as the generic it is VARIANT_OF.
+        conforming = all(off_idv.get(k) == v for k, v in item_idv.items())
+        product_idv = dict(off_idv)            # full spec on the Product node
+        if conforming:
+            outcome = "refined" if len(off_idv) > len(item_idv) else "same"
+            return item_gid, True, descriptive, outcome, product_idv
+        gid = _assign_generic(resolver, off_schema, off_ext.values)
+        return gid, False, descriptive, "nonconforming", product_idv
 
-    # Different family (Case B). Trust only a high-precision Tier-1 verdict to move
-    # an offer off the item's family; a statistical (tier2) guess stays conservative.
+    # Different family (Case B-cross). Trust only a high-precision Tier-1 verdict to
+    # move an offer off the item's family; a statistical (tier2) guess stays
+    # conservative. The Product carries the offer's own (other-family) spec.
     if getattr(cls, "tier", "tier1") == "tier1":
-        return _assign_generic(resolver, off_schema, off_ext.values), False, descriptive, "recategorized"
+        gid = _assign_generic(resolver, off_schema, off_ext.values)
+        return gid, False, descriptive, "recategorized", dict(off_idv)
     desc = _descriptive_values(item_schema, extract(norm, item_schema))
-    return item_gid, True, desc, "conservative"
+    return item_gid, True, desc, "conservative", dict(item_idv)
 
 
 def _bind_offers(resolver, item_ref: SourceRef, offers: list[dict],
                  report: ResolutionReport, stats=None) -> None:
-    """Bind an item's offers into the branded catalog — offer-aware: each offer
-    resolves to the GenericProduct its OWN text supports (equal/finer/own-family),
-    falling back to the item's node when the offer is vague or ambiguous. For each
-    offer: extract its brand, upsert the deduped :Product = Brand × that-generic,
-    and add the (:Oferta)-[:OFFERS {price…, conforming}]->(:Product) edge. The
-    `conforming` flag is False when the offer was bound to a *different* family
-    than the item requested (Case B) — a non-conforming / component bid."""
+    """Bind an item's offers into the branded catalog — offer-aware: every offer
+    is VARIANT_OF the item's ONE generic, but its own identity rides the deduped
+    :Product = Brand × offer-identity. For each offer: extract its brand, upsert
+    that Product, and add the (:Oferta)-[:OFFERS {price…, conforming}]->(:Product)
+    edge. `conforming` is False when the offer is below the buyer's spec — vaguer
+    than or divergent from it (Case C), or a *different* family (Case B-cross) —
+    i.e. not a valid bid for what was requested; equal/finer offers are conforming."""
     catalog = resolver.catalog
     item_gid = report.node_id
     item_cat = report.classification.category_id
@@ -316,12 +338,12 @@ def _bind_offers(resolver, item_ref: SourceRef, offers: list[dict],
             continue
         text = o.get("text") or ""
         brand_id, brand_name, _ = extract_brand(text, resolver.brand_map)
-        target_gid, conforming, descriptive, outcome = _offer_target(
+        target_gid, conforming, descriptive, outcome, product_idv = _offer_target(
             resolver, text, item_gid, item_cat, item_idv, item_fallback, item_schema)
         if stats is not None:
             stats.offer_routing[outcome] += 1
-        pid = branded_product_id(target_gid, brand_id)
-        catalog.merge_branded_product(target_gid, brand_id, brand_name)
+        pid = branded_product_id(target_gid, brand_id, product_idv)
+        catalog.merge_branded_product(target_gid, brand_id, brand_name, product_idv)
         price = {k: v for k, v in {
             "unit_price": o.get("unit_price"), "total_clp": o.get("total_clp"),
             "quantity": o.get("quantity"), "awarded": bool(o.get("awarded")),

@@ -77,6 +77,9 @@ def run_smoke(conn, keep: bool = False, log=print) -> bool:
     try:
         node_ids = set()
         for i, raw in enumerate(examples, start=1):
+            # A fake ItemLicitacion to carry the direct RESOLVED_TO edge.
+            conn.query("MERGE (i:ItemLicitacion {id_licitacion: 'SMOKE-1', id_item: $n})",
+                       parameters={"n": i})
             src = SourceRef(SMOKE, tender_id="SMOKE-1", line_no=str(i), raw_text=raw)
             r = resolver.resolve(raw, source=src)
             node_ids.add(r.node_id)
@@ -87,11 +90,10 @@ def run_smoke(conn, keep: bool = False, log=print) -> bool:
 
         forward = conn.query(
             """
-            MATCH (s:SourceRecord {source: $src, tender_id: 'SMOKE-1', line_no: '1'})
-                  -[r:RESOLVED_TO {current: true}]->(node)
+            MATCH (i:ItemLicitacion {id_licitacion: 'SMOKE-1', id_item: 1})
+                  -[r:RESOLVED_TO]->(node)
             RETURN node.id AS id, r.extractor_version AS extractor
-            """,
-            parameters={"src": SMOKE},
+            """
         )
         log(f"forward trace: {forward[0]['id']} (extractor {forward[0]['extractor']})"
             if forward else "FAIL: forward trace empty")
@@ -100,8 +102,8 @@ def run_smoke(conn, keep: bool = False, log=print) -> bool:
         reverse = conn.query(
             """
             MATCH (g:GenericProduct {category_id: 'sondas_foley', specificity: 1})
-                  -[:PARENT_OF*0..]->(d)<-[r:RESOLVED_TO {current: true}]-(s)
-            RETURN count(s) AS n
+                  -[:PARENT_OF*0..]->(d)<-[:RESOLVED_TO]-(i:ItemLicitacion {id_licitacion: 'SMOKE-1'})
+            RETURN count(i) AS n
             """
         )
         log(f"reverse trace/rollup: {reverse[0]['n']} records under the 16Fr parent")
@@ -110,8 +112,7 @@ def run_smoke(conn, keep: bool = False, log=print) -> bool:
         if keep:
             log("smoke data kept (--keep)")
         else:
-            conn.query("MATCH (s:SourceRecord {source: $src}) DETACH DELETE s",
-                       parameters={"src": SMOKE})
+            conn.query("MATCH (i:ItemLicitacion {id_licitacion: 'SMOKE-1'}) DETACH DELETE i")
             conn.query("MATCH (g:GenericProduct {category_id: 'sondas_foley'}) "
                        "DETACH DELETE g")
             conn.query("MATCH (c:Category {category_id: 'sondas_foley'}) DETACH DELETE c")
