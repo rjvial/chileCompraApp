@@ -136,9 +136,17 @@ CANONICALIZATION
 - lowercase; strip accents; decimal comma to point ("2,5" -> "2.5").
 - canonical units: fr (french), g (gauge), mm, cm->mm, ml, l->ml, mg, pct (%).
 - normalize leading zeros ("08fr" -> "8fr").
-- category: a normalized singular Spanish head-noun. If it clearly matches one of
-  the KNOWN_FAMILIES below, use that exact id; else emit a concise normalized
-  phrase and set flag "ambiguous_category" if unsure.
+- attribute NAMES and VALUES are Spanish, snake_case — `material=silicona` (not
+  silicone), `esterilidad=esteril`, `si`/`no` (not yes/no, true/false).
+- ONE value per attribute (pick the primary; never a list like "14g, 15g, 18g").
+
+CONSTRAINED VOCABULARY — use the family's own attribute names.
+The KNOWN FAMILIES below each list their allowed identity attribute names. When an
+item matches a family, set `category` to that exact id AND use ONLY that family's
+listed attribute names (verbatim — do NOT invent synonyms like `gauge` when the
+family lists `calibre`, and do NOT translate them). Omit any listed attribute the
+text doesn't support; never add one that isn't listed. If no family matches, use a
+concise snake_case Spanish category + names and set flag "ambiguous_category".
 
 NOT A PRODUCT (is_product=false): services, rubric-only lines echoing a UNSPSC
 category, pure boilerplate ("segun bases tecnicas").
@@ -149,7 +157,7 @@ CONSERVATISM
 - A line enumerating several distinct products -> flag "multi_product".
 - Conflicting values for one attribute -> flag "conflicting_attributes".
 
-KNOWN_FAMILIES (snap to these ids when applicable):
+KNOWN FAMILIES — "<id>: attr1, attr2, …" (use exactly these names for that id):
 {known_families}
 """
 
@@ -189,9 +197,32 @@ def known_families(register: dict) -> list[str]:
     return [c["category_id"] for c in register.get("categories", [])]
 
 
+def category_vocabulary(register: dict) -> dict[str, tuple[str, ...]]:
+    """{category_id: (identity attribute names)} from each registered schema — the
+    constrained per-category vocabulary. Families without a schema map to (); the
+    L1 prompt then asks the model to use EXACTLY these names (no inventing
+    `gauge` when the family's schema says `calibre`)."""
+    from ..categories.schema import CATEGORIES_DIR, load_schema
+
+    vocab: dict[str, tuple[str, ...]] = {}
+    for cat in register.get("categories", []):
+        cid = cat["category_id"]
+        sf = cat.get("schema_file")
+        names: tuple[str, ...] = ()
+        if sf and (CATEGORIES_DIR / sf).exists():
+            try:
+                names = load_schema(CATEGORIES_DIR / sf).identity_names
+            except Exception:  # noqa: BLE001 - a bad schema shouldn't break the prompt
+                names = ()
+        vocab[cid] = names
+    return vocab
+
+
 def system_prompt(register: dict) -> str:
-    fams = ", ".join(known_families(register))
-    return _SYSTEM_TEMPLATE.format(known_families=fams)
+    vocab = category_vocabulary(register)
+    lines = [(f"{cid}: {', '.join(names)}" if names else cid)
+             for cid, names in vocab.items()]
+    return _SYSTEM_TEMPLATE.format(known_families="\n".join(lines))
 
 
 # --- per-call request + result helpers ----------------------------------------
