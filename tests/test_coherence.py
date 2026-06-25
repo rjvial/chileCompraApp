@@ -31,11 +31,21 @@ def test_missing_evidence_trips_s1():
     assert _by_id(check_profiles(items))["S1"].count == 1
 
 
-def test_anchorless_evidence_trips_s2():
-    # evidence is a bare number with no concept word — the regression guard.
-    items = [("h0", mk("foley", [("concentracion", "2.5pct", "2,5")]))]
+def test_ungrounded_bare_number_trips_s2():
+    # value has no unit AND the evidence is a different bare number → ungrounded.
+    items = [("h0", mk("foley", [("medida", "20", "5")]))]
     f = _by_id(check_profiles(items))
     assert f["S2"].count == 1 and f["S2"].fail
+
+
+def test_unit_bearing_or_self_grounding_value_not_flagged_s2():
+    # narrow evidence is fine when the VALUE carries a unit / ratio, or the evidence
+    # digits equal the value (a self-grounding code like a bur size).
+    items = [("a", mk("d", [("concentracion", "2.5pct", "2,5")])),   # unit in value
+             ("b", mk("d", [("calibre", "12fr", "12")])),            # unit in value
+             ("c", mk("d", [("calibre_usp", "6/0", "60")])),         # ratio value
+             ("e", mk("d", [("forma", "018", "018")]))]              # self-grounding code
+    assert _by_id(check_profiles(items))["S2"].count == 0
 
 
 def test_brand_in_identity_trips_s8():

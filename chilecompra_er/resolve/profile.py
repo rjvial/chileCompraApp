@@ -131,6 +131,9 @@ concept, DO NOT emit an attribute for it.
   "cordon 3x2,5 mm" -> seccion=2.5mm          (anchored by "mm")           NOT a concentration
   "lote 2,5"        -> emit NOTHING for "2,5"  (no concept word)
 A bare number is never sufficient for identity. When in doubt, omit and lower confidence.
+Quote the FULL anchored span in `evidence`, including the unit/concept word:
+"70%" (not "70"), "12 Fr" (not "12"), "1,5 cm" (not "1,5"). A dimensionless code
+(bur size "018", suture "6/0") is quoted as-is.
 
 CANONICALIZATION
 - lowercase; strip accents; decimal comma to point ("2,5" -> "2.5").

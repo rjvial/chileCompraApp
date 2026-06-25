@@ -24,6 +24,25 @@ from .resolve.matcher import MatchResult, cluster
 _NON_IDENTITY = {"brand", "marca", "packaging", "pack", "envase", "caja",
                  "unidad_empaque", "cantidad_empaque"}
 _NUM_LEADING = re.compile(r"^\d")
+# a value "carries a unit" if it has a letter, ratio slash, or unit symbol
+_VALUE_ANCHOR = re.compile(r"[^\W\d_]|[/%°ºµμΩ]")
+
+
+def _digits(s: str) -> str:
+    return re.sub(r"\D", "", s or "")
+
+
+def weak_evidence(value: str, evidence: str) -> bool:
+    """True only for a genuinely ungrounded bare-number identity: the evidence is
+    anchorless AND the value carries no unit/ratio (so it's not 70pct / 12fr / 6/0)
+    AND the evidence digits don't even equal the value (so it isn't a self-grounding
+    code like a bur size 018). Otherwise the identity is well-formed even if the
+    quoted evidence span is narrow — that's a prompt nicety, not a structural breach."""
+    if not _is_anchorless_pattern(evidence):
+        return False
+    if _VALUE_ANCHOR.search(value or ""):
+        return False
+    return _digits(evidence) != _digits(value)
 
 
 @dataclass
@@ -45,7 +64,7 @@ def check_profiles(items: list[tuple[str, object]]) -> list[Finding]:
             ev = (a.evidence or "").strip()
             if not ev:
                 s1.append({"hash": h[:12], "attr": a.name, "value": a.value})
-            elif _is_anchorless_pattern(ev):
+            elif weak_evidence(a.value, ev):
                 s2.append({"hash": h[:12], "attr": a.name, "value": a.value,
                            "evidence": a.evidence})
             if a.name in _NON_IDENTITY:
@@ -53,8 +72,8 @@ def check_profiles(items: list[tuple[str, object]]) -> list[Finding]:
     return [
         Finding("S1", "structural", "identity attribute with no evidence",
                 len(s1), True, s1[:10]),
-        Finding("S2", "structural", "identity evidence is an anchorless number",
-                len(s2), True, s2[:10]),
+        Finding("S2", "structural", "ungrounded bare-number identity (value has no "
+                "unit and evidence doesn't ground it)", len(s2), True, s2[:10]),
         Finding("S8", "structural", "brand/packaging leaked into identity",
                 len(s8), True, s8[:10]),
     ]
