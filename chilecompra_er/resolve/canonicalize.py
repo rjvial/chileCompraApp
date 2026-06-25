@@ -80,7 +80,7 @@ def canonicalize(records, store: ProfileStore, *,
                  normalizer: Normalizer | None = None,
                  model: str = "claude-haiku-4-5",
                  group_size: int = _GROUP_SIZE,
-                 workers: int = 8,
+                 workers: int = 2,
                  dry_run: bool = False,
                  log=lambda _m: None) -> CanonStats:
     """Canonicalize an iterable of records into the store.

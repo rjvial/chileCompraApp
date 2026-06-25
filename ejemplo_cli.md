@@ -853,7 +853,7 @@ actually merge equivalent bids.
 | `--from-file <path>` | none | Read newline-separated descriptions from a file instead of the graph (runnable now). |
 | `--out <path>` | `data\profiles.jsonl` | Profile store — JSONL keyed by text-hash; the L1 cache (skip already-done). |
 | `--model <id>` | `claude-haiku-4-5` | L1 model. |
-| `--workers <n>` | `8` | Concurrent CLI calls on the Max backend. |
+| `--workers <n>` | `2` | Concurrent LLM calls on the Max backend. Kept low so a long run doesn't burst past the Max usage limit; raise it for short jobs. |
 | `--group-size <n>` | `25` | Descriptions per LLM call — **batched** so the ~28K Claude-Code per-call overhead is paid once per *group*, not per item (≈ N× fewer tokens/calls). |
 | `--segment <n>` | all | UNSPSC segment scope for the graph read, e.g. `42` (bounds a run). |
 | `--limit <n>` | all | Cap inputs (dev runs). |

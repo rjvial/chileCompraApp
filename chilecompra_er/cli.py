@@ -1763,8 +1763,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", type=Path, default=Path("data/profiles.jsonl"),
                    help="profile store (JSONL, keyed by text-hash; the L1 cache)")
     p.add_argument("--model", default="claude-haiku-4-5", help="L1 model (default Haiku 4.5)")
-    p.add_argument("--workers", type=int, default=8,
-                   help="concurrent CLI calls on the Max backend (default 8)")
+    p.add_argument("--workers", type=int, default=2,
+                   help="concurrent LLM calls on the Max backend (default 2 — keeps "
+                        "burst rate low so a long run doesn't trip the usage limit)")
     p.add_argument("--group-size", type=int, default=25, dest="group_size",
                    help="descriptions canonicalized per LLM call (default 25; "
                         "amortizes the per-call overhead)")
