@@ -998,7 +998,8 @@ def cmd_canonicalize(args) -> int:
         if args.limit:
             records = records[:args.limit]
         stats = canonicalize(records, store, model=args.model,
-                             workers=args.workers, dry_run=args.dry_run, log=log)
+                             workers=args.workers, group_size=args.group_size,
+                             dry_run=args.dry_run, log=log)
     else:
         # Streamed graph read — the connection must stay open while
         # canonicalize() consumes the lazy generator.
@@ -1728,6 +1729,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default="claude-haiku-4-5", help="L1 model (default Haiku 4.5)")
     p.add_argument("--workers", type=int, default=8,
                    help="concurrent CLI calls on the Max backend (default 8)")
+    p.add_argument("--group-size", type=int, default=25, dest="group_size",
+                   help="descriptions canonicalized per LLM call (default 25; "
+                        "amortizes the per-call overhead)")
     p.add_argument("--segment", type=int, default=None,
                    help="UNSPSC segment scope for the graph read, e.g. 42 (bounds a run)")
     p.add_argument("--limit", type=int, default=None, help="cap inputs (dev runs)")

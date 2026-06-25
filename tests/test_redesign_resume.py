@@ -3,6 +3,8 @@ resumes by skipping cached profiles; the L2 edge write has a stream-offset
 checkpoint. Monkeypatched — no LLM, no graph."""
 from __future__ import annotations
 
+import re
+
 from chilecompra_er.normalize import Normalizer
 from chilecompra_er.resolve import canonicalize as CZ
 from chilecompra_er.resolve import profile as P
@@ -23,25 +25,27 @@ def test_canonicalize_resumes_by_skipping_cached(tmp_path, monkeypatch):
     # simulate a prior run that already canonicalized the first two
     store.put_many({P.text_hash(norm(r)): _raw() for r in recs[:2]})
 
-    asked: list[str] = []
+    asked_ids: list[str] = []
 
     def fake_many(requests, schema, system, **kw):
+        # each request is a GROUP; echo a profile per item id in the prompt
         on_result = kw["on_result"]
-        for cid, _user in requests:
-            asked.append(cid)
-            on_result(cid, _raw())       # incremental persist via the callback
+        for cid, user in requests:
+            ids = re.findall(r"id=(\d+)", user)
+            asked_ids.extend(ids)
+            on_result(cid, {"profiles": [{**_raw(), "id": i} for i in ids]})
         return {}
 
     monkeypatch.setattr("chilecompra_er.llm.complete_json_many", fake_many)
     stats = CZ.canonicalize(recs, store, normalizer=norm)
 
     assert stats.distinct == 4 and stats.cached == 2 and stats.canonicalized == 2
-    assert len(asked) == 2               # only the two uncached were sent to the LLM
+    assert len(asked_ids) == 2           # only the two uncached items were sent
     assert len(store) == 4               # all now persisted (durable)
 
-    asked.clear()
+    asked_ids.clear()
     again = CZ.canonicalize(recs, store, normalizer=norm)   # full no-op
-    assert again.cached == 4 and asked == []
+    assert again.cached == 4 and asked_ids == []
 
 
 def test_priced_in_checkpoint_roundtrip(tmp_path):

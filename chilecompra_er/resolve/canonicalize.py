@@ -71,7 +71,7 @@ class CanonStats:
     failed: int = 0
 
 
-_BATCH_SIZE = 50_000  # under the API's 100k-requests / 256MB per-batch limit
+_GROUP_SIZE = 25      # descriptions per LLM call (amortize per-call overhead)
 _FLUSH = 100          # persist to the store every N profiles (kill-resume granularity)
 
 
@@ -79,7 +79,7 @@ def canonicalize(records, store: ProfileStore, *,
                  register: dict | None = None,
                  normalizer: Normalizer | None = None,
                  model: str = "claude-haiku-4-5",
-                 batch_size: int = _BATCH_SIZE,
+                 group_size: int = _GROUP_SIZE,
                  workers: int = 8,
                  dry_run: bool = False,
                  log=lambda _m: None) -> CanonStats:
@@ -119,36 +119,47 @@ def canonicalize(records, store: ProfileStore, *,
         log("dry run — L0 only, no LLM calls (no API credits spent)")
         return stats
 
-    # Persist incrementally as each profile is canonicalized (flush every
-    # _FLUSH), so a kill loses at most the in-flight calls + the unflushed buffer.
-    # Re-running skips everything already in the store (store.has above) — the
-    # store IS the resume state, no separate checkpoint needed.
-    items = list(todo.items())
+    # Multi-item batching: each LLM call canonicalizes a GROUP of `group_size`
+    # descriptions, so the ~28K Claude-Code per-call overhead is paid once per
+    # GROUP, not per item (≈ group_size× fewer tokens/calls). Groups run
+    # concurrently across `workers`. Persist incrementally (flush every _FLUSH);
+    # the store is the resume state, so a kill just re-runs the un-persisted items.
+    items = list(todo.items())                      # [(text_hash, raw), ...]
     from ..llm import complete_json_many
+
+    requests: list[tuple[str, str]] = []
+    group_maps: dict[str, dict[str, str]] = {}      # custom_id -> {item_id: text_hash}
+    for gi, start in enumerate(range(0, len(items), group_size)):
+        chunk = items[start:start + group_size]
+        cid = f"g{gi}"
+        group_maps[cid] = {str(j): h for j, (h, _raw) in enumerate(chunk)}
+        msg_items = [(str(j), raw, unspsc_by_hash.get(h))
+                     for j, (h, raw) in enumerate(chunk)]
+        requests.append((cid, P.build_batch_message(msg_items)))
+    log(f"L1: {len(items):,} items in {len(requests):,} groups of ≤{group_size}")
+
     buf: dict[str, dict] = {}
 
-    def persist(h, d):
-        try:
-            buf[h] = P.profile_to_dict(P.parse_profile(d))
-            stats.canonicalized += 1
-        except (KeyError, TypeError) as exc:
-            log(f"  parse failed for {h[:12]}: {exc}")
+    def persist_group(cid, group):
+        idmap = group_maps.get(cid, {})
+        for entry in (group or {}).get("profiles", []):
+            h = idmap.get(str(entry.get("id")))
+            if not h:
+                continue
+            try:
+                buf[h] = P.profile_to_dict(P.parse_profile(entry))
+                stats.canonicalized += 1
+            except (KeyError, TypeError) as exc:
+                log(f"  parse failed for {h[:12]}: {exc}")
         if len(buf) >= _FLUSH:
             store.put_many(buf)
             buf.clear()
             log(f"  ...persisted (store now {len(store):,})")
 
-    for start in range(0, len(items), batch_size):
-        chunk = items[start:start + batch_size]
-        requests = [
-            (h, P.build_user_message(raw, unspsc=unspsc_by_hash.get(h)))
-            for h, raw in chunk
-        ]
-        complete_json_many(requests, P.PROFILE_SCHEMA, system, model=model,
-                           max_workers=workers, on_result=persist, log=log)
-        if buf:
-            store.put_many(buf)
-            buf.clear()
+    complete_json_many(requests, P.BATCH_SCHEMA, system, model=model,
+                       max_workers=workers, on_result=persist_group, log=log)
+    if buf:
+        store.put_many(buf)
     stats.failed = len(items) - stats.canonicalized
     return stats
 

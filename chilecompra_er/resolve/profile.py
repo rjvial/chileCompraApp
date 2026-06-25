@@ -154,6 +154,37 @@ KNOWN_FAMILIES (snap to these ids when applicable):
 """
 
 
+# --- multi-item batching (efficiency: amortize the per-call overhead) ---------
+# One LLM call canonicalizes a GROUP of descriptions, returning a profiles array.
+# Each item carries an "id" the model echoes, so results map back by id even if
+# the model reorders or drops one.
+
+def _item_schema_with_id() -> dict:
+    item = json.loads(json.dumps(PROFILE_SCHEMA))   # deep copy
+    item["properties"]["id"] = {"type": "string"}
+    item["required"] = ["id", *item["required"]]
+    return item
+
+
+BATCH_SCHEMA: dict = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["profiles"],
+    "properties": {"profiles": {"type": "array", "items": _item_schema_with_id()}},
+}
+
+
+def build_batch_message(items: list[tuple[str, str, object]]) -> str:
+    """`items` = list of (id, description, unspsc|None). Returns a prompt asking
+    for one profile per item, each echoing its id."""
+    lines = ['Canonicalize EACH product below. Return {"profiles":[...]} with '
+             'exactly one entry per item, each echoing its "id".', ""]
+    for id_, desc, unspsc in items:
+        u = f" [UNSPSC {unspsc}]" if unspsc is not None else ""
+        lines.append(f"id={id_}{u}: {desc!r}")
+    return "\n".join(lines)
+
+
 def known_families(register: dict) -> list[str]:
     return [c["category_id"] for c in register.get("categories", [])]
 

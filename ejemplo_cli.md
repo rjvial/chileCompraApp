@@ -849,14 +849,19 @@ never become identity (the redesign's answer to the `2.5pct` false-merge class).
 | `--out <path>` | `data\profiles.jsonl` | Profile store — JSONL keyed by text-hash; the L1 cache (skip already-done). |
 | `--model <id>` | `claude-haiku-4-5` | L1 model. |
 | `--workers <n>` | `8` | Concurrent CLI calls on the Max backend. |
+| `--group-size <n>` | `25` | Descriptions per LLM call — **batched** so the ~28K Claude-Code per-call overhead is paid once per *group*, not per item (≈ N× fewer tokens/calls). |
 | `--segment <n>` | all | UNSPSC segment scope for the graph read, e.g. `42` (bounds a run). |
 | `--limit <n>` | all | Cap inputs (dev runs). |
 | `--dry-run` | off | **L0 dedup only** — report distinct/cached counts, **no LLM calls**. |
 
-> **LLM backend.** By default the LLM stages run on the **Claude Max subscription**
-> (the `claude_cli` backend) — concurrent `claude -p` calls (`--workers`), **no
-> per-token cost**. There is **no Batch API or server-side prompt caching** on the
-> Max path, so a full-corpus L1 run is *slow* and bounded by Max usage limits;
+> **LLM backend & efficiency.** By default the LLM stages run on the **Claude Max
+> subscription** (the `claude_cli` backend) — concurrent `claude -p` calls
+> (`--workers`), **no per-token cost**. Each `claude -p` is a full Claude Code
+> agent, so it carries ~28K tokens of its own scaffolding per call; L1 **batches
+> `--group-size` descriptions per call** to amortize that (and uses
+> `--strict-mcp-config` so no MCP/Neo4j connection is made per call). There is
+> still **no Batch API or server-side prompt caching** on the Max path, so a
+> full-corpus L1 run is *slow* and bounded by Max usage limits;
 > because the profile store is a resumable text-hash cache, run it **incrementally
 > or per `--segment`** rather than all at once. (Set
 > `CHILECOMPRA_LLM_BACKEND=anthropic_sdk` to use the Batch API instead — −50% and

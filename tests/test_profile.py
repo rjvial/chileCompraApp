@@ -55,6 +55,17 @@ def test_parse_profile_round_trip():
     assert P.parse_profile(d) == p           # frozen dataclasses compare by value
 
 
+def test_batch_message_and_schema():
+    items = [("0", "sonda foley 16", 42142500), ("1", "aguja 21g", None)]
+    msg = P.build_batch_message(items)
+    assert "id=0" in msg and "id=1" in msg and "42142500" in msg
+    assert "profiles" in P.BATCH_SCHEMA["properties"]
+    # the per-item schema gained an id, keeping the profile fields
+    item = P.BATCH_SCHEMA["properties"]["profiles"]["items"]
+    assert "id" in item["properties"] and "category" in item["properties"]
+    assert "id" in item["required"]
+
+
 def test_category_normalized_for_stable_blocking():
     d = {"is_product": True, "category": "Cordón eléctrico",
          "identity_attributes": [], "brand": None, "model_token": None,
