@@ -1069,6 +1069,61 @@ def cmd_match(args) -> int:
     return 0
 
 
+def cmd_coherence_check(args) -> int:
+    """Coherence auditor (redesign): run the named invariants over the L1
+    profiles + L2 clusters (and, with --graph, the persisted catalog). STRUCTURAL
+    breaches fail the run (exit 1); SEMANTIC are ranked review backlogs; HEALTH is
+    a trend snapshot. Read-only."""
+    from .coherence import audit_offline, check_graph
+    from .resolve.canonicalize import ProfileStore
+
+    store = ProfileStore(args.store)
+    items = store.items()
+    if not items:
+        print(f"no profiles in {args.store} — run `canonicalize` first")
+        return 1
+    findings = audit_offline(items)
+    if args.graph:
+        from .graphdb import get_connection
+        conn = get_connection()
+        try:
+            findings += check_graph(conn)
+        finally:
+            conn.close()
+
+    tiers = ("structural", "semantic", "health") if args.tier == "all" else (args.tier,)
+    failed = 0
+    for tier in tiers:
+        rows = [f for f in findings if f.tier == tier]
+        if not rows:
+            continue
+        print(f"\n{tier.upper()}:")
+        for f in rows:
+            mark = "  ✗ FAIL" if (f.fail and f.count) else ""
+            tail = f": {f.title}" if tier == "health" else f"  {f.title}"
+            print(f"  {f.id:<14}{f.count:>8,}{tail}{mark}")
+            for ex in f.examples[:3]:
+                print(f"        e.g. {ex}")
+            if f.fail and f.count:
+                failed += f.count
+
+    if args.out:
+        import csv
+        sem = [f for f in findings if f.tier == "semantic"]
+        with open(args.out, "w", encoding="utf-8-sig", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["id", "title", "count", "examples"])
+            for f in sem:
+                w.writerow([f.id, f.title, f.count, "; ".join(map(str, f.examples[:5]))])
+        print(f"\nwrote semantic backlog to {args.out}", file=sys.stderr)
+
+    if failed:
+        print(f"\nFAIL: {failed:,} structural breach(es)")
+    else:
+        print("\nOK: no structural breaches")
+    return 1 if failed else 0
+
+
 def cmd_fallback_report(args) -> int:
     """Rank the UNSPSC fallback residue from the graph: which commodity codes
     carry the most un-categorized items, and which head-noun families recur
@@ -1611,6 +1666,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="UNSPSC segment scope for the offer-price read on --persist")
     p.add_argument("--show", type=int, default=15, help="top clusters to print")
     p.set_defaults(func=cmd_match)
+
+    p = sub.add_parser("coherence-check",
+                       help="L4 (redesign): run coherence invariants over the L1 "
+                            "profiles + L2 clusters (structural gate / semantic backlog / health)")
+    p.add_argument("--store", type=Path, default=Path("data/profiles.jsonl"),
+                   help="L1 profile store to audit (default data\\profiles.jsonl)")
+    p.add_argument("--graph", action="store_true",
+                   help="also run graph-tier checks against the persisted catalog")
+    p.add_argument("--tier", choices=["structural", "semantic", "health", "all"],
+                   default="all", help="which tier(s) to report (default all)")
+    p.add_argument("--out", type=Path, default=None,
+                   help="write the semantic backlog to a CSV")
+    p.set_defaults(func=cmd_coherence_check)
 
     p = sub.add_parser("fallback-report",
                        help="rank the UNSPSC fallback residue (graph): commodity "

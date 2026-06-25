@@ -848,9 +848,18 @@ hard cut; identical signatures collapse; a coarser partial spec is linked by
 child). Default is an offline report (no graph, no LLM). With **`--persist`** it
 writes `:ProductCluster` + `:REFINES` nodes and binds offers via
 `(:Oferta)-[:PRICED_IN {normalized_price, rut, date}]->(:ProductCluster)` (price
-per base unit on the edge); run `migrate` first (migration `005`). L3 adjudication,
-the coherence auditor, and the cutover from the legacy `:GenericProduct` catalog
-remain.
+per base unit on the edge); run `migrate` first (migration `005`).
+
+**`coherence-check [--store data\profiles.jsonl] [--graph] [--tier all] [--out <csv>]`**
+— **L4 auditor**: runs the named invariants in three tiers. **Structural** (e.g.
+S1 every identity attribute has evidence, S2 no anchorless-number evidence, S5
+unique cluster signatures, S7 strict-subset REFINES) are a contract — any breach
+**fails the run (exit 1)**, suitable as a CI gate. **Semantic** (M1 weak-identity
+clusters, M4 model-token conflicts, ambiguous partials; with `--graph`: unplaced
+offers, price-incoherent clusters) are ranked review backlogs. **Health** is a
+trend snapshot (confidence mix, placement). Offline by default; `--graph` adds
+checks over the persisted catalog. L3 adjudication and the Phase-6 cutover from
+the legacy `:GenericProduct` catalog remain.
 
 ---
 
