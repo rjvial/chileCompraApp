@@ -838,7 +838,16 @@ never become identity (the redesign's answer to the `2.5pct` false-merge class).
 > implemented and tested. The only piece not yet exercised is the **bulk LLM
 > batch run** — it uses the **Batch API + prompt caching** and therefore **bills
 > API credits** (the `anthropic_sdk` backend), *not* the Claude Max subscription,
-> so load credits before running it. L2/L3 (matcher, adjudication) are still to come.
+> so load credits before running it.
+
+**`match [--store data\profiles.jsonl] [--attach-partials] [--show 15]`** — **L2**:
+clusters the L1 profile store into product clusters offline (no graph, no LLM).
+The pairwise rule: same `model_token` ⇒ same product (even cross-brand); a
+conflicting attribute is a hard cut; identical signatures collapse; a coarser
+partial spec is linked by `REFINES` rather than merged (unless `--attach-partials`
+and it has a unique finer child). Prints cluster/edge/residue counts and the top
+clusters. Graph persistence (`:ProductCluster`/`:PRICED_IN`) and L3 adjudication
+are the next Phase-2/3 steps.
 
 ---
 

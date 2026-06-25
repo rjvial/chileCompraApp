@@ -1021,6 +1021,31 @@ def cmd_canonicalize(args) -> int:
     return 0
 
 
+def cmd_match(args) -> int:
+    """L2 (redesign): cluster the L1 profile store into product clusters.
+    Read-only report for now — graph persistence (ProductCluster/PRICED_IN) is
+    the next Phase-2 step. Runs offline against the JSONL store, no LLM."""
+    from .resolve.canonicalize import ProfileStore
+    from .resolve.matcher import cluster
+
+    store = ProfileStore(args.store)
+    profiles = store.profiles()
+    if not profiles:
+        print(f"no profiles in {args.store} — run `canonicalize` first")
+        return 1
+    res = cluster(profiles, attach_partials=args.attach_partials)
+    print(f"profiles        : {len(profiles):,}")
+    print(f"product clusters : {len(res.clusters):,}")
+    print(f"REFINES edges    : {len(res.refines):,}")
+    print(f"L3 residue       : {len(res.residue):,} "
+          f"(model-token conflicts + ambiguous partials)")
+    top = sorted(res.clusters, key=lambda c: len(c.members), reverse=True)[:args.show]
+    print(f"\ntop {args.show} clusters by bid count:")
+    for c in top:
+        print(f"  {len(c.members):>6}  {c.signature}")
+    return 0
+
+
 def cmd_fallback_report(args) -> int:
     """Rank the UNSPSC fallback residue from the graph: which commodity codes
     carry the most un-categorized items, and which head-noun families recur
@@ -1547,6 +1572,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="L0 dedup only — report distinct/cached counts, no LLM calls")
     p.set_defaults(func=cmd_canonicalize)
+
+    p = sub.add_parser("match",
+                       help="L2 (redesign): cluster the L1 profile store into "
+                            "product clusters (offline report; no graph writes yet)")
+    p.add_argument("--store", type=Path, default=Path("data/profiles.jsonl"),
+                   help="L1 profile store to cluster (default data\\profiles.jsonl)")
+    p.add_argument("--attach-partials", action="store_true",
+                   help="merge a coarse partial spec into its unique finer cluster "
+                        "(default off = keep separate, linked by REFINES)")
+    p.add_argument("--show", type=int, default=15, help="top clusters to print")
+    p.set_defaults(func=cmd_match)
 
     p = sub.add_parser("fallback-report",
                        help="rank the UNSPSC fallback residue (graph): commodity "

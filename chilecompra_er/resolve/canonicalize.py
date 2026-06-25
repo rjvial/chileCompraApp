@@ -48,6 +48,10 @@ class ProfileStore:
                 f.write(json.dumps({"text_hash": text_hash, "profile": prof},
                                    ensure_ascii=False) + "\n")
 
+    def profiles(self) -> list[P.Profile]:
+        """Every stored profile, for the L2 matcher."""
+        return [P.parse_profile(d) for d in self._cache.values()]
+
     def __len__(self) -> int:
         return len(self._cache)
 
