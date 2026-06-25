@@ -1524,12 +1524,30 @@ def cmd_price_clusters(args) -> int:
     return 0
 
 
+def _apoc_wipe_labels(conn, labels: list[str]) -> int:
+    """Delete every node carrying any of `labels` plus ALL relationships incident to
+    them. APOC-batched so it never DETACH-DELETEs an edge-heavy node (which OOMs the
+    2G heap at millions of edges), and edge-type-agnostic — it drops whatever edges
+    touch the nodes, so a new/forgotten edge type (e.g. IN_CATEGORY) can't leave
+    nodes stranded. Relationships first, then the edge-free nodes. Returns nodes deleted."""
+    pred = " OR ".join(f"n:{lbl}" for lbl in labels)
+    conn.query("CALL apoc.periodic.iterate("
+               f"'MATCH (n)-[r]-() WHERE {pred} WITH DISTINCT r RETURN r', "
+               "'DELETE r', {batchSize: 10000})")
+    total = 0
+    for lbl in labels:
+        rec = conn.query("CALL apoc.periodic.iterate("
+                         f"'MATCH (n:{lbl}) RETURN n', 'DELETE n', {{batchSize: 10000}}) "
+                         "YIELD total RETURN total")
+        total += rec[0]["total"] if rec else 0
+    return total
+
+
 def cmd_wipe_clusters(args) -> int:
     """Delete ONLY the redesign's shadow catalog — `:ProductCluster` nodes and their
-    `:PRICED_IN` / `:REFINES` edges — leaving the legacy `:GenericProduct` catalog
-    and the source graph untouched. Use before re-matching after an L1 change.
-    Edges are dropped first (PRICED_IN can be millions → APOC-batched), then the
-    edge-free nodes; the match checkpoints are cleared so a re-run starts fresh."""
+    `:PRICED_IN` / `:REFINES` edges — leaving the legacy catalog and the source graph
+    untouched. Use before re-matching after an L1 change. The match checkpoints are
+    cleared so a re-run starts fresh."""
     if not args.yes:
         print("refusing to wipe clusters without --yes")
         return 1
@@ -1537,14 +1555,7 @@ def cmd_wipe_clusters(args) -> int:
 
     conn = get_connection()
     try:
-        conn.query("CALL apoc.periodic.iterate("
-                   "'MATCH ()-[r:PRICED_IN]->() RETURN r', 'DELETE r', "
-                   "{batchSize: 10000})")
-        conn.query("MATCH ()-[r:REFINES]->() DELETE r")
-        rec = conn.query("CALL apoc.periodic.iterate("
-                         "'MATCH (c:ProductCluster) RETURN c', 'DELETE c', "
-                         "{batchSize: 10000}) YIELD total RETURN total")
-        deleted = rec[0]["total"] if rec else 0
+        deleted = _apoc_wipe_labels(conn, ["ProductCluster"])
         print(f"wiped {deleted:,} ProductCluster nodes + PRICED_IN/REFINES edges "
               "(legacy catalog + source untouched)")
     finally:
@@ -1559,11 +1570,10 @@ def cmd_wipe_clusters(args) -> int:
 
 
 def cmd_wipe_catalog(args) -> int:
-    """Delete ALL catalog data (Category/GenericProduct/Product/Brand).
-    The transactional layer (Licitacion/Oferta/ItemLicitacion/...) and the schema
-    migrations are untouched — this resets the catalog, not the source data. DETACH
-    DELETE on these nodes also removes the catalog-side edges that hang off them —
-    the RESOLVED_TO / OFFERS / OF_BRAND edges — leaving the source nodes edge-free."""
+    """Delete ALL legacy catalog data (Category/GenericProduct/Product/Brand) and every
+    edge incident to it (RESOLVED_TO/OFFERS/OF_BRAND/VARIANT_OF/PARENT_OF/IN_CATEGORY).
+    APOC-batched, relationships first — OOM-safe at millions of edges and edge-type-
+    agnostic. The transactional layer and migrations are untouched."""
     if not args.yes:
         print("refusing to wipe the entire catalog without --yes")
         return 1
@@ -1571,16 +1581,8 @@ def cmd_wipe_catalog(args) -> int:
 
     conn = get_connection()
     try:
-        rec = conn.query(
-            """
-            MATCH (n)
-            WHERE n:GenericProduct OR n:Product OR n:Brand OR n:Category
-            WITH n LIMIT 100000
-            DETACH DELETE n
-            RETURN count(*) AS deleted
-            """
-        )
-        print(f"catalog wiped: {rec[0]['deleted']} nodes deleted "
+        deleted = _apoc_wipe_labels(conn, ["GenericProduct", "Product", "Brand", "Category"])
+        print(f"catalog wiped: {deleted:,} nodes + all incident edges "
               "(transactional data and migrations untouched)")
     finally:
         conn.close()
