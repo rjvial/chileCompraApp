@@ -152,7 +152,7 @@ def write_priced_in(conn, offer_rows, hash_to_cluster, pack_by_hash, normalizer,
         conn.query(
             """
             UNWIND $rows AS r
-            MATCH (o:Oferta {id_oferta: r.id})
+            MATCH (o:Oferta {id_licitacion: r.lic, id_item: r.item, id_oferta: r.oferta})
             MATCH (c:ProductCluster {id: r.cluster_id})
             MERGE (o)-[e:PRICED_IN]->(c)
             SET e.normalized_price = r.np, e.unit_price = r.up,
@@ -174,7 +174,8 @@ def write_priced_in(conn, offer_rows, hash_to_cluster, pack_by_hash, normalizer,
             skipped += 1
         else:
             pack = pack_by_hash.get(h)
-            buf.append({"id": o.get("id"), "cluster_id": cid,
+            buf.append({"lic": o.get("lic"), "item": o.get("item"),
+                        "oferta": o.get("oferta"), "cluster_id": cid,
                         "np": normalized_price(o.get("unit_price"), pack),
                         "up": o.get("unit_price"), "cur": o.get("currency"),
                         "rut": o.get("rut"), "date": o.get("date"), "pack": pack})

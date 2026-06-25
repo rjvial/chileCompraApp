@@ -356,7 +356,8 @@ def fetch_offer_prices(conn, unspsc_segment: int | None = None,
         WHERE o.descripcion_proveedor IS NOT NULL
           AND ($seg_low IS NULL OR
                (i.codigo_unspsc_producto >= $seg_low AND i.codigo_unspsc_producto < $seg_high))
-        RETURN o.id_oferta AS id, o.descripcion_proveedor AS text,
+        RETURN o.id_licitacion AS lic, o.id_item AS item, o.id_oferta AS oferta,
+               o.descripcion_proveedor AS text,
                coalesce(o.precio_unitario_clean, o.precio_unitario) AS unit_price,
                o.moneda AS currency, o.rut_proveedor AS rut, o.fecha AS date
         SKIP $skip LIMIT $limit
