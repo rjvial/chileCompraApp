@@ -117,11 +117,14 @@ _OAUTH_BETA = "oauth-2025-04-20"
 
 
 def _oauth_token() -> str:
-    tok = os.getenv("CLAUDE_CODE_OAUTH_TOKEN") or os.getenv("ANTHROPIC_AUTH_TOKEN")
+    # via config.env so secrets.env is loaded even on graph-free runs.
+    from .config import env
+
+    tok = env("CLAUDE_CODE_OAUTH_TOKEN") or env("ANTHROPIC_AUTH_TOKEN")
     if not tok:
         raise RuntimeError(
             "claude_oauth backend needs a Max OAuth token — run `claude setup-token` "
-            "and set CLAUDE_CODE_OAUTH_TOKEN")
+            "and put CLAUDE_CODE_OAUTH_TOKEN in secrets.env")
     return tok
 
 
