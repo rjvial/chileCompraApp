@@ -35,14 +35,18 @@ Invoke it as `chilecompra-er <command>` (installed entry point) or, from inside
 the repo, `.\.venv\Scripts\chilecompra-er.exe <command>`. Examples use PowerShell
 paths (`data\...`).
 
-> **Two pipelines.** §2–§7 describe the **operational** pipeline: a deterministic
-> register/resolve flow that builds the live `:GenericProduct`/`:Product` catalog
-> (1M+ lines resolved). A newer **resolution redesign** (`canonicalize` → `match`
-> → `adjudicate`, with `coherence-check` and `price-clusters`) is built and tested
-> alongside it — it replaces regex extraction with one Claude **canonicalization**
-> step and writes a separate `:ProductCluster` catalog, running on the **Claude Max
-> subscription**. It's a shadow until the planned cutover. See **§4.9**. All LLM
-> work runs on Max by default (`CHILECOMPRA_LLM_BACKEND`).
+> **Two pipelines — cutover in progress.** §2–§7 describe the original
+> **register/resolve** flow: a deterministic pipeline that built the
+> `:GenericProduct`/`:Product` catalog (1M+ lines resolved). The newer **resolution
+> redesign** (`canonicalize` → `match` → `adjudicate`, with `coherence-check` and
+> `price-clusters`, **§4.9**) replaces regex extraction with one Claude
+> **canonicalization** step and writes a `:ProductCluster` catalog. It has now been
+> **validated end-to-end at scale** on the Claude Max subscription, and the legacy
+> `:GenericProduct` catalog has been **wiped from the graph** — so the redesign is
+> the forward path and the only product layer (rebuilt per `--segment`). The legacy
+> *code* and §2–§7 remain as reference and are still reproducible from the intact
+> source graph. All LLM work runs on **Max** by default (`CHILECOMPRA_LLM_BACKEND`);
+> the efficient path is the `claude_oauth` backend (see §4.9).
 
 ---
 
@@ -205,8 +209,11 @@ python -m venv .venv
   changes every start, so it rewrites `.mcp.json` automatically. (A bolt
   *timeout* right after a clean start usually means the `neo4j-sg` security group
   doesn't allow your current client IP — not that Neo4j is down.)
-- **LLM auth** (only for the three LLM commands) — run `ant auth login` once;
-  calls go through the Claude Max subscription.
+- **LLM auth** — the legacy LLM commands (`register` / `generate-schemas` /
+  `build-brand-lexicon`) use `ant auth login` (Max). The redesign's efficient
+  backend (`claude_oauth`, §4.9) needs a `claude setup-token` token in
+  `secrets.env` as `CLAUDE_CODE_OAUTH_TOKEN`. Both bill the **Claude Max
+  subscription** — never API credits / Bedrock.
 - `chilecompra-er status` is a register + instance + graph sanity check anytime.
   Run the tests after register/schema changes: `python -m pytest tests -q`.
 
@@ -812,17 +819,17 @@ Never touches the graph (that's `wipe-catalog`).
 | Command | What it does |
 |---|---|
 | `wipe-category <id> --yes` | Delete one category's **legacy** catalog nodes (and their RESOLVED_TO edges). |
-| `wipe-catalog --yes` | Delete ALL **legacy** catalog data (Category / GenericProduct / Product / Brand). Source data + migrations untouched. |
+| `wipe-catalog --yes` | Delete ALL **legacy** catalog data (Category / GenericProduct / Product / Brand) **and every edge incident to it** (RESOLVED_TO / OFFERS / OF_BRAND / VARIANT_OF / PARENT_OF / IN_CATEGORY). APOC-batched, relationships first — OOM-safe at millions of edges and edge-type-agnostic. Source data + migrations untouched. |
 | `wipe-clusters --yes` | Delete ONLY the **redesign** shadow catalog (`:ProductCluster` + `PRICED_IN`/`REFINES`). Edges dropped first (APOC-batched for scale), then nodes; clears the `match` checkpoints so a re-match starts fresh. **Legacy catalog and source untouched.** Use after changing the L1 prompt/vocabulary, before re-matching. |
 
 ### 4.9 Resolution redesign (L0→L3) — the new pipeline (shadow catalog)
 
-A second resolution pipeline, **built and tested** alongside the live one. It
-replaces the regex extractor + classifier (§2) with a single LLM
-**canonicalization** step feeding a deterministic matcher, and writes a
-**separate** catalog (`:ProductCluster` / `:PRICED_IN`) — it does **not** touch
-the live `:GenericProduct` catalog until the Phase-6 cutover. Its purpose is the
-one question the legacy model gets wrong on noisy text: *are two bids the same
+The resolution pipeline going forward. It replaces the regex extractor +
+classifier (§2) with a single LLM **canonicalization** step feeding a
+deterministic matcher, and writes the `:ProductCluster` / `:PRICED_IN` catalog.
+The legacy `:GenericProduct` catalog it replaced has been **wiped** (cutover); this
+is now the only product layer, rebuilt per `--segment`. Its purpose is the one
+question the legacy model got wrong on noisy text: *are two bids the same
 substitutable product?* (brand- and packaging-independent), for price comparison
 over time and across competition.
 
@@ -830,11 +837,15 @@ over time and across competition.
 L0 dedup → L1 canonicalize (Claude) → L2 match → L3 adjudicate → L4 coherence-check → L5 price-clusters
 ```
 
-**Status:** L1, L2, L4, L5 built + unit-tested; L3 scaffolded; everything is
-killable/resumable and runs on the **Claude Max subscription** by default. The
-graph-write paths (`match --persist`, `coherence-check --graph`) pass offline
-tests but haven't been run at scale; only the Phase-6 cutover remains. The legacy
-pipeline (§3) is still the operational one until then.
+**Status: validated end-to-end at scale; cutover begun.** All stages (L1, L2, L4,
+L5 built + unit-tested; L3 scaffolded) have been run live against the graph on a
+1,000-offer segment-42 slice — `canonicalize` → `match --persist` →
+`coherence-check --graph` → `price-clusters` — with the structural gate green
+(S1/S4/S5/S7/S8/S9 = 0; S2 down to a handful). The **legacy `:GenericProduct`
+catalog has been wiped** (the cutover), so the graph now holds only the source
+layer plus whatever the redesign rebuilds. What remains is the **full per-segment
+production run** (start with segment 42). Everything is killable/resumable and runs
+on the **Claude Max subscription** by default.
 
 **`canonicalize [--from-file <path>] [--out data\profiles.jsonl] [--model claude-haiku-4-5] [--limit <n>] [--dry-run]`**
 — **L1**: turns each distinct `descripcion_proveedor` into a structured
@@ -859,21 +870,22 @@ actually merge equivalent bids.
 | `--limit <n>` | all | Cap inputs (dev runs). |
 | `--dry-run` | off | **L0 dedup only** — report distinct/cached counts, **no LLM calls**. |
 
-> **LLM backend & efficiency.** By default the LLM stages run on the **Claude Max
-> subscription** (the `claude_cli` backend) — concurrent `claude -p` calls
-> (`--workers`), **no per-token cost**. Each `claude -p` is a full Claude Code
-> agent, so it carries ~28K tokens of its own scaffolding per call; L1 **batches
-> `--group-size` descriptions per call** to amortize that (and uses
-> `--strict-mcp-config` so no MCP/Neo4j connection is made per call). There is
-> still **no Batch API or server-side prompt caching** on the Max path, so a
-> full-corpus L1 run is *slow* and bounded by Max usage limits;
-> because the profile store is a resumable text-hash cache, run it **incrementally
-> or per `--segment`** rather than all at once. (Set
-> `CHILECOMPRA_LLM_BACKEND=anthropic_sdk` to use the Batch API instead — −50% and
-> caching, but it bills API credits, not Max.)
+> **LLM backend & efficiency.** All LLM stages run on the **Claude Max
+> subscription** by default — **no per-token cost** (backends listed at the end of
+> §4.9). The efficient path is **`claude_oauth`** (a `claude setup-token` credential
+> used directly with `messages.create`): bare, ~11× leaner than the `claude_cli`
+> default, billed to Max. Two further levers cut usage on either Max backend: L1
+> **batches `--group-size` descriptions per call** (the per-call overhead is paid
+> once per *group*), and calls use `--strict-mcp-config` (no MCP/Neo4j connection).
+> There is still **no Batch API** on Max, so a full-corpus L1 run is bounded by Max
+> usage limits — and because the profile store is a resumable text-hash cache, run
+> it **incrementally / per `--segment`** with a low `--workers`. If you hit the
+> usage limit mid-run, L1 **stops cleanly** ("re-run to resume") instead of
+> churning; just re-run the same command after the window resets.
 
-**`match [--store data\profiles.jsonl] [--attach-partials] [--persist] [--resume] [--segment <n>] [--show 15]`**
-— **L2**: clusters the L1 profile store into product clusters. The pairwise rule:
+**`match [--store data\profiles.jsonl] [--attach-partials] [--persist] [--resume] [--segment <n>] [--limit <n>] [--show 15]`**
+— **L2**: clusters the L1 profile store into product clusters. (`--limit` caps the
+offer-price read when persisting — handy for a bounded validation slice.) The pairwise rule:
 same `model_token` ⇒ same product (even cross-brand); a conflicting attribute is a
 hard cut; identical signatures collapse; a coarser partial spec is linked by
 `REFINES` rather than merged (unless `--attach-partials` and it has a unique finer
@@ -893,9 +905,11 @@ count with no LLM calls.
 
 **`coherence-check [--store data\profiles.jsonl] [--graph] [--tier all] [--out <csv>]`**
 — **L4 auditor**: runs the named invariants in three tiers. **Structural** (e.g.
-S1 every identity attribute has evidence, S2 no anchorless-number evidence, S5
-unique cluster signatures, S7 strict-subset REFINES) are a contract — any breach
-**fails the run (exit 1)**, suitable as a CI gate. **Semantic** (M1 weak-identity
+S1 every identity attribute has evidence, S2 no *ungrounded bare-number* identity
+— value carries no unit and the evidence doesn't ground it, so legit `70pct`/`12fr`/
+`6/0`/code values are accepted, S4 each offer in one cluster, S5 unique cluster
+signatures, S7 strict-subset REFINES) are a contract — any breach **fails the run
+(exit 1)**, suitable as a CI gate. **Semantic** (M1 weak-identity
 clusters, M4 model-token conflicts, ambiguous partials; with `--graph`: unplaced
 offers, price-incoherent clusters) are ranked review backlogs. **Health** is a
 trend snapshot (confidence mix, placement). Offline by default; `--graph` adds
@@ -906,8 +920,7 @@ checks over the persisted catalog.
 (normalization already on the edge). A cluster is the substitutable-product
 comparison unit, so the summary answers both goals at once — per-base-unit price
 **over time** and **across competition** (distinct supplier RUTs + the price
-spread among them). Needs a persisted catalog (`match --persist`). Only the
-Phase-6 cutover from the legacy `:GenericProduct` catalog remains.
+spread among them). Needs a persisted catalog (`match --persist`).
 
 > **Every stage is killable and resumable.** `canonicalize` persists each profile
 > as it lands (durable every ~100) into the text-hash store and **skips anything
@@ -919,21 +932,25 @@ Phase-6 cutover from the legacy `:GenericProduct` catalog remains.
 > practical Max workflow — run L1 per segment, killing and resuming freely — never
 > repeats finished work.
 
-**Running it end to end.** L1 on Max is slow (per-call subprocesses bounded by Max
-limits), so work **per `--segment`** and validate a small slice first before
-scaling up:
+**Running it end to end.** L1 is bounded by Max usage limits, so work **per
+`--segment`**, keep `--workers` low (default 2), and validate a small slice first
+before scaling up. On the `claude_oauth` backend each call is a fast bare message
+(no subprocess); on `claude_cli` each call is a `claude -p` subprocess:
 
 ```powershell
 chilecompra-er instance start
 chilecompra-er migrate                                          # constraints incl. migration 005
-chilecompra-er canonicalize --segment 42 --limit 2000 --workers 8   # bounded first pass (resumable)
-chilecompra-er match --persist --segment 42                    # write clusters + PRICED_IN (resumable)
+chilecompra-er canonicalize --segment 42 --limit 1000          # bounded first pass (resumable, --workers 2)
+chilecompra-er match --persist --segment 42 --limit 1000       # write clusters + PRICED_IN (resumable)
 chilecompra-er coherence-check --graph                         # structural gate + review backlogs
 chilecompra-er price-clusters --category sondas                # prices over time + competition
 #                                                              ↺ then drop --limit / next segment
 chilecompra-er adjudicate                                      # (optional) resolve the L2 residue
 chilecompra-er instance stop
 ```
+
+Before re-running after an L1 prompt/vocabulary change, clear the shadow catalog
+with `wipe-clusters --yes` (§4.8) so stale-signature clusters don't linger.
 
 Every step is safe to Ctrl-C and re-run. Per-segment caveat: run `match --persist`
 on the **same** segment you canonicalized (or with no `--segment` once all
@@ -944,9 +961,9 @@ nodes in `coherence-check` (transient).
 - **`claude_cli`** (default) — Max via `claude -p`; correct but ~28K scaffolding/call.
 - **`claude_oauth`** — Max via the **`claude setup-token`** OAuth token used directly
   with `messages.create` (Authorization: Bearer + the `oauth-2025-04-20` beta header).
-  **Bare, cacheable calls billed to Max — no agent scaffolding** (~14× leaner than
-  `claude_cli`, and fast: no subprocess). Set `CLAUDE_CODE_OAUTH_TOKEN` to the token
-  from `claude setup-token`. The efficient Max path.
+  **Bare, cacheable calls billed to Max — no agent scaffolding** (measured ~11×
+  fewer tokens/call than `claude_cli`, and fast: no subprocess). Set
+  `CLAUDE_CODE_OAUTH_TOKEN` to the token from `claude setup-token`. The efficient Max path.
 - **`anthropic_sdk`** — first-party API (Batch API for L1/L3); bills API credits.
 
 The pipeline stays on **Max** (`claude_cli` or `claude_oauth`) — never Bedrock.
@@ -977,19 +994,19 @@ Outputs are split by **lifecycle**:
     (the `register` vet-scan resume markers, §4.3), `price_series_<cat>.csv`.
   - `tier2_model.joblib` (the trained classifier) also lives here but `clean`
     leaves it — regenerate it with `train-tier2`.
-- **The populated catalog lives in Neo4j**, written only by `resolve --persist`:
-  `Category` / `GenericProduct` / `Product` / `Brand` nodes and the
-  `IN_CATEGORY` / `RESOLVED_TO` (direct, from `ItemLicitacion`) / `VARIANT_OF` /
-  `OF_BRAND` / `OFFERS {price}` / `PARENT_OF` edges. `register` never touches the
-  graph.
+- **The legacy catalog** (`Category` / `GenericProduct` / `Product` / `Brand` +
+  `IN_CATEGORY` / `RESOLVED_TO` / `VARIANT_OF` / `OF_BRAND` / `OFFERS {price}` /
+  `PARENT_OF`) was written only by `resolve --persist`. It has been **wiped from
+  the graph** (the cutover); it is reproducible by re-running the §3 pipeline
+  against the intact source. `register` never touched the graph.
 - **Redesign artifacts (§4.9)** — under `data\` (all regenerable, but `clean`
   does *not* target them by name yet, so remove by hand if needed):
   `profiles.jsonl` (the L1 profile store / cache — the resume state),
   `adjudications.jsonl` (L3 verdict store), `match_seg<seg>.checkpoint.json` (the
   `:PRICED_IN` resume offset), `price_clusters_<cat>.csv`. The redesign's own
   graph layer is `:ProductCluster` nodes + `:PRICED_IN` / `:REFINES` edges
-  (migration `005`), written only by `match --persist`, separate from the legacy
-  `:GenericProduct` catalog.
+  (migration `005`), written only by `match --persist`, in its own namespace —
+  reset with `wipe-clusters --yes` (§4.8) before a re-match after an L1 change.
 
 ---
 
@@ -1017,6 +1034,7 @@ Outputs are split by **lifecycle**:
 | `graph: unreachable` in `status` | Neo4j stopped (`instance start` — also rewrites `.mcp.json`). If *running* but bolt **times out**, `neo4j-sg` doesn't allow your client IP — add it. |
 | Lots of `unspsc_*` categories after `resolve` | Expected — fallback buckets. Run Phase 2 (§3) to convert coarse coverage into rich coverage. |
 | `register` / `generate-schemas` / `build-brand-lexicon` auth errors | Run `ant auth login` once (Claude Max). |
+| `claude_oauth` backend: "needs a Max OAuth token" | Run `claude setup-token` and put `CLAUDE_CODE_OAUTH_TOKEN=…` in `secrets.env` (gitignored). |
 | A `--segment` run scans forever | The UNSPSC index is missing — run `migrate`. |
 | `price-series` prints "no price observations" | That category isn't persisted yet, or was resolved with a kind other than `item` (only `--kind item --persist` binds `:Product` prices). |
 | `resolve --resume` refuses | The invocation must match the checkpoint (kind/segment/contains/persist/limit). |
