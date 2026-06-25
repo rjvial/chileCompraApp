@@ -106,12 +106,14 @@
         {
           "kind": "regex",
           "pattern": "\\b([123]\\.[0-9]{1,2})\\b",
-          "template": "{1}mm"
+          "template": "{1}mm",
+          "requires": "grados|°|\\bmm\\b|cuchill"
         },
         {
           "kind": "keyword",
           "pattern": "\\b15\\b",
-          "value": "15deg"
+          "value": "15deg",
+          "requires": "grados|°|\\bmm\\b|cuchill"
         }
       ],
       "curation_notes": "Identity: medida del cuchillete unificada en un solo atributo porque cada item se expresa en UNA sola unidad excluyente (ancho de incision en mm, calibre gauge para neumatico/lanceta, o angulo 15 grados); la unidad se hornea en el valor canonico (2.4mm, 23g, 15deg). Reglas: mm/gauge/grados explicitos primero, luego decimal sin unidad (2.0->2.0mm) y por ultimo el 15 desnudo como 15deg."

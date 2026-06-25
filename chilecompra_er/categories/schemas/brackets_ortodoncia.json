@@ -42,22 +42,26 @@
         {
           "kind": "keyword",
           "pattern": "\\b0\\s*\\.\\s*22\\b",
-          "value": "022"
+          "value": "022",
+          "requires": "slot|bracket"
         },
         {
           "kind": "keyword",
           "pattern": "\\b0\\s*\\.\\s*18\\b",
-          "value": "018"
+          "value": "018",
+          "requires": "slot|bracket"
         },
         {
           "kind": "keyword",
           "pattern": "\\b022\\b",
-          "value": "022"
+          "value": "022",
+          "requires": "slot|bracket"
         },
         {
           "kind": "keyword",
           "pattern": "\\b018\\b",
-          "value": "018"
+          "value": "018",
+          "requires": "slot|bracket"
         }
       ],
       "curation_notes": "Identidad: la ranura (slot) 0.018 vs 0.022 pulgadas determina el calibre del arco compatible; observado 022/0.22, dominio extendido al otro estandar 018.",

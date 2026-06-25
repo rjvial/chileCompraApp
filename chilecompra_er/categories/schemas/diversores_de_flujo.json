@@ -48,7 +48,8 @@
         {
           "kind": "regex",
           "pattern": "\\b(0\\.0(?:17|21|27))\\b",
-          "template": "{1}in"
+          "template": "{1}in",
+          "requires": "0\\s*\\.\\s*0|microcat|compatib|pulg"
         }
       ],
       "curation_notes": "Identity: el diametro interno (in) del microcateter compatible para la liberacion define la linea de despliegue del diversor; dominio cerrado a 0.017/0.021/0.027 observados.",

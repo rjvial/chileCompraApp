@@ -38,17 +38,20 @@
         {
           "kind": "keyword",
           "pattern": "\\b0 0 0 0\\b",
-          "value": "4_0"
+          "value": "4_0",
+          "requires": "sutura|usp|\\bcero|ceros|/\\s*0"
         },
         {
           "kind": "keyword",
           "pattern": "\\b0 0 0\\b",
-          "value": "3_0"
+          "value": "3_0",
+          "requires": "sutura|usp|\\bcero|ceros|/\\s*0"
         },
         {
           "kind": "regex",
           "pattern": "\\b(\\d{1,2})\\s+0\\b",
-          "template": "{1}_0"
+          "template": "{1}_0",
+          "requires": "sutura|usp|\\bcero|ceros|/\\s*0"
         },
         {
           "kind": "regex",

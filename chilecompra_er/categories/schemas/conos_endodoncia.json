@@ -78,7 +78,8 @@
         {
           "kind": "regex",
           "pattern": "\\b(\\d{2})\\b",
-          "template": "{1}"
+          "template": "{1}",
+          "requires": "#|calibre|conicidad|cono"
         }
       ],
       "curation_notes": "Identity: numero ISO del cono (15-90) que fija el diametro/identidad; incluye los surtidos canonicos (15_40, 45_80, 15_80) que aparecen como rangos. Reglas de rango van primero para no capturar solo el extremo; el dominio cerrado a 2 digitos descarta codigos de catalogo, anos y cantidades de caja."

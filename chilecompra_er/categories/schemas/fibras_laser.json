@@ -30,32 +30,38 @@
         {
           "kind": "keyword",
           "pattern": "\\b27[23]\\b",
-          "value": "272um"
+          "value": "272um",
+          "requires": "\\bum\\b|μm|micr|micron|fibra|nucleo"
         },
         {
           "kind": "keyword",
           "pattern": "\\b365\\b",
-          "value": "365um"
+          "value": "365um",
+          "requires": "\\bum\\b|μm|micr|micron|fibra|nucleo"
         },
         {
           "kind": "keyword",
           "pattern": "\\b550\\b",
-          "value": "550um"
+          "value": "550um",
+          "requires": "\\bum\\b|μm|micr|micron|fibra|nucleo"
         },
         {
           "kind": "keyword",
           "pattern": "\\b600\\b",
-          "value": "600um"
+          "value": "600um",
+          "requires": "\\bum\\b|μm|micr|micron|fibra|nucleo"
         },
         {
           "kind": "keyword",
           "pattern": "\\b800\\b",
-          "value": "800um"
+          "value": "800um",
+          "requires": "\\bum\\b|μm|micr|micron|fibra|nucleo"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\.?000\\b",
-          "value": "1000um"
+          "value": "1000um",
+          "requires": "\\bum\\b|μm|micr|micron|fibra|nucleo"
         }
       ],
       "curation_notes": "Identity: el diametro del nucleo de la fibra (en micras/um, expresado tambien como nm/mm/micrones) es el atributo que discrimina entre productos; 273 se canoniza a 272um por ser la misma fibra nominal.",

@@ -132,7 +132,8 @@
         {
           "kind": "keyword",
           "pattern": "360",
-          "value": "360"
+          "value": "360",
+          "requires": "coil|embol"
         },
         {
           "kind": "keyword",

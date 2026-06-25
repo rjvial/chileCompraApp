@@ -130,7 +130,8 @@
         {
           "kind": "regex",
           "pattern": "\\b([1-5]\\.\\d)\\b",
-          "template": "{1}mm"
+          "template": "{1}mm",
+          "requires": "\\bmm\\b|placa|tornillo|diam|osteo"
         }
       ],
       "curation_notes": "Identity: el calibre del sistema placa/tornillo (mm) distingue productos; muchas descripciones listan un rango (ej '2.7 3.5'), la regla captura el primer valor decimal; dominio limitado a calibres estandar observados.",

@@ -52,32 +52,38 @@
         {
           "kind": "keyword",
           "pattern": "\\b3\\s+16\\b",
-          "value": "3_16"
+          "value": "3_16",
+          "requires": "elastic|cadena|pulg|\\boz\\b|/"
         },
         {
           "kind": "keyword",
           "pattern": "\\b5\\s+16\\b",
-          "value": "5_16"
+          "value": "5_16",
+          "requires": "elastic|cadena|pulg|\\boz\\b|/"
         },
         {
           "kind": "keyword",
           "pattern": "\\b3\\s+8\\b",
-          "value": "3_8"
+          "value": "3_8",
+          "requires": "elastic|cadena|pulg|\\boz\\b|/"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\s+8\\b",
-          "value": "1_8"
+          "value": "1_8",
+          "requires": "elastic|cadena|pulg|\\boz\\b|/"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\s+4\\b",
-          "value": "1_4"
+          "value": "1_4",
+          "requires": "elastic|cadena|pulg|\\boz\\b|/"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\s+2\\b",
-          "value": "1_2"
+          "value": "1_2",
+          "requires": "elastic|cadena|pulg|\\boz\\b|/"
         }
       ],
       "curation_notes": "Identity: diametro en pulgadas (fraccion) que define la medida del elastico; texto normalizado separa la fraccion en dos digitos (1/8 -> '1 8'), por eso reglas keyword por fraccion estandar de ortodoncia.",

@@ -27,17 +27,20 @@
         {
           "kind": "keyword",
           "pattern": "\\b4\\.25\\b",
-          "value": "4.25pct"
+          "value": "4.25pct",
+          "requires": "dextrosa|glucosa|glucos"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\.5\\b",
-          "value": "1.5pct"
+          "value": "1.5pct",
+          "requires": "dextrosa|glucosa|glucos"
         },
         {
           "kind": "keyword",
           "pattern": "\\b2\\.5\\b",
-          "value": "2.5pct"
+          "value": "2.5pct",
+          "requires": "dextrosa|glucosa|glucos"
         }
       ],
       "curation_notes": "identity: la concentracion de dextrosa/glucosa (1.5/2.5/4.25 %) define el producto y su uso clinico; dominio cerrado a las 3 osmolaridades observadas. La regex con % gana; keywords son respaldo para entradas sin signo."

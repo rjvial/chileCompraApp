@@ -166,17 +166,20 @@
         {
           "kind": "keyword",
           "pattern": "\\b0\\.6\\b",
-          "value": "0.6cm"
+          "value": "0.6cm",
+          "requires": "\\bcm\\b|diam|drenaje|\\bfr\\b|french"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\.30?\\b",
-          "value": "1.3cm"
+          "value": "1.3cm",
+          "requires": "\\bcm\\b|diam|drenaje|\\bfr\\b|french"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\.90?\\b",
-          "value": "1.9cm"
+          "value": "1.9cm",
+          "requires": "\\bcm\\b|diam|drenaje|\\bfr\\b|french"
         }
       ],
       "curation_notes": "Identity: los penrose se diferencian por diametro (1/4, 1/2, 3/4 pulgada -> 0.6/1.3/1.9 cm) y no por calibre fr; dominio cerrado de diametros observados."

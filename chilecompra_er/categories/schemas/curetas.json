@@ -88,27 +88,32 @@
         {
           "kind": "keyword",
           "pattern": "\\b17 18\\b",
-          "value": "17_18"
+          "value": "17_18",
+          "requires": "gracey|cureta"
         },
         {
           "kind": "keyword",
           "pattern": "\\b13 14\\b",
-          "value": "13_14"
+          "value": "13_14",
+          "requires": "gracey|cureta"
         },
         {
           "kind": "keyword",
           "pattern": "\\b11 12\\b",
-          "value": "11_12"
+          "value": "11_12",
+          "requires": "gracey|cureta"
         },
         {
           "kind": "keyword",
           "pattern": "\\b9 10\\b",
-          "value": "9_10"
+          "value": "9_10",
+          "requires": "gracey|cureta"
         },
         {
           "kind": "keyword",
           "pattern": "\\b7 8\\b",
-          "value": "7_8"
+          "value": "7_8",
+          "requires": "gracey|cureta"
         },
         {
           "kind": "keyword",
@@ -123,7 +128,8 @@
         {
           "kind": "keyword",
           "pattern": "\\b1 2\\b",
-          "value": "1_2"
+          "value": "1_2",
+          "requires": "gracey|cureta"
         }
       ],
       "curation_notes": "identity: numero de par Gracey/periodontal que define el angulo de trabajo y discrimina entre curetas de la misma familia; lookahead evita confundir rangos en mm (3 4 mm) con el par 3_4."

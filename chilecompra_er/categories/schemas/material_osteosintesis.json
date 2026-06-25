@@ -136,7 +136,8 @@
         {
           "kind": "regex",
           "pattern": "\\b(\\d\\.\\d)\\b",
-          "template": "{1}mm"
+          "template": "{1}mm",
+          "requires": "\\bmm\\b|diam|tornillo|placa|clavo|osteo"
         }
       ],
       "curation_notes": "Identity: diametro nominal del implante (placa/tornillo/clavo/aguja). Los diametros son decimales (3.5, 6.5) mientras largos y agujeros son enteros, asi \\d.\\d los discrimina; el dominio filtra capturas espurias.",

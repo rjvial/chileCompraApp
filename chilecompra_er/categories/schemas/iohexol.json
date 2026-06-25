@@ -20,12 +20,14 @@
         {
           "kind": "keyword",
           "pattern": "\\b647\\.1\\b",
-          "value": "300mg"
+          "value": "300mg",
+          "requires": "\\bmg\\b|iohexol|yodo|mgi|/\\s*ml"
         },
         {
           "kind": "keyword",
           "pattern": "\\b755\\b",
-          "value": "350mg"
+          "value": "350mg",
+          "requires": "\\bmg\\b|iohexol|yodo|mgi|/\\s*ml"
         },
         {
           "kind": "keyword",

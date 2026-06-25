@@ -92,12 +92,14 @@
         {
           "kind": "keyword",
           "pattern": "\\b15\\s+40\\b",
-          "value": "15_40"
+          "value": "15_40",
+          "requires": "\\blima|#|calibre|endod|hedstrom"
         },
         {
           "kind": "keyword",
           "pattern": "\\b45\\s+80\\b",
-          "value": "45_80"
+          "value": "45_80",
+          "requires": "\\blima|#|calibre|endod|hedstrom"
         },
         {
           "kind": "regex",

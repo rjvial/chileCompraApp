@@ -23,7 +23,8 @@
         {
           "kind": "regex",
           "pattern": "\\b0\\s*\\.?\\s*0(\\d{2})\\b",
-          "template": "0.0{1}in"
+          "template": "0.0{1}in",
+          "requires": "0\\s*\\.\\s*0|\\bguia|microg|pulg|\\binch\\b"
         }
       ],
       "curation_notes": "Identity: el diametro de la guia en pulgadas (0.014, 0.010, 0.012, 0.008, 0.007, 0.030...) es el discriminador primario y limpio entre microguias; dominio generoso con calibres neuro/hemodinamia estandar. El patron exige el prefijo '0.0' para evitar codigos administrativos y lumenes (p.ej. 0.68).",

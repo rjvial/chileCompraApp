@@ -32,27 +32,32 @@
         {
           "kind": "keyword",
           "pattern": "\\b0\\.5\\b",
-          "value": "0_5"
+          "value": "0_5",
+          "requires": "talla|mascara|laring|n°|nro|size|\\b#\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\.5\\b",
-          "value": "1_5"
+          "value": "1_5",
+          "requires": "talla|mascara|laring|n°|nro|size|\\b#\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b2\\.5\\b",
-          "value": "2_5"
+          "value": "2_5",
+          "requires": "talla|mascara|laring|n°|nro|size|\\b#\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b3\\.5\\b",
-          "value": "3_5"
+          "value": "3_5",
+          "requires": "talla|mascara|laring|n°|nro|size|\\b#\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b4\\.5\\b",
-          "value": "4_5"
+          "value": "4_5",
+          "requires": "talla|mascara|laring|n°|nro|size|\\b#\\b"
         },
         {
           "kind": "keyword",

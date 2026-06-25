@@ -84,7 +84,8 @@
         {
           "kind": "regex",
           "pattern": "\\b(270|300|320|350|370)\\b",
-          "template": "{1}mg_ml"
+          "template": "{1}mg_ml",
+          "requires": "\\bmg\\b|yodo|contraste|mgi|/\\s*ml|iohexol|iopamidol"
         }
       ],
       "curation_notes": "identity: la concentracion de yodo (mgI/ml) es el discriminante central de los contrastes yodados; dominio cerrado a los valores estandar observados (270-370).",

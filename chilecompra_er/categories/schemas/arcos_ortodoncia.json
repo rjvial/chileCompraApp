@@ -110,22 +110,26 @@
         {
           "kind": "keyword",
           "pattern": "\\b0\\.12\\b",
-          "value": "0.12"
+          "value": "0.12",
+          "requires": "arco|calibre|0\\s*\\.\\s*0|pulg|\\binch\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b0\\.14\\b",
-          "value": "0.14"
+          "value": "0.14",
+          "requires": "arco|calibre|0\\s*\\.\\s*0|pulg|\\binch\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b0\\.16\\b",
-          "value": "0.16"
+          "value": "0.16",
+          "requires": "arco|calibre|0\\s*\\.\\s*0|pulg|\\binch\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b0\\.20\\b",
-          "value": "0.20"
+          "value": "0.20",
+          "requires": "arco|calibre|0\\s*\\.\\s*0|pulg|\\binch\\b"
         }
       ],
       "curation_notes": "Identity: el calibre en pulgadas (medida unica para redondos, doble alto x ancho para rectangulares) es el discriminador principal; reglas rectangulares primero por ser mas especificas que las redondas."

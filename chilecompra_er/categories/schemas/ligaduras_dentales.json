@@ -60,12 +60,14 @@
         {
           "kind": "regex",
           "pattern": "\\b(0\\.0(?:08|09|10|12|14))\\b",
-          "template": "{1}"
+          "template": "{1}",
+          "requires": "0\\s*\\.\\s*0|calibre|ligadura|\\binch\\b|\\\""
         },
         {
           "kind": "regex",
           "pattern": "\\b(0\\.10)\\b",
-          "template": "{1}"
+          "template": "{1}",
+          "requires": "0\\s*\\.\\s*0|calibre|ligadura|\\binch\\b|\\\""
         }
       ],
       "curation_notes": "Identity: las ligaduras metalicas/preformadas se identifican por su calibre de alambre en pulgadas (0.012, 0.10 como 0.010); dominio cerrado a calibres estandar de ortodoncia.",

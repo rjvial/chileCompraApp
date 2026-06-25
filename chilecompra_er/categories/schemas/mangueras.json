@@ -33,27 +33,32 @@
         {
           "kind": "keyword",
           "pattern": "\\b1 1 2\\b",
-          "value": "1_1_2pulg"
+          "value": "1_1_2pulg",
+          "requires": "pulg|\\\"|manguera|diam|\\binch\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b11 2\\b",
-          "value": "1_1_2pulg"
+          "value": "1_1_2pulg",
+          "requires": "pulg|\\\"|manguera|diam|\\binch\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b3 4\\b",
-          "value": "3_4pulg"
+          "value": "3_4pulg",
+          "requires": "pulg|\\\"|manguera|diam|\\binch\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b3 8\\b",
-          "value": "3_8pulg"
+          "value": "3_8pulg",
+          "requires": "pulg|\\\"|manguera|diam|\\binch\\b"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1 2\\b",
-          "value": "1_2pulg"
+          "value": "1_2pulg",
+          "requires": "pulg|\\\"|manguera|diam|\\binch\\b"
         },
         {
           "kind": "keyword",

@@ -56,8 +56,20 @@ class Rule:
     pattern: re.Pattern
     template: str | None = None  # regex kind
     value: str | None = None     # keyword kind
+    # Optional sentence-level context guard. The rule fires only if `requires`
+    # also matches somewhere in the text — the fix for "anchorless" numeric rules
+    # that would otherwise stamp an identity value from a bare number (e.g. the
+    # "2,5" in "Ca 2,5 mEq" or "cable 3x2,5 mm" wrongly read as dextrose 2.5%).
+    # The guard names the attribute's concept (dextrosa|glucosa, calibre, talla…),
+    # so a number with no such concept word present can no longer fire. A guard
+    # can only *reduce* matches, never widen them — so it never creates a false
+    # merge, at worst it trades a little recall for precision.
+    requires: re.Pattern | None = None
 
     def apply(self, text: str) -> tuple[str, re.Match] | None:
+        # Context guard: if present and absent from the text, the rule is inert.
+        if self.requires is not None and not self.requires.search(text):
+            return None
         if self.kind == "keyword":
             # Return the first NON-negated occurrence (a negated mention like
             # "libre de latex" must not fire; a later plain mention still can).
@@ -129,7 +141,38 @@ def _parse_rule(d: dict) -> Rule:
         pattern=re.compile(d["pattern"]),
         template=d.get("template"),
         value=d.get("value"),
+        requires=re.compile(d["requires"]) if d.get("requires") else None,
     )
+
+
+# --- anchorless-numeric lint (Phase 0 coherence guard) ------------------------
+# An identity rule is "anchorless" when its pattern, stripped of pure regex
+# syntax, retains no letter and no '%' — i.e. it can fire on a bare number with
+# nothing tying it to the attribute's concept. That is the exact failure that
+# collapsed cable gauge and calcium onto a "dextrose 2.5%" product. Such a rule
+# MUST carry a `requires` guard; the lint flags the ones that don't.
+
+def _is_anchorless_pattern(pattern: str) -> bool:
+    if "%" in pattern:
+        return False
+    s = pattern
+    for tok in (r"\b", r"\s", r"\d", r"\w", r"\.", r"\-"):
+        s = s.replace(tok, " ")
+    s = re.sub(r"[*+?(){}\[\]|^$0-9.,\\\- ]", " ", s)
+    return re.search(r"[a-zA-Z]", s) is None
+
+
+def anchorless_identity_rules(schema: CategorySchema) -> list[tuple[str, str]]:
+    """(attribute_name, pattern) for every identity rule that can fire on a bare
+    number and carries no `requires` guard. Empty list == clean."""
+    out: list[tuple[str, str]] = []
+    for a in schema.attribute_defs:
+        if not a.is_identity:
+            continue
+        for r in a.rules:
+            if r.requires is None and _is_anchorless_pattern(r.pattern.pattern):
+                out.append((a.name, r.pattern.pattern))
+    return out
 
 
 def load_schema(path: Path | str) -> CategorySchema:

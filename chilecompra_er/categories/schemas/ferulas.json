@@ -119,12 +119,14 @@
         {
           "kind": "keyword",
           "pattern": "\\b2\\.5\\b",
-          "value": "2.5cm"
+          "value": "2.5cm",
+          "requires": "\\bcm\\b|ancho|ferula"
         },
         {
           "kind": "keyword",
           "pattern": "\\b1\\.5\\b",
-          "value": "1.5cm"
+          "value": "1.5cm",
+          "requires": "\\bcm\\b|ancho|ferula"
         },
         {
           "kind": "keyword",

@@ -91,7 +91,8 @@
         {
           "kind": "regex",
           "pattern": "\\b(0\\.\\d{2,3})\\b",
-          "template": "{1}"
+          "template": "{1}",
+          "requires": "0\\s*\\.\\s*0|\\bguia|microcat|compatib|pulg"
         }
       ],
       "curation_notes": "identity: el diametro interno/compatibilidad de guia en pulgadas (0.014, 0.018, 0.017/0.021) define con que guia o stent se usa; el prefijo 0. evita capturar codigos de item; valores fuera de dominio (p.ej. 0.059 de cateter guia) se descartan.",
