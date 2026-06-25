@@ -21,6 +21,39 @@ def test_many_uses_cli_concurrent_by_default(monkeypatch):
     assert all(m == "haiku" for _u, m in seen)        # full id mapped to CLI alias
 
 
+def test_is_usage_limit_detection():
+    class RateLimitError(Exception):
+        pass
+
+    assert llm._is_usage_limit(RateLimitError("slow down"))
+    assert llm._is_usage_limit(Exception("429 Too Many Requests"))
+    assert llm._is_usage_limit(Exception("usage limit reached"))
+    assert not llm._is_usage_limit(Exception("connection reset by peer"))
+
+
+def test_concurrent_aborts_on_usage_limit(monkeypatch):
+    monkeypatch.setenv("CHILECOMPRA_LLM_BACKEND", "claude_cli")
+
+    class RateLimitError(Exception):
+        pass
+
+    calls = []
+
+    def fake_complete_json(user, schema, system=None, model=None, **kw):
+        calls.append(user)
+        if "boom" in user:
+            raise RateLimitError("rate limit exceeded")
+        return {"u": user}
+
+    monkeypatch.setattr(llm, "complete_json", fake_complete_json)
+    reqs = [("a", "ua"), ("b", "boom"), ("c", "uc"), ("d", "ud")]
+    out = llm.complete_json_many(reqs, {}, "sys", model="claude-haiku-4-5",
+                                 max_workers=1)
+    # the limit hits on "boom"; nothing after it is added to the results (the run
+    # stops cleanly — pending calls are also cancelled, best-effort, in production)
+    assert "a" in out and "b" not in out and "c" not in out and "d" not in out
+
+
 def test_many_oauth_uses_bare_concurrent_with_real_model_id(monkeypatch):
     monkeypatch.setenv("CHILECOMPRA_LLM_BACKEND", "claude_oauth")
     seen = []

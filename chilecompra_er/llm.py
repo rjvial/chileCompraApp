@@ -269,15 +269,32 @@ _CLI_ALIASES = {"claude-haiku-4-5": "haiku", "claude-sonnet-4-6": "sonnet",
                 "claude-opus-4-8": "opus", "claude-opus-4-7": "opus"}
 
 
+def _is_usage_limit(exc) -> bool:
+    """A sustained Max usage / rate-limit error (vs a one-off transient failure).
+    The SDK already retried with backoff before raising, so a RateLimitError / 429
+    that surfaces here means the limit is really exhausted — stop, don't churn."""
+    if exc.__class__.__name__ == "RateLimitError":
+        return True
+    if getattr(exc, "status_code", None) == 429:
+        return True
+    msg = str(exc).lower()
+    return any(s in msg for s in ("rate limit", "usage limit", "quota", "429"))
+
+
 def _concurrent_json(requests, schema, system, *, model, max_workers,
                      on_result=None, log=lambda _m: None):
     """Run many structured calls concurrently via complete_json (whichever backend
     is active — CLI subprocesses or bare OAuth messages), with a bounded thread
     pool. `on_result(custom_id, dict)` fires from the main thread as each call
     completes — the hook for incremental persistence, so a kill loses only the
-    in-flight calls. `model` is passed through as-is (caller resolves CLI aliases)."""
+    in-flight calls. `model` is passed through as-is (caller resolves CLI aliases).
+
+    On a Max usage/rate limit it stops cleanly: cancels the pending calls and
+    returns what completed (already persisted via on_result). Re-run to resume —
+    the store skips everything done."""
     out: dict[str, dict] = {}
     done = 0
+    aborted = False
 
     def one(item):
         cid, user = item
@@ -286,17 +303,27 @@ def _concurrent_json(requests, schema, system, *, model, max_workers,
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = {ex.submit(one, it): it[0] for it in requests}
         for fut in concurrent.futures.as_completed(futs):
+            if aborted:
+                continue  # drain (mostly cancelled) futures without more work
             try:
                 cid, d = fut.result()
                 out[cid] = d
                 if on_result is not None:
                     on_result(cid, d)
             except Exception as exc:  # noqa: BLE001 - one bad call shouldn't kill the run
+                if _is_usage_limit(exc):
+                    aborted = True
+                    pending = sum(1 for f in futs if f.cancel())
+                    log(f"  ⚠ Max usage/rate limit reached — stopping. {len(out):,} "
+                        f"done, ~{pending:,} skipped. Re-run the same command to "
+                        "resume (completed work is saved).")
+                    continue
                 log(f"  {futs[fut][:12]}: failed ({type(exc).__name__})")
             done += 1
             if done % 200 == 0:
                 log(f"  ...{done}/{len(requests)} ({len(out)} ok)")
-    log(f"concurrent done: {len(out)}/{len(requests)} parsed")
+    log(f"concurrent done: {len(out)}/{len(requests)} parsed"
+        + (" (STOPPED at usage limit — re-run to resume)" if aborted else ""))
     return out
 
 
