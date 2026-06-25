@@ -35,6 +35,15 @@ Invoke it as `chilecompra-er <command>` (installed entry point) or, from inside
 the repo, `.\.venv\Scripts\chilecompra-er.exe <command>`. Examples use PowerShell
 paths (`data\...`).
 
+> **Two pipelines.** §2–§7 describe the **operational** pipeline: a deterministic
+> register/resolve flow that builds the live `:GenericProduct`/`:Product` catalog
+> (1M+ lines resolved). A newer **resolution redesign** (`canonicalize` → `match`
+> → `adjudicate`, with `coherence-check` and `price-clusters`) is built and tested
+> alongside it — it replaces regex extraction with one Claude **canonicalization**
+> step and writes a separate `:ProductCluster` catalog, running on the **Claude Max
+> subscription**. It's a shadow until the planned cutover. See **§4.9**. All LLM
+> work runs on Max by default (`CHILECOMPRA_LLM_BACKEND`).
+
 ---
 
 ## 2. The model
@@ -177,7 +186,7 @@ residue (Phase 2).
 **The one thing to internalize — where the LLM is (and isn't).** In the current
 pipeline only **three** commands ever call the LLM: `register`,
 `generate-schemas`, and `build-brand-lexicon`. Everything else is deterministic.
-(A redesign in progress adds a fourth, experimental `canonicalize` — §4.9.) The LLM is used to
+(The §4.9 redesign adds two more LLM commands — `canonicalize` and `adjudicate`.) The LLM is used to
 **invent structure** *once* — propose which families exist, draft their schemas,
 list their brand names — looking only at small *aggregated samples*. It is
 **never** asked to classify individual purchase lines; those are resolved
@@ -805,16 +814,26 @@ Never touches the graph (that's `wipe-catalog`).
 | `wipe-category <id> --yes` | Delete one category's catalog nodes (and their RESOLVED_TO edges). |
 | `wipe-catalog --yes` | Delete ALL catalog data (Category / GenericProduct / Product / Brand). Source data + migrations untouched. |
 
-### 4.9 Experimental — resolution redesign (`canonicalize`)
+### 4.9 Resolution redesign (L0→L3) — the new pipeline (shadow catalog)
 
-A new resolution pipeline is being built **alongside** the current one — it does
-not touch the live `:GenericProduct` catalog yet. It replaces the regex
-extractor + classifier with a single LLM **canonicalization** step feeding a
-deterministic matcher:
+A second resolution pipeline, **built and tested** alongside the live one. It
+replaces the regex extractor + classifier (§2) with a single LLM
+**canonicalization** step feeding a deterministic matcher, and writes a
+**separate** catalog (`:ProductCluster` / `:PRICED_IN`) — it does **not** touch
+the live `:GenericProduct` catalog until the Phase-6 cutover. Its purpose is the
+one question the legacy model gets wrong on noisy text: *are two bids the same
+substitutable product?* (brand- and packaging-independent), for price comparison
+over time and across competition.
 
 ```
-L0 dedup → L1 canonicalize (Claude Haiku 4.5) → L2 match → L3 adjudicate → coherence-check
+L0 dedup → L1 canonicalize (Claude) → L2 match → L3 adjudicate → L4 coherence-check → L5 price-clusters
 ```
+
+**Status:** L1, L2, L4, L5 built + unit-tested; L3 scaffolded; everything is
+killable/resumable and runs on the **Claude Max subscription** by default. The
+graph-write paths (`match --persist`, `coherence-check --graph`) pass offline
+tests but haven't been run at scale; only the Phase-6 cutover remains. The legacy
+pipeline (§3) is still the operational one until then.
 
 **`canonicalize [--from-file <path>] [--out data\profiles.jsonl] [--model claude-haiku-4-5] [--limit <n>] [--dry-run]`**
 — **L1**: turns each distinct `descripcion_proveedor` into a structured
@@ -843,7 +862,7 @@ never become identity (the redesign's answer to the `2.5pct` false-merge class).
 > `CHILECOMPRA_LLM_BACKEND=anthropic_sdk` to use the Batch API instead — −50% and
 > caching, but it bills API credits, not Max.)
 
-**`match [--store data\profiles.jsonl] [--attach-partials] [--persist] [--segment <n>] [--show 15]`**
+**`match [--store data\profiles.jsonl] [--attach-partials] [--persist] [--resume] [--segment <n>] [--show 15]`**
 — **L2**: clusters the L1 profile store into product clusters. The pairwise rule:
 same `model_token` ⇒ same product (even cross-brand); a conflicting attribute is a
 hard cut; identical signatures collapse; a coarser partial spec is linked by
@@ -890,6 +909,32 @@ Phase-6 cutover from the legacy `:GenericProduct` catalog remains.
 > practical Max workflow — run L1 per segment, killing and resuming freely — never
 > repeats finished work.
 
+**Running it end to end.** L1 on Max is slow (per-call subprocesses bounded by Max
+limits), so work **per `--segment`** and validate a small slice first before
+scaling up:
+
+```powershell
+chilecompra-er instance start
+chilecompra-er migrate                                          # constraints incl. migration 005
+chilecompra-er canonicalize --segment 42 --limit 2000 --workers 8   # bounded first pass (resumable)
+chilecompra-er match --persist --segment 42                    # write clusters + PRICED_IN (resumable)
+chilecompra-er coherence-check --graph                         # structural gate + review backlogs
+chilecompra-er price-clusters --category sondas                # prices over time + competition
+#                                                              ↺ then drop --limit / next segment
+chilecompra-er adjudicate                                      # (optional) resolve the L2 residue
+chilecompra-er instance stop
+```
+
+Every step is safe to Ctrl-C and re-run. Per-segment caveat: run `match --persist`
+on the **same** segment you canonicalized (or with no `--segment` once all
+segments are canonicalized), else clusters for un-bound segments show up as orphan
+nodes in `coherence-check` (transient).
+
+**LLM backend selection** (applies to `register` / `generate-schemas` /
+`build-brand-lexicon` too): `CHILECOMPRA_LLM_BACKEND=claude_cli` (default) uses the
+Max subscription; `=anthropic_sdk` uses the API (Batch API for L1/L3) and bills
+API credits. The pipeline is set to **Max always** unless you change this.
+
 ---
 
 ## 5. Files & outputs
@@ -921,6 +966,14 @@ Outputs are split by **lifecycle**:
   `IN_CATEGORY` / `RESOLVED_TO` (direct, from `ItemLicitacion`) / `VARIANT_OF` /
   `OF_BRAND` / `OFFERS {price}` / `PARENT_OF` edges. `register` never touches the
   graph.
+- **Redesign artifacts (§4.9)** — under `data\` (all regenerable, but `clean`
+  does *not* target them by name yet, so remove by hand if needed):
+  `profiles.jsonl` (the L1 profile store / cache — the resume state),
+  `adjudications.jsonl` (L3 verdict store), `match_seg<seg>.checkpoint.json` (the
+  `:PRICED_IN` resume offset), `price_clusters_<cat>.csv`. The redesign's own
+  graph layer is `:ProductCluster` nodes + `:PRICED_IN` / `:REFINES` edges
+  (migration `005`), written only by `match --persist`, separate from the legacy
+  `:GenericProduct` catalog.
 
 ---
 
