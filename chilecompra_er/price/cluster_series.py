@@ -1,12 +1,14 @@
 """Price series over L2 product clusters (design: the L0->L3 redesign, "L5").
 
-Reads `(:Oferta)-[:PRICED_IN {normalized_price, unit_price, rut, date}]->(:ProductCluster)`.
-Unlike the legacy per-Product series, normalization already happened at persist
-time (price per base unit is on the edge), so this just reads and aggregates.
+Reads prices two hops out:
+`(:Oferta)-[:OFFERS {normalized_price, unit_price, rut, date}]->(:Product)-[:VARIANT_OF]->(:ProductCluster)`.
+Normalization already happened at persist time (price per base unit is on the
+edge), so this just reads and aggregates. Each row carries the offer's `brand`
+(from its Product), so the series can also be sliced by brand.
 
 A cluster IS the substitutable-product comparison unit, so its series answers
 both goals directly: price **over time** (rows ordered by date) and **across
-competition** (distinct `rut` suppliers and the price spread among them).
+competition** (distinct `rut` suppliers / brands and the price spread among them).
 """
 from __future__ import annotations
 
@@ -20,11 +22,11 @@ def build_cluster_series(conn, category: str | None = None,
                          signature: str | None = None) -> list[dict]:
     records = conn.query(
         """
-        MATCH (o:Oferta)-[e:PRICED_IN]->(c:ProductCluster)
+        MATCH (o:Oferta)-[e:OFFERS]->(p:Product)-[:VARIANT_OF]->(c:ProductCluster)
         WHERE ($cat IS NULL OR c.category = $cat)
           AND ($sig IS NULL OR c.signature = $sig)
           AND e.normalized_price IS NOT NULL
-        RETURN c.signature AS cluster, c.category AS category,
+        RETURN c.signature AS cluster, c.category AS category, p.brand AS brand,
                e.normalized_price AS price, e.unit_price AS unit_price,
                e.rut AS rut, e.date AS date, e.currency AS currency
         ORDER BY cluster, date
@@ -32,7 +34,7 @@ def build_cluster_series(conn, category: str | None = None,
         parameters={"cat": category, "sig": signature},
     )
     return [{
-        "cluster": r["cluster"], "category": r["category"],
+        "cluster": r["cluster"], "category": r["category"], "brand": r["brand"],
         "date": (r["date"] or "")[:10], "rut": r["rut"],
         "unit_price": r["unit_price"],
         "normalized_price": round(float(r["price"]), 2) if r["price"] is not None else None,
@@ -40,7 +42,7 @@ def build_cluster_series(conn, category: str | None = None,
     } for r in records]
 
 
-_CSV_FIELDS = ["cluster", "category", "date", "rut", "unit_price",
+_CSV_FIELDS = ["cluster", "category", "brand", "date", "rut", "unit_price",
                "normalized_price", "currency"]
 
 
@@ -65,11 +67,12 @@ def summarize(rows: list[dict], top: int = 10) -> list[str]:
     for cluster, recs in sorted(by_cluster.items(), key=lambda kv: -len(kv[1]))[:top]:
         prices = [r["normalized_price"] for r in recs]
         competitors = len({r["rut"] for r in recs if r["rut"]})
+        brands = len({r["brand"] for r in recs if r.get("brand")})
         dates = sorted(d for d in (r["date"] for r in recs) if d)
         span = f"{dates[0]}..{dates[-1]}" if dates else "—"
         lines.append(
             f"  {cluster}\n"
-            f"    n={len(prices):>4}  competitors={competitors:>3}  "
+            f"    n={len(prices):>4}  competitors={competitors:>3}  brands={brands:>3}  "
             f"median={statistics.median(prices):>12,.0f}  "
             f"range=[{min(prices):,.0f} .. {max(prices):,.0f}]  {span}")
     return lines

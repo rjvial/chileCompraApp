@@ -1,12 +1,9 @@
 // L2 product clusters (design: the L0->L3 resolution redesign).
 //
-// One :ProductCluster per substitutable product — the price-comparison unit.
-// Offers attach via (:Oferta)-[:PRICED_IN {normalized_price, rut, date}]->(:ProductCluster)
-// (price on the edge, as with the legacy OFFERS edge); a coarser cluster is
-// parented by its finer refinements via (finer)-[:REFINES]->(coarser).
-//
-// This is additive: it coexists with the legacy :GenericProduct/:Product catalog
-// during the shadow-run, and is retired-from / cut-over-to in Phase 6.
+// One :ProductCluster per substitutable product — the brand-INDEPENDENT
+// price-comparison unit. Brand-specific :Product nodes roll up to it via
+// (:Product)-[:VARIANT_OF]->(:ProductCluster) (see migration 006), and a coarser
+// cluster is parented by its finer refinements via (finer)-[:REFINES]->(coarser).
 
 CREATE CONSTRAINT product_cluster_id IF NOT EXISTS
 FOR (c:ProductCluster) REQUIRE c.id IS UNIQUE;

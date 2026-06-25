@@ -48,12 +48,12 @@ def test_canonicalize_resumes_by_skipping_cached(tmp_path, monkeypatch):
     assert again.cached == 4 and asked_ids == []
 
 
-def test_priced_in_checkpoint_roundtrip(tmp_path):
+def test_offers_checkpoint_roundtrip(tmp_path):
     from chilecompra_er.ingest.clusters import (
-        _write_priced_in_checkpoint,
-        read_priced_in_checkpoint,
+        _write_offers_checkpoint,
+        read_offers_checkpoint,
     )
     p = tmp_path / "match.checkpoint.json"
-    assert read_priced_in_checkpoint(p) == 0       # absent → start from 0
-    _write_priced_in_checkpoint(p, 1234)
-    assert read_priced_in_checkpoint(p) == 1234    # resume offset
+    assert read_offers_checkpoint(p) == 0       # absent → start from 0
+    _write_offers_checkpoint(p, 1234)
+    assert read_offers_checkpoint(p) == 1234    # resume offset

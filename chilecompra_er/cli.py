@@ -1024,8 +1024,9 @@ def cmd_canonicalize(args) -> int:
 
 def cmd_match(args) -> int:
     """L2 (redesign): cluster the L1 profile store into product clusters. Offline
-    report by default; with --persist, write :ProductCluster / :REFINES nodes and
-    bind offers via :PRICED_IN edges (price per base unit on the edge)."""
+    report by default; with --persist, write :ProductCluster + brand-specific
+    :Product nodes (VARIANT_OF their cluster) and bind offers via :OFFERS edges to
+    their Product (price per base unit on the edge)."""
     from .resolve.canonicalize import ProfileStore
     from .resolve.matcher import cluster
 
@@ -1053,9 +1054,10 @@ def cmd_match(args) -> int:
         from .graphdb import get_connection
         from .ingest.clusters import (
             build_records,
-            read_priced_in_checkpoint,
+            read_offers_checkpoint,
             write_clusters,
-            write_priced_in,
+            write_offers,
+            write_products,
         )
         from .ingest.neo4j_source import fetch_offer_prices
         from .normalize import Normalizer
@@ -1063,24 +1065,26 @@ def cmd_match(args) -> int:
         # Clustering is deterministic, so on resume the records rebuild identically
         # and the cluster writes (MERGE) are idempotent; only the long edge write
         # resumes from a checkpointed stream offset.
-        node_rows, refines_rows, hash_to_cluster, pack_by_hash = build_records(res, items)
+        cluster_rows, refines_rows, product_rows, hash_to_product, pack_by_hash = \
+            build_records(res, items)
         ckpt = Path(f"data/match_seg{args.segment if args.segment is not None else 'all'}.checkpoint.json")
-        start = read_priced_in_checkpoint(ckpt) if args.resume else 0
+        start = read_offers_checkpoint(ckpt) if args.resume else 0
         conn = get_connection()
         try:
-            print("PERSIST: writing clusters + binding offers", file=sys.stderr)
-            write_clusters(conn, node_rows, refines_rows, log=log)
+            print("PERSIST: writing clusters + products + binding offers", file=sys.stderr)
+            write_clusters(conn, cluster_rows, refines_rows, log=log)
+            write_products(conn, product_rows, log=log)
             if start:
-                log(f"resuming PRICED_IN from offer {start:,}")
+                log(f"resuming OFFERS from offer {start:,}")
             offers = fetch_offer_prices(conn, unspsc_segment=args.segment,
                                         skip=start, limit=args.limit)
-            written, skipped = write_priced_in(
-                conn, offers, hash_to_cluster, pack_by_hash, Normalizer(),
+            written, skipped = write_offers(
+                conn, offers, hash_to_product, pack_by_hash, Normalizer(),
                 start=start, checkpoint_path=ckpt, log=log)
         finally:
             conn.close()
-        print(f"\npersisted: {len(node_rows):,} clusters, {written:,} PRICED_IN edges "
-              f"({skipped:,} offers unplaced)")
+        print(f"\npersisted: {len(cluster_rows):,} clusters, {len(product_rows):,} products, "
+              f"{written:,} OFFERS edges ({skipped:,} offers unplaced)")
     return 0
 
 
@@ -1492,8 +1496,9 @@ def cmd_price_series(args) -> int:
 
 def cmd_price_clusters(args) -> int:
     """L5 (redesign): price series over L2 product clusters — per-base-unit price
-    over time and across competition (distinct supplier RUTs). Reads the persisted
-    :PRICED_IN edges; scope with --category or a single --signature."""
+    over time and across competition (distinct supplier RUTs / brands). Reads
+    (:Oferta)-[:OFFERS]->(:Product)-[:VARIANT_OF]->(:ProductCluster); scope with
+    --category or a single --signature."""
     from .graphdb import get_connection
     from .price.cluster_series import (
         build_cluster_series,
@@ -1511,7 +1516,7 @@ def cmd_price_clusters(args) -> int:
     finally:
         conn.close()
     if not rows:
-        print("no PRICED_IN observations — is the catalog persisted "
+        print("no price observations — is the catalog persisted "
               "(`match --persist`) for that scope?")
         return 1
     out = args.csv or Path(f"data/price_clusters_{args.category or 'sig'}.csv")
@@ -1544,8 +1549,8 @@ def _apoc_wipe_labels(conn, labels: list[str]) -> int:
 
 
 def cmd_wipe_clusters(args) -> int:
-    """Delete ONLY the redesign's shadow catalog — `:ProductCluster` nodes and their
-    `:PRICED_IN` / `:REFINES` edges — leaving the legacy catalog and the source graph
+    """Delete the cluster catalog — `:ProductCluster` + `:Product` nodes and their
+    `:OFFERS` / `:VARIANT_OF` / `:REFINES` edges — leaving the source graph
     untouched. Use before re-matching after an L1 change. The match checkpoints are
     cleared so a re-run starts fresh."""
     if not args.yes:
@@ -1555,9 +1560,9 @@ def cmd_wipe_clusters(args) -> int:
 
     conn = get_connection()
     try:
-        deleted = _apoc_wipe_labels(conn, ["ProductCluster"])
-        print(f"wiped {deleted:,} ProductCluster nodes + PRICED_IN/REFINES edges "
-              "(legacy catalog + source untouched)")
+        deleted = _apoc_wipe_labels(conn, ["ProductCluster", "Product"])
+        print(f"wiped {deleted:,} ProductCluster + Product nodes "
+              "(+ OFFERS/VARIANT_OF/REFINES edges; source untouched)")
     finally:
         conn.close()
     cleared = 0
@@ -1785,10 +1790,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="merge a coarse partial spec into its unique finer cluster "
                         "(default off = keep separate, linked by REFINES)")
     p.add_argument("--persist", action="store_true",
-                   help="WRITE :ProductCluster/:REFINES + bind offers via :PRICED_IN "
-                        "(default: offline report only)")
+                   help="WRITE :ProductCluster/:Product/:REFINES + bind offers via "
+                        ":OFFERS (default: offline report only)")
     p.add_argument("--resume", action="store_true",
-                   help="resume the PRICED_IN write from its checkpoint (same scope)")
+                   help="resume the OFFERS write from its checkpoint (same scope)")
     p.add_argument("--segment", type=int, default=None,
                    help="UNSPSC segment scope for the offer-price read on --persist")
     p.add_argument("--limit", type=int, default=None,
@@ -2022,9 +2027,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_wipe_catalog)
 
     p = sub.add_parser("wipe-clusters",
-                       help="delete ONLY the redesign's :ProductCluster shadow "
-                            "catalog + PRICED_IN/REFINES edges (destructive; legacy "
-                            "catalog and source untouched). Use before re-matching.")
+                       help="delete the cluster catalog — :ProductCluster + :Product "
+                            "nodes and their OFFERS/VARIANT_OF/REFINES edges "
+                            "(destructive; source untouched). Use before re-matching.")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_wipe_clusters)
 

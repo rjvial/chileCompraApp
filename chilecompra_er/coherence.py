@@ -10,7 +10,7 @@ invariants over the L1 profiles + L2 clusters (+ the persisted graph):
 Each invariant maps to a failure mode — imputation (S1/S2), false merge (S5/S6/
 S8/M1/M4), false split (S7/M6). The offline tier runs over the profile store +
 recomputed clusters (no graph, no LLM); the graph tier queries the persisted
-:ProductCluster / :PRICED_IN catalog when it exists.
+:ProductCluster / :Product / :OFFERS catalog when it exists.
 """
 from __future__ import annotations
 
@@ -147,16 +147,17 @@ def check_graph(conn) -> list[Finding]:
         rows = conn.query(q)
         return int(rows[0]["n"]) if rows else 0
 
-    s9 = n("MATCH (c:ProductCluster) WHERE NOT (c)<-[:PRICED_IN]-() RETURN count(c) AS n")
-    s4 = n("MATCH (o:Oferta)-[r:PRICED_IN]->() WITH o, count(r) AS k "
+    s9 = n("MATCH (c:ProductCluster) WHERE NOT (c)<-[:VARIANT_OF]-(:Product) "
+           "RETURN count(c) AS n")
+    s4 = n("MATCH (o:Oferta)-[r:OFFERS]->(:Product) WITH o, count(r) AS k "
            "WHERE k > 1 RETURN count(o) AS n")
-    placed = n("MATCH (:Oferta)-[:PRICED_IN]->() RETURN count(*) AS n")
+    placed = n("MATCH (:Oferta)-[:OFFERS]->(:Product) RETURN count(*) AS n")
     total = n("MATCH (o:Oferta) WHERE o.descripcion_proveedor IS NOT NULL RETURN count(o) AS n")
     unplaced = total - placed
     # M2 price incoherence: clusters whose normalized price has a high spread.
     m2 = conn.query(
         """
-        MATCH (:Oferta)-[e:PRICED_IN]->(c:ProductCluster)
+        MATCH (:Oferta)-[e:OFFERS]->(:Product)-[:VARIANT_OF]->(c:ProductCluster)
         WHERE e.normalized_price IS NOT NULL
         WITH c, count(e) AS n, avg(e.normalized_price) AS mean, stDev(e.normalized_price) AS sd
         WHERE n >= 5 AND mean > 0 AND sd / mean > 1.0
@@ -164,8 +165,8 @@ def check_graph(conn) -> list[Finding]:
         ORDER BY cv * n DESC LIMIT 10
         """)
     return [
-        Finding("S9", "structural", "orphan cluster (no PRICED_IN offers)", s9, True),
-        Finding("S4", "structural", "offer in more than one cluster", s4, True),
+        Finding("S9", "structural", "orphan cluster (no Product)", s9, True),
+        Finding("S4", "structural", "offer bound to more than one Product", s4, True),
         Finding("S10", "semantic", "unplaced offers (no cluster)", unplaced, False,
                 [f"{unplaced:,}/{total:,}"]),
         Finding("M2", "semantic", "price-incoherent cluster (CV>1, n≥5)", len(m2), False,

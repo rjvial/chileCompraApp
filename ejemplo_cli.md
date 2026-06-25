@@ -61,13 +61,21 @@ Relationships: `(Licitacion)-[:TIENE_ITEM]->(ItemLicitacion)` and
 `(Oferta)-[:PARA_ITEM]->(ItemLicitacion)`. The UNSPSC code is the UN's standard
 product-taxonomy number (segment 42 = medical/lab supplies); it scopes runs.
 
-**Cluster catalog (written by `match --persist`):**
+**Cluster catalog (written by `match --persist`):** three tiers — raw bid →
+brand-specific product → brand-independent cluster.
 
 | Node / edge | What it is |
 |---|---|
-| `ProductCluster` | A canonical **substitutable product** — the set of bids that share one identity **signature** (category + sorted identity attributes). The unit of price comparison. |
-| `(Oferta)-[:PRICED_IN {normalized_price, unit_price, rut, date, pack_size}]->(ProductCluster)` | Each bid priced into its cluster — **price per base unit on the edge**. `rut` is the supplier (for competition), `date` for time series. |
+| `ProductCluster` | A canonical **substitutable product**, brand-**independent** — the set of bids sharing one identity **signature** (category + sorted identity attributes). The unit of price comparison. |
+| `Product` | The bid's resolved, brand-**specific** offering — `{brand, category, signature, pack_size, pack_unit}`. Deduped by `(cluster, brand, packaging)`, so every bid of the same brand+spec+pack shares one node. |
+| `(Oferta)-[:OFFERS {normalized_price, unit_price, rut, date, currency}]->(Product)` | Each bid priced into its Product — **price per base unit on the edge** (price is per-bid, so it lives here, not on the node). `rut` = supplier (competition), `date` = time series. |
+| `(Product)-[:VARIANT_OF]->(ProductCluster)` | A brand-specific Product rolls up to its brand-independent cluster. |
 | `(finer)-[:REFINES]->(coarser)` | A more-specific cluster **refines** a coarser one (the partial-spec hierarchy: "Foley 16Fr" refines "Foley"). |
+
+A price reaches its cluster two hops out:
+`(:Oferta)-[:OFFERS]->(:Product)-[:VARIANT_OF]->(:ProductCluster)` — so you can
+slice by **brand** (on the Product) or aggregate brand-independently (at the
+cluster).
 
 ```
   SOURCE GRAPH (read-only input)              CLUSTER CATALOG (written by `match`)
@@ -79,9 +87,9 @@ product-taxonomy number (segment 42 = medical/lab supplies); it scopes runs.
    ItemLicitacion   (buyer text + UNSPSC)
       ▲
       │ :PARA_ITEM
-   Oferta ──:PRICED_IN {price, rut, date}──▶  ProductCluster ──:REFINES──▶ ProductCluster
-    supplier text                                (signature = category        (coarser)
-                                                  + identity attributes)
+   Oferta ─:OFFERS {price,rut,date}─▶ Product ─:VARIANT_OF─▶ ProductCluster ─:REFINES─▶ ProductCluster
+    supplier text                      {brand, specs,         (signature =         (coarser)
+                                        packaging}             category + attrs)
 ```
 
 A `ProductCluster` is keyed by its **signature**, so identical signatures across
@@ -101,7 +109,8 @@ L0 dedup → L1 canonicalize (Claude) → L2 match → L3 adjudicate → L4 cohe
   attributes**, `brand`, `model_token`, `packaging`. Persisted to a text-hash
   store (the L1 cache and resume state).
 - **L2 — match** (`match`). A deterministic matcher clusters the profiles into
-  `:ProductCluster` nodes and prices offers into them.
+  `:ProductCluster` nodes, materializes each bid's brand-specific `:Product`
+  (`VARIANT_OF` its cluster), and prices offers onto their Product.
 - **L3 — adjudicate** (`adjudicate`, Claude/Sonnet). Claude settles the small
   residue the matcher couldn't decide deterministically.
 - **L4 — coherence-check** (`coherence-check`). An auditor of named invariants
@@ -124,9 +133,12 @@ A profile is the structured form of one description. Four ideas make it reliable
 - **`model_token`.** A manufacturer model / reference token (e.g. `mic-g`). Two
   bids with the **same `model_token` are the same product, even cross-brand** — a
   sufficient merge signal.
-- **Brand and packaging are not identity.** Brand is a *slice* of a product;
-  packaging is *price normalization* (a per-pack quote ÷ pack size). Neither
-  belongs in the identity signature.
+- **Brand and packaging are not cluster identity.** They're excluded from the
+  cluster **signature** (a cluster is the substitutable product *across* brands).
+  Instead they define the **`:Product`** tier — the brand-specific offering keyed by
+  `(cluster, brand, packaging)` — so brand-level slicing lives there, while the
+  cluster stays brand-independent. Packaging also drives price normalization
+  (a per-pack quote ÷ pack size).
 
 ### How matching decides (the pairwise rule)
 
@@ -188,7 +200,7 @@ re-canonicalize that family afterward (§3 Part 2, and `wipe-clusters` first).
 chilecompra-er instance start
 chilecompra-er migrate                                       # graph constraints + indexes (incl. migration 005)
 chilecompra-er canonicalize --segment 42 --limit 1000        # L1: descriptions → profiles (resumable, --workers 2)
-chilecompra-er match --persist --segment 42 --limit 1000     # L2: write clusters + PRICED_IN (resumable)
+chilecompra-er match --persist --segment 42 --limit 1000     # L2: write clusters + products + OFFERS (resumable)
 chilecompra-er coherence-check --graph                       # L4: structural gate + review backlogs
 chilecompra-er price-clusters --category sondas              # L5: prices over time + competition
 chilecompra-er adjudicate                                    # L3 (optional): settle the L2 residue
@@ -291,7 +303,7 @@ equivalent bids.
 
 ```powershell
 chilecompra-er match --segment 42 --show 15                  # offline report (no graph)
-chilecompra-er match --persist --segment 42 --limit 1000     # write clusters + PRICED_IN (resumable)
+chilecompra-er match --persist --segment 42 --limit 1000     # write clusters + products + OFFERS (resumable)
 ```
 
 Clusters the L1 profile store into product clusters by the pairwise rule (§2): same
@@ -299,17 +311,17 @@ Clusters the L1 profile store into product clusters by the pairwise rule (§2): 
 merge; coarser partial spec ⇒ `REFINES` (unless `--attach-partials` and it has a
 unique finer child). Default is an **offline report** (no graph, no LLM). With
 **`--persist`** it writes `:ProductCluster` + `:REFINES` and prices offers via
-`(:Oferta)-[:PRICED_IN {normalized_price, rut, date}]->(:ProductCluster)`; run
-`migrate` first.
+`(:Oferta)-[:OFFERS]->(:Product)-[:VARIANT_OF]->(:ProductCluster)` (price on the
+OFFERS edge); run `migrate` first.
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--store <path>` | `data\profiles.jsonl` | The L1 profile store to cluster. |
-| `--persist` | off | **WRITE** clusters, REFINES, and PRICED_IN edges to the graph. |
+| `--persist` | off | **WRITE** clusters, brand-specific Products (VARIANT_OF), REFINES, and OFFERS edges to the graph. |
 | `--segment <n>` | none | UNSPSC segment for the offer-price read when persisting. |
 | `--limit <n>` | all | Cap the offer-price read (a bounded validation slice). |
 | `--attach-partials` | off | Attach a coarse partial to its unique finer child instead of leaving it a REFINES parent. |
-| `--resume` | off | Continue the `:PRICED_IN` write from its stream-offset checkpoint (same `--segment`). |
+| `--resume` | off | Continue the `:OFFERS` write from its stream-offset checkpoint (same `--segment`). |
 | `--show <n>` | `15` | Print the top clusters by bid count. |
 
 ### 4.5 `adjudicate` — L3 (settle the residue)
@@ -364,8 +376,9 @@ chilecompra-er price-clusters --category sondas --top 10
 chilecompra-er price-clusters --signature "sondas|calibre=16fr|material=latex"
 ```
 
-Price series over the L2 clusters, read off the `:PRICED_IN` edges (normalization
-already on the edge). A cluster is the substitutable-product comparison unit, so
+Price series over the L2 clusters, read two hops out via
+`(:Oferta)-[:OFFERS]->(:Product)-[:VARIANT_OF]->(:ProductCluster)` (normalization
+already on the edge), sliceable by **brand** (on the Product) or supplier `rut`. A cluster is the substitutable-product comparison unit, so
 the summary answers both goals at once — per-base-unit price **over time** and
 **across competition** (distinct supplier RUTs + the price spread among them).
 Needs a persisted catalog (`match --persist`). `--csv <path>` writes the series;
@@ -399,7 +412,7 @@ Three things keep a long run within the Max limit, and they compose:
 > **Every stage is killable and resumable.** `canonicalize` persists each profile
 > as it lands (durable ~every 100) and **skips anything already in the store** on
 > re-run. `adjudicate` works the same way against its verdict store. `match
-> --persist` is idempotent (`MERGE`), and the long `:PRICED_IN` write keeps a
+> --persist` is idempotent (`MERGE`), and the long `:OFFERS` write keeps a
 > stream-offset checkpoint (`--resume`). So the practical workflow — run L1 per
 > segment, killing and resuming freely — never repeats finished work.
 
@@ -416,7 +429,7 @@ graph round-trip test, cleans up after itself.
 
 | Command | What it does |
 |---|---|
-| `wipe-clusters --yes` | Delete the cluster catalog (`:ProductCluster` + `PRICED_IN`/`REFINES`) and clear the `match` checkpoints, so a re-match starts fresh. APOC-batched (edges first — OOM-safe at millions of edges, edge-type-agnostic). The source graph is untouched. Use before re-matching after a vocabulary/prompt change. |
+| `wipe-clusters --yes` | Delete the cluster catalog (`:ProductCluster` + `:Product` nodes and their `OFFERS`/`VARIANT_OF`/`REFINES` edges) and clear the `match` checkpoints, so a re-match starts fresh. APOC-batched (edges first — OOM-safe at millions of edges, edge-type-agnostic). The source graph is untouched. Use before re-matching after a vocabulary/prompt change. |
 
 ---
 
@@ -431,11 +444,11 @@ Outputs split by **lifecycle**:
 - **`data\` is gitignored scratch** — all reproducible:
   - `profiles.jsonl` — the **L1 profile store** (the cache and resume state).
   - `adjudications.jsonl` — the L3 verdict store.
-  - `match_seg<seg>.checkpoint.json` — the `:PRICED_IN` write resume offset.
+  - `match_seg<seg>.checkpoint.json` — the `:OFFERS` write resume offset.
   - `price_clusters_<cat>.csv` — L5 output.
   - `proposals.json` / `profiling.csv` — `register` preview/handoff + spend ranking.
 - **The cluster catalog lives in Neo4j**, written only by `match --persist`:
-  `:ProductCluster` nodes + `:PRICED_IN` / `:REFINES` edges (migration `005`).
+  `:ProductCluster` + `:Product` nodes and `:OFFERS` / `:VARIANT_OF` / `:REFINES` edges (migrations `005`+`006`).
   Reset it with `wipe-clusters --yes` (§4.10). The pipeline never modifies the
   source graph.
 
@@ -492,11 +505,18 @@ Outputs split by **lifecycle**:
 - **Anchorless-rule guard** (`categories/schema.py`). A schema rule that could fire
   on a bare number must carry a `requires` concept guard; a lint + test enforce it,
   and the guard recognizes unit symbols (`°`, `%`, `µ`) as anchors.
+- **The Product tier** (`ingest/clusters.py:build_records`). Each clustered offer
+  maps to a `:Product` keyed by `(cluster, brand, packaging)` — `pr_<sha1(cluster_id
+  | brand | pack_key)>`, brand `sin_marca` when none. Many bids of the same
+  brand+spec+pack dedup onto one Product; the Product carries `{brand, category,
+  signature, pack_size, pack_unit}` and is `VARIANT_OF` exactly one cluster. Price
+  is per-bid, so it stays on the `(:Oferta)-[:OFFERS]->(:Product)` edge, not the
+  node. Constraints in migration `006`.
 - **`normalized_price`** (`ingest/clusters.py`). Packaging is normalization, never
   identity: a per-pack quote is divided by its stated pack size to a per-base-unit
-  price, stored on the `:PRICED_IN` edge. Offers are matched to clusters on the
+  price, stored on the `:OFFERS` edge. Offers are matched to their Product on the
   composite offer key `(id_licitacion, id_item, id_oferta)` — the unique identity,
-  so one offer is priced into exactly one cluster (coherence S4).
+  so one offer is bound to exactly one Product (coherence S4).
 - **The coherence contract** (`coherence.py`). Structural invariants (S1/S2/S4/S5/
   S7/S8/S9) are a CI gate; semantic checks (M1/M2/M4/S10) are ranked review
   backlogs; health metrics are trend snapshots. The graph tier runs against the
@@ -508,5 +528,5 @@ Outputs split by **lifecycle**:
   Max limit than Opus) — the constrained vocabulary makes that the right
   quality/cost point.
 - **Resumability.** The text-hash profile store and the verdict store *are* the
-  resume state; the `:PRICED_IN` write keeps a stream-offset checkpoint. Re-running
+  resume state; the `:OFFERS` write keeps a stream-offset checkpoint. Re-running
   any stage skips finished work.
