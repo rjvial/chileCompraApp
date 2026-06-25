@@ -64,34 +64,38 @@ class CanonStats:
 _BATCH_SIZE = 50_000  # under the API's 100k-requests / 256MB per-batch limit
 
 
-def canonicalize(descriptions, store: ProfileStore, *,
+def canonicalize(records, store: ProfileStore, *,
                  register: dict | None = None,
                  normalizer: Normalizer | None = None,
                  model: str = "claude-haiku-4-5",
                  batch_size: int = _BATCH_SIZE,
-                 unspsc_by_text: dict[str, int] | None = None,
                  dry_run: bool = False,
                  log=lambda _m: None) -> CanonStats:
-    """Canonicalize an iterable of raw descriptions into the store.
+    """Canonicalize an iterable of records into the store.
 
+    Each record is either a raw description string, or a `(description, unspsc)`
+    tuple (the graph source supplies the item's UNSPSC as a category hint).
     L0 dedup: distinct *normalized* texts only. Skips any text already in the
     store (the persisted cache), so re-runs only pay for genuinely new strings.
     """
     register = register or load_register()
     normalizer = normalizer or Normalizer()
     system = P.system_prompt(register)
-    unspsc_by_text = unspsc_by_text or {}
     stats = CanonStats()
 
-    # L0: dedup by normalized text-hash; keep one raw exemplar per hash.
+    # L0: dedup by normalized text-hash; keep one raw exemplar + UNSPSC per hash.
     by_hash: dict[str, str] = {}
-    for raw in descriptions:
+    unspsc_by_hash: dict[str, int] = {}
+    for rec in records:
+        raw, unspsc = rec if isinstance(rec, tuple) else (rec, None)
         stats.total_inputs += 1
         norm = normalizer(raw) if raw else ""
         if not norm:
             continue
         h = P.text_hash(norm)
         by_hash.setdefault(h, raw)
+        if unspsc is not None:
+            unspsc_by_hash.setdefault(h, unspsc)
     stats.distinct = len(by_hash)
 
     todo = {h: raw for h, raw in by_hash.items() if not store.has(h)}
@@ -108,7 +112,7 @@ def canonicalize(descriptions, store: ProfileStore, *,
         chunk = items[start:start + batch_size]
         from ..llm import complete_json_batch
         requests = [
-            (h, P.build_user_message(raw, unspsc=unspsc_by_text.get(h)))
+            (h, P.build_user_message(raw, unspsc=unspsc_by_hash.get(h)))
             for h, raw in chunk
         ]
         results = complete_json_batch(requests, P.PROFILE_SCHEMA, system,
@@ -131,15 +135,15 @@ def canonicalize(descriptions, store: ProfileStore, *,
     return stats
 
 
-def fetch_distinct_descriptions(conn):
-    """Distinct offer descriptions (+ UNSPSC) from the graph, for L0.
+def fetch_distinct_descriptions(conn, *, unspsc_segment: int | None = None,
+                                limit: int | None = None):
+    """Stream `(description, unspsc)` records from the graph for L0/L1.
 
-    TODO(phase-1 build): add the matching streamed read to
-    ingest/neo4j_source.py — something like
-        MATCH (o:Oferta) RETURN DISTINCT o.descripcion_proveedor AS text
-    plus the item's codigo_unspsc_producto. Kept out of this scaffold so the
-    pure core above stays graph-free and unit-testable.
-    """
-    raise NotImplementedError(
-        "fetch_distinct_descriptions: add the streamed DISTINCT read to "
-        "ingest/neo4j_source.py during the Phase-1 build")
+    A thin generator over ingest.neo4j_source.fetch_offer_descriptions —
+    dedup is done by `canonicalize()` (by normalized text-hash), so this stays a
+    plain streamed scan. The connection must stay open while the result is
+    consumed (it's lazy). Scope a run with `unspsc_segment`."""
+    from ..ingest.neo4j_source import fetch_offer_descriptions
+
+    yield from fetch_offer_descriptions(conn, unspsc_segment=unspsc_segment,
+                                        limit=limit)

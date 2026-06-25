@@ -320,6 +320,30 @@ def fetch_oc_items(conn, contains: str | None = None,
     return _paged(conn, cypher, build, contains, limit, skip=skip)
 
 
+def fetch_offer_descriptions(conn, unspsc_segment: int | None = None,
+                             limit: int | None = None, skip: int = 0
+                             ) -> Iterator[tuple[str, int | None]]:
+    """Stream every offer's (descripcion_proveedor, item UNSPSC) for L1
+    canonicalization (the redesign's L0 source). Yields raw rows in the source's
+    stable scan order; dedup happens downstream in resolve/canonicalize (by
+    normalized text-hash), so this is a plain streamed scan — no server-side
+    DISTINCT/grouping that would strain the heap. Scope with `unspsc_segment`
+    (numeric range, index-backed) to bound a run to one commodity segment."""
+    seg_low, seg_high = segment_bounds(unspsc_segment)
+    cypher = """
+        MATCH (o:Oferta)-[:PARA_ITEM]->(i:ItemLicitacion)
+        WHERE o.descripcion_proveedor IS NOT NULL
+          AND ($seg_low IS NULL OR
+               (i.codigo_unspsc_producto >= $seg_low AND i.codigo_unspsc_producto < $seg_high))
+        RETURN o.descripcion_proveedor AS text, i.codigo_unspsc_producto AS unspsc
+        SKIP $skip LIMIT $limit
+    """
+    params = {"skip": skip, "limit": limit if limit is not None else _NO_LIMIT,
+              "seg_low": seg_low, "seg_high": seg_high}
+    for rec in conn.stream(cypher, parameters=params, fetch_size=_BATCH):
+        yield rec["text"], rec["unspsc"]
+
+
 def count_tender_items(conn, contains: str | None = None) -> int:
     rec = conn.query(
         """

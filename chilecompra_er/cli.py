@@ -991,23 +991,26 @@ def cmd_canonicalize(args) -> int:
     def log(msg) -> None:
         print(msg, file=sys.stderr, flush=True)
 
+    store = ProfileStore(args.out)
     if args.from_file:
-        descriptions = [ln for ln in Path(args.from_file).read_text(
+        records = [ln for ln in Path(args.from_file).read_text(
             encoding="utf-8").splitlines() if ln.strip()]
         if args.limit:
-            descriptions = descriptions[:args.limit]
-        unspsc_by_text = None
+            records = records[:args.limit]
+        stats = canonicalize(records, store, model=args.model,
+                             dry_run=args.dry_run, log=log)
     else:
+        # Streamed graph read — the connection must stay open while
+        # canonicalize() consumes the lazy generator.
         from .graphdb import get_connection
         conn = get_connection()
         try:
-            descriptions, unspsc_by_text = fetch_distinct_descriptions(conn)
+            records = fetch_distinct_descriptions(
+                conn, unspsc_segment=args.segment, limit=args.limit)
+            stats = canonicalize(records, store, model=args.model,
+                                 dry_run=args.dry_run, log=log)
         finally:
             conn.close()
-
-    store = ProfileStore(args.out)
-    stats = canonicalize(descriptions, store, model=args.model,
-                         dry_run=args.dry_run, log=log)
     print(f"inputs       : {stats.total_inputs:,}")
     print(f"distinct     : {stats.distinct:,}")
     print(f"cached (skip): {stats.cached:,}")
@@ -1538,6 +1541,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", type=Path, default=Path("data/profiles.jsonl"),
                    help="profile store (JSONL, keyed by text-hash; the L1 cache)")
     p.add_argument("--model", default="claude-haiku-4-5", help="L1 model (default Haiku 4.5)")
+    p.add_argument("--segment", type=int, default=None,
+                   help="UNSPSC segment scope for the graph read, e.g. 42 (bounds a run)")
     p.add_argument("--limit", type=int, default=None, help="cap inputs (dev runs)")
     p.add_argument("--dry-run", action="store_true",
                    help="L0 dedup only — report distinct/cached counts, no LLM calls")

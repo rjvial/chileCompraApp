@@ -829,14 +829,16 @@ never become identity (the redesign's answer to the `2.5pct` false-merge class).
 | `--from-file <path>` | none | Read newline-separated descriptions from a file instead of the graph (runnable now). |
 | `--out <path>` | `data\profiles.jsonl` | Profile store — JSONL keyed by text-hash; the L1 cache (skip already-done). |
 | `--model <id>` | `claude-haiku-4-5` | L1 model. |
+| `--segment <n>` | all | UNSPSC segment scope for the graph read, e.g. `42` (bounds a run). |
 | `--limit <n>` | all | Cap inputs (dev runs). |
 | `--dry-run` | off | **L0 dedup only** — report distinct/cached counts, **no LLM calls, no API credits spent**. |
 
-> **Scaffold status.** `--from-file` + `--dry-run` run today with no graph and no
-> API spend. The graph source read (`fetch_distinct_descriptions`) and the bulk
-> batch run land in a later build. Batch canonicalization uses the **Batch API +
-> prompt caching** and therefore **bills API credits** (the `anthropic_sdk`
-> backend), *not* the Claude Max subscription — load credits before a bulk run.
+> **Status.** The graph read (streamed `descripcion_proveedor` + UNSPSC, deduped
+> by text-hash) and the `--from-file`/`--dry-run`/`--segment` paths are
+> implemented and tested. The only piece not yet exercised is the **bulk LLM
+> batch run** — it uses the **Batch API + prompt caching** and therefore **bills
+> API credits** (the `anthropic_sdk` backend), *not* the Claude Max subscription,
+> so load credits before running it. L2/L3 (matcher, adjudication) are still to come.
 
 ---
 
