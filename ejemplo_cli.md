@@ -174,9 +174,10 @@ The whole pipeline is **two phases over one idea**: first build a catalog and
 link every purchase line to it (Phase 1); then keep shrinking the fallback
 residue (Phase 2).
 
-**The one thing to internalize — where the LLM is (and isn't).** Only **three**
-commands ever call the LLM: `register`, `generate-schemas`, and
-`build-brand-lexicon`. Everything else is deterministic. The LLM is used to
+**The one thing to internalize — where the LLM is (and isn't).** In the current
+pipeline only **three** commands ever call the LLM: `register`,
+`generate-schemas`, and `build-brand-lexicon`. Everything else is deterministic.
+(A redesign in progress adds a fourth, experimental `canonicalize` — §4.9.) The LLM is used to
 **invent structure** *once* — propose which families exist, draft their schemas,
 list their brand names — looking only at small *aggregated samples*. It is
 **never** asked to classify individual purchase lines; those are resolved
@@ -406,7 +407,7 @@ category                  status      schema          identity attrs
 sondas_foley              launched    1.2.0           calibre, material, vias
 agujas                    candidate   1.0.0           calibre, tipo
 neo4j instance   : i-06c721c54d821f3a8 running @ 52.91.37.106
-graph            : 119 categories, 6059 generic products, 99386 source records
+graph            : 119 categories, 6059 generic products, 99386 resolved items
 ```
 
 **`instance start|stop|status`** — Neo4j EC2 lifecycle. `start` boots the box and
@@ -804,6 +805,39 @@ Never touches the graph (that's `wipe-catalog`).
 | `wipe-category <id> --yes` | Delete one category's catalog nodes (and their RESOLVED_TO edges). |
 | `wipe-catalog --yes` | Delete ALL catalog data (Category / GenericProduct / Product / Brand). Source data + migrations untouched. |
 
+### 4.9 Experimental — resolution redesign (`canonicalize`)
+
+A new resolution pipeline is being built **alongside** the current one — it does
+not touch the live `:GenericProduct` catalog yet. It replaces the regex
+extractor + classifier with a single LLM **canonicalization** step feeding a
+deterministic matcher:
+
+```
+L0 dedup → L1 canonicalize (Claude Haiku 4.5) → L2 match → L3 adjudicate → coherence-check
+```
+
+**`canonicalize [--from-file <path>] [--out data\profiles.jsonl] [--model claude-haiku-4-5] [--limit <n>] [--dry-run]`**
+— **L1**: turns each distinct `descripcion_proveedor` into a structured
+**profile** (category + **evidence-anchored** identity attributes + brand + model
+token + packaging), persisted by text-hash so each distinct string is
+canonicalized **once** (a cached pure function). The cardinal rule: every
+identity attribute must quote the substring that anchors it — a bare number can
+never become identity (the redesign's answer to the `2.5pct` false-merge class).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--from-file <path>` | none | Read newline-separated descriptions from a file instead of the graph (runnable now). |
+| `--out <path>` | `data\profiles.jsonl` | Profile store — JSONL keyed by text-hash; the L1 cache (skip already-done). |
+| `--model <id>` | `claude-haiku-4-5` | L1 model. |
+| `--limit <n>` | all | Cap inputs (dev runs). |
+| `--dry-run` | off | **L0 dedup only** — report distinct/cached counts, **no LLM calls, no API credits spent**. |
+
+> **Scaffold status.** `--from-file` + `--dry-run` run today with no graph and no
+> API spend. The graph source read (`fetch_distinct_descriptions`) and the bulk
+> batch run land in a later build. Batch canonicalization uses the **Batch API +
+> prompt caching** and therefore **bills API credits** (the `anthropic_sdk`
+> backend), *not* the Claude Max subscription — load credits before a bulk run.
+
 ---
 
 ## 5. Files & outputs
@@ -925,6 +959,14 @@ Outputs are split by **lifecycle**:
   cluster, and a per-pack quote is divided by its stated pack size only when that
   lands it in the cluster (positive evidence); offers that fit neither are flagged
   `unknown` and excluded.
+- **Anchorless-rule guard (extraction safety).** An identity extraction rule that
+  could fire on a bare number (no unit or concept word) must now carry a
+  `requires` context guard naming the attribute's concept
+  (`categories/schema.py:Rule.requires`); the rule fires only when its guard also
+  matches the text — a guard can only narrow matches, never widen them. A lint
+  (`anchorless_identity_rules`) + test (`tests/test_schema_anchors.py`) enforce it
+  across all schemas, closing the false-merge class where "Ca 2,5 mEq" and
+  "cable 3x2,5 mm" were read as dextrose 2.5% (the `pr_fd4522…` bucket).
 - Known follow-ups: **brand canonicalization** (the `Brand` nodes still hold
   spelling variants — `BIOLIGH`/`BIOLIGHT` — that should collapse), an `OFFERS`
   edge `date` for offers whose source `fecha` is null, registering the largest
