@@ -1037,7 +1037,7 @@ def cmd_match(args) -> int:
         print(f"no profiles in {args.store} — run `canonicalize` first")
         return 1
     profiles = [p for _h, p in items]
-    res = cluster(profiles, attach_partials=args.attach_partials)
+    res = cluster(profiles, attach_partials=args.attach_partials, log=log)
     print(f"profiles        : {len(profiles):,}")
     print(f"product clusters : {len(res.clusters):,}")
     print(f"REFINES edges    : {len(res.refines):,}")

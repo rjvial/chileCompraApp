@@ -55,6 +55,17 @@ def test_parse_profile_round_trip():
     assert P.parse_profile(d) == p           # frozen dataclasses compare by value
 
 
+def test_category_normalized_for_stable_blocking():
+    d = {"is_product": True, "category": "Cordón eléctrico",
+         "identity_attributes": [], "brand": None, "model_token": None,
+         "packaging": {"pack_size": None, "pack_unit": None, "evidence": None},
+         "base_unit": None, "confidence": "low", "flags": []}
+    assert P.parse_profile(d).category == "cordon_electrico"
+    # spaces / casing / accents all collapse to the same block key
+    assert P.normalize_category("cordon electrico") == "cordon_electrico"
+    assert P.normalize_category("sondas") == "sondas"
+
+
 def test_parse_profile_from_raw_llm_dict():
     d = {"is_product": True, "category": "concentrado_acido",
          "identity_attributes": [{"name": "calcio", "value": "2.5meq_l",

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from dataclasses import dataclass, field
 
 # --- the profile dataclass ----------------------------------------------------
@@ -182,12 +184,23 @@ def build_user_message(description: str, *, unspsc: int | str | None = None,
     return "\n".join(parts)
 
 
+def normalize_category(c: str) -> str:
+    """Canonicalize the L1 category string to a stable snake_case block key:
+    lowercase, strip accents, non-alphanumeric runs → '_'. Removes trivial drift
+    ("Cordón eléctrico" / "cordon electrico" → "cordon_electrico") so the L2
+    blocking key is stable. (Synonym-level reconciliation — e.g. concentrado_
+    dialisis vs soluciones_dialisis_peritoneal — is a separate L2 concern.)"""
+    c = unicodedata.normalize("NFKD", c or "").encode("ascii", "ignore").decode()
+    c = re.sub(r"[^a-z0-9]+", "_", c.lower().strip()).strip("_")
+    return c or "unknown"
+
+
 def parse_profile(d: dict) -> Profile:
     """Build a Profile from the validated structured-outputs dict."""
     pk = d.get("packaging") or {}
     return Profile(
         is_product=bool(d["is_product"]),
-        category=d["category"],
+        category=normalize_category(d["category"]),
         identity_attributes=tuple(
             IdentityAttr(name=a["name"], value=a["value"], evidence=a["evidence"])
             for a in d.get("identity_attributes", [])),

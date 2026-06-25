@@ -95,7 +95,15 @@ class _UnionFind:
         self.parent[self.find(a)] = self.find(b)
 
 
-def cluster(profiles: list[Profile], *, attach_partials: bool = False) -> MatchResult:
+# Above this many distinct signatures in one category, skip the O(n^3) REFINES /
+# ambiguous-partial computation for that block (the clusters themselves are still
+# produced — only the auxiliary hierarchy is skipped) so a pathological category
+# can't hang the run.
+_MAX_HIERARCHY_BLOCK = 1500
+
+
+def cluster(profiles: list[Profile], *, attach_partials: bool = False,
+            log=lambda _m: None) -> MatchResult:
     """Group profiles into product clusters (the comparison units).
 
     `attach_partials` is the strictness dial (design L2, Step D / open decision):
@@ -156,6 +164,12 @@ def cluster(profiles: list[Profile], *, attach_partials: bool = False) -> MatchR
 
     keep: list[Cluster] = []
     for cat, cs in by_cat.items():
+        if len(cs) > _MAX_HIERARCHY_BLOCK:
+            # oversized block: keep the clusters, skip the O(n^3) hierarchy pass.
+            log(f"  hierarchy skipped for {cat}: {len(cs):,} signatures "
+                f"(> {_MAX_HIERARCHY_BLOCK})")
+            keep.extend(cs)
+            continue
         # immediate finer children of each cluster (minimal proper supersets)
         children: dict[str, list[Cluster]] = {c.signature: [] for c in cs}
         for coarse in cs:
