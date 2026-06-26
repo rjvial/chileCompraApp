@@ -1,6 +1,6 @@
-"""End-to-end pipeline orchestration with step-level resume.
+"""End-to-end redesign-pipeline orchestration with step-level resume.
 
-`chilecompra-er pipeline [--resume]` runs the whole catalog build as an ordered
+`chilecompra-er pipeline [--resume]` runs the whole L0→L5 build as an ordered
 sequence of steps and records which steps have completed in
 `data/pipeline.checkpoint.json`. If any step is interrupted, re-running with
 `--resume` skips the completed steps and continues at the interrupted one.
@@ -8,9 +8,10 @@ sequence of steps and records which steps have completed in
 Two layers of resume:
   * STEP level (this module): the checkpoint's `done` list says which whole
     steps finished; `--resume` re-runs only what's left.
-  * WITHIN a step (ingest/resume.py): the two long `resolve` steps keep their
-    own per-run checkpoints under distinct `--out` prefixes, so a kill mid-
-    resolve continues from the exact record, not the top of the step.
+  * WITHIN a step: each long stage already owns its resume state — the L1 profile
+    store (text-hash cache, skip-done), the L2 `:OFFERS` stream-offset checkpoint,
+    the L3 verdict store, the `register` vet checkpoint. So re-entering an
+    unfinished step continues from the exact item, never the top.
 
 This module is pure orchestration STATE — no graph/LLM/CLI imports — so the
 ordering + checkpoint logic is unit-testable without a live graph (the actual
@@ -25,39 +26,32 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Ordered pipeline steps. Linear dependency chain: each needs the prior one's
-# output in the graph. Resolve steps (build/final-resolve) additionally resume
-# within themselves via ingest/resume.py.
+# output (in the graph, or on disk). The redesign build, end to end:
+#   instance  — boot the Neo4j EC2 box
+#   migrate   — graph constraints + indexes (incl. 005 clusters, 006 products)
+#   register  — VOCABULARY: profile + vet families, register them + draft schemas.
+#               Incremental: built only when absent / to fill gaps (see cmd_pipeline).
+#   canonicalize — L1: descriptions → profiles (Haiku; text-hash cache)
+#   match     — L2: cluster profiles → :ProductCluster/:Product, bind :OFFERS
+#   adjudicate — L3: Claude settles the matcher residue (non-fatal)
+#   coherence-check — L4: structural gate + semantic/health backlogs
 STEP_INSTANCE = "instance"
 STEP_MIGRATE = "migrate"
 STEP_REGISTER = "register"
-STEP_BUILD = "build"
-STEP_FALLBACK_REPORT = "fallback-report"
-STEP_REGISTER_FALLBACK = "register-fallback"
-STEP_TRAIN_TIER2 = "train-tier2"
-STEP_BRANDS = "build-brand-lexicon"
-STEP_FINAL = "final-resolve"
+STEP_CANONICALIZE = "canonicalize"
+STEP_MATCH = "match"
+STEP_ADJUDICATE = "adjudicate"
+STEP_COHERENCE = "coherence-check"
 
 PIPELINE_STEPS = [
     STEP_INSTANCE,
     STEP_MIGRATE,
     STEP_REGISTER,
-    STEP_BUILD,
-    STEP_FALLBACK_REPORT,
-    STEP_REGISTER_FALLBACK,
-    STEP_TRAIN_TIER2,
-    STEP_BRANDS,
-    STEP_FINAL,
+    STEP_CANONICALIZE,
+    STEP_MATCH,
+    STEP_ADJUDICATE,
+    STEP_COHERENCE,
 ]
-
-# Output prefixes for the two resolve steps — distinct so their within-run
-# checkpoints (ingest/resume.py) never collide.
-BUILD_PREFIX_NAME = "pipeline_build"
-FINAL_PREFIX_NAME = "pipeline_final"
-
-# The record-streaming steps whose loop size is deterministic and knowable up
-# front (both stream the full segment, so both equal the segment item count).
-# These are the steps cmd_pipeline precomputes loop_sizes for.
-RESOLVE_STEPS = [STEP_BUILD, STEP_FINAL]
 
 
 def pipeline_checkpoint_path(data_dir: Path) -> Path:
@@ -69,24 +63,14 @@ class PipelineCheckpoint:
     segment: int | None
     limit: int | None
     done: list[str] = field(default_factory=list)
-    # Deterministic loop size of each record-streaming step, precomputed once
-    # when the pipeline is established (step name -> number of records it will
-    # iterate). The resolve steps (build/final-resolve) both stream the whole
-    # segment, so both map to the same segment item count. Persisted so it can
-    # be consulted any time (`pipeline --status`) and reused for resume +
-    # progress % without re-counting. Empty on checkpoints written before this
-    # field existed; cmd_pipeline backfills it on the next --resume.
-    loop_sizes: dict[str, int] = field(default_factory=dict)
 
     def to_json(self) -> dict:
-        return {"segment": self.segment, "limit": self.limit,
-                "done": self.done, "loop_sizes": self.loop_sizes}
+        return {"segment": self.segment, "limit": self.limit, "done": self.done}
 
     @classmethod
     def from_json(cls, d: dict) -> "PipelineCheckpoint":
         return cls(segment=d.get("segment"), limit=d.get("limit"),
-                   done=list(d.get("done", [])),
-                   loop_sizes=dict(d.get("loop_sizes", {})))
+                   done=list(d.get("done", [])))
 
     def mark_done(self, step: str) -> None:
         if step not in self.done:

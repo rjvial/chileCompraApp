@@ -1,7 +1,10 @@
 """Command-line interface for the entity-resolution pipeline.
 
     chilecompra-er status                       # register + instance overview
-    chilecompra-er pipeline [--resume]          # run the whole build end-to-end,
+    chilecompra-er pipeline [--resume]          # run the WHOLE redesign build end-
+                                                # to-end (instance -> migrate ->
+                                                # register -> canonicalize -> match
+                                                # -> adjudicate -> coherence-check),
                                                 # resumable at any interrupted step
     chilecompra-er instance start|stop|status   # Neo4j EC2 lifecycle
     chilecompra-er migrate [--dry-run]          # apply graph schema migrations
@@ -662,29 +665,23 @@ def _progress_writer(path, *, every: float = 1.0):
 
 
 def cmd_pipeline(args) -> int:
-    """Run the whole end-to-end build as an ordered, step-level-resumable
-    sequence (see chilecompra_er/pipeline.py). Each step reuses the existing
-    cmd_* handler; the checkpoint records completed steps so --resume continues
-    at the interrupted one. The two resolve steps additionally resume WITHIN
-    themselves via their own per-run checkpoints (ingest/resume.py)."""
-    from .ingest.resume import checkpoint_path as sub_checkpoint_path
-    from .ingest.resume import load_checkpoint as load_sub_checkpoint
-    from .ingest.resume import progress_path as sub_progress_path
-    from .ingest.resume import read_progress
+    """Run the whole redesign build end-to-end (instance -> migrate -> register
+    -> canonicalize -> match -> adjudicate -> coherence-check) as an ordered,
+    step-level-resumable sequence (see chilecompra_er/pipeline.py). Each step
+    reuses the existing cmd_* handler; the checkpoint records completed steps so
+    --resume continues at the interrupted one. The long steps additionally resume
+    WITHIN themselves via their own stores/checkpoints (the L1 profile store, the
+    L2 :OFFERS stream offset, the L3 verdict store, the register vet checkpoint).
+    """
     from .pipeline import (
-        BUILD_PREFIX_NAME,
-        FINAL_PREFIX_NAME,
         PIPELINE_STEPS,
-        RESOLVE_STEPS,
-        STEP_BRANDS,
-        STEP_BUILD,
-        STEP_FALLBACK_REPORT,
-        STEP_FINAL,
+        STEP_ADJUDICATE,
+        STEP_CANONICALIZE,
+        STEP_COHERENCE,
         STEP_INSTANCE,
+        STEP_MATCH,
         STEP_MIGRATE,
         STEP_REGISTER,
-        STEP_REGISTER_FALLBACK,
-        STEP_TRAIN_TIER2,
         PipelineCheckpoint,
         load_pipeline_checkpoint,
         pipeline_checkpoint_path,
@@ -699,139 +696,29 @@ def cmd_pipeline(args) -> int:
     segment = None if args.all_segments else args.segment
     limit = args.limit
     cp_path = pipeline_checkpoint_path(data)
-    build_prefix = data / BUILD_PREFIX_NAME
-    final_prefix = data / FINAL_PREFIX_NAME
-    prefix_of = {STEP_BUILD: build_prefix, STEP_FINAL: final_prefix}
+    store = data / "profiles.jsonl"
+    verdicts = data / "adjudications.jsonl"
 
-    def step_progress_path(step: str):
-        """Progress-timeline file for ANY step — uniform with the resolve steps'
-        <prefix>.progress.jsonl — so --status reads every step the same way."""
-        if step in prefix_of:
-            return sub_progress_path(prefix_of[step])
-        return data / f"{step.replace('-', '_')}.progress.jsonl"
-
-    def _fmt_dur(secs: float) -> str:
-        secs = int(max(0, secs))
-        h, m = secs // 3600, (secs % 3600) // 60
-        if h:
-            return f"{h}h{m:02d}m"
-        return f"{m}m{secs % 60:02d}s" if m else f"{secs}s"
-
-    def progress_stats(step: str, *, window: int = 20) -> dict | None:
-        """Rate/ETA from a resolve step's progress timeline (the .progress.jsonl
-        written each tick). Rate + elapsed are summed over *active* consecutive
-        intervals only — pairs where work advanced in a sane span — so a resume's
-        rewind (processed steps back) and a kill's idle gap (a long pause with no
-        progress) are excluded rather than dragging the numbers down. `rate` is
-        over the trailing `window` samples (recent); `elapsed` is the whole
-        timeline's active time; `eta` extrapolates the remaining loop at `rate`.
-        None if the timeline has <2 points."""
-        hist = read_progress(step_progress_path(step))
-        if len(hist) < 2:
-            return None
-        last = hist[-1]
-
-        def active(samples: list[dict]) -> tuple[float, float]:
-            dn = dt = 0.0
-            for a, b in zip(samples, samples[1:]):
-                d_n, d_t = b["processed"] - a["processed"], b["ts"] - a["ts"]
-                if d_n > 0 and 0 < d_t < 3600:  # skip rewinds + long idle gaps
-                    dn += d_n
-                    dt += d_t
-            return dn, dt
-
-        win = hist[-window:] if len(hist) > window else hist
-        wdn, wdt = active(win)
-        rate = (wdn / wdt * 60) if wdt > 0 else 0.0          # records/min, recent
-        _, active_secs = active(hist)                        # processing time
-        total = last.get("total")
-        remaining = (total - last["processed"]) if total else None
-        eta = (remaining / rate * 60) if (remaining and rate > 0) else None
-        return {
-            "processed": last["processed"], "total": total,
-            "rate_per_min": rate, "eta_secs": eta, "elapsed_secs": active_secs,
-            "resolved": last.get("resolved"), "unresolved": last.get("unresolved"),
-            "samples": len(hist),
-        }
-
-    def compute_loop_sizes(cp: PipelineCheckpoint) -> bool:
-        """Precompute + persist the deterministic loop size of each resolve step
-        (= the segment item count). Needs the migrated graph, so it's called once
-        migrate has run. Best-effort: a count failure (instance stopped, etc.)
-        leaves loop_sizes empty and is non-fatal. Returns True if filled."""
-        from .graphdb import get_connection
-        from .ingest.neo4j_source import count_resolve_items
-        try:
-            conn = get_connection()
-            try:
-                n = count_resolve_items(conn, contains=None, unspsc_segment=segment)
-            finally:
-                conn.close()
-        except Exception as exc:  # noqa: BLE001 - never let counting kill the run
-            log(f"  (could not precompute resolve loop size: {exc!r})")
-            return False
-        cp.loop_sizes = {step: n for step in RESOLVE_STEPS}
-        save_pipeline_checkpoint(cp_path, cp)
-        log(f"  resolve loop size precomputed: {n:,} records "
-            f"(segment {segment if segment is not None else 'all'}) "
-            f"-> {', '.join(RESOLVE_STEPS)}")
-        return True
-
-    # --- consultation: print the plan + live progress (optionally watch) ------
+    # --- consultation: print the plan (optionally watch) ----------------------
     def render_status() -> str:
-        """Print the plan + per-stage progress (rate/ETA for the running resolve).
-        Returns 'absent' | 'complete' | 'running'."""
+        """Print the plan: steps done/pending. Returns 'absent'|'complete'|'running'."""
         cp = load_pipeline_checkpoint(cp_path)
         if cp is None:
             print(f"no pipeline checkpoint at {cp_path} — nothing established yet")
             return "absent"
-        # NB: status is read-only — it does NOT backfill loop_sizes (that needs a
-        # DB count and a checkpoint write, which would race a running pipeline).
-        # The running pipeline fills loop_sizes right after migrate; until then a
-        # resolve step simply shows no % (its timeline carries the count once it
-        # starts).
         done = set(cp.done)
         todo = [s for s in PIPELINE_STEPS if s not in done]
         current = todo[0] if todo else None
         stamp = time.strftime("%H:%M:%S")
-        print(f"pipeline status  (segment={cp.segment}  limit={cp.limit})  {stamp}")
+        scope = f"segment={cp.segment}" if cp.segment is not None else "all segments"
+        print(f"pipeline status  ({scope}  limit={cp.limit})  {stamp}")
         print(f"  checkpoint: {cp_path}")
         print(f"  {len(done)}/{len(PIPELINE_STEPS)} steps done\n")
         for step in PIPELINE_STEPS:
-            print(f"  {'[x]' if step in done else '[ ]'} {step}"
-                  f"{_step_detail(step, step in done, step == current, cp)}")
+            mark = "[x]" if step in done else ("[>]" if step == current else "[ ]")
+            tail = "  [done]" if step in done else ("  [next]" if step == current else "")
+            print(f"  {mark} {step}{tail}")
         return "complete" if cp.is_complete() else "running"
-
-    def _step_detail(step: str, is_done: bool, is_current: bool,
-                     cp: PipelineCheckpoint) -> str:
-        """One step's progress line — uniform for every step: N/total + rate + ETA
-        when the step has a timeline (resolve steps, the register vet scans, the
-        brand-lexicon scan); plain done/running/pending otherwise."""
-        ps = progress_stats(step)
-        size = cp.loop_sizes.get(step)  # resolve steps know their size up front
-        if ps:
-            n, total = ps["processed"], ps["total"]
-            tot = f"{total:,}" if total else "—"
-            pct = f" ({n / total:.1%})" if total else ""
-            if is_done:
-                return f"  {n:,}/{tot}{pct}  [done in {_fmt_dur(ps['elapsed_secs'])}]"
-            if ps["rate_per_min"] > 0:
-                eta = f"ETA ~{_fmt_dur(ps['eta_secs'])}" if ps["eta_secs"] else "ETA —"
-                return (f"  {n:,}/{tot}{pct}  {ps['rate_per_min']:,.0f}/min  {eta}"
-                        f"  (elapsed {_fmt_dur(ps['elapsed_secs'])})")
-            return f"  {n:,}/{tot}{pct}  [in progress]"
-        if is_done:
-            return "  [done]"
-        if is_current:
-            # The first not-done step. "current" means next-to-run; with no
-            # liveness signal, status can't tell a running pipeline from a paused
-            # one here — a step with a timeline self-corrects (its samples show
-            # real progress), but a timeline-less step (e.g. train-tier2) reads
-            # [running…] even when nothing is running.
-            return "  [running…]"
-        if size:  # a resolve step that hasn't started, but whose size is known
-            return f"  loop size {size:,}  [not started]"
-        return ""  # pending
 
     if getattr(args, "status", False) or getattr(args, "watch", False):
         if not getattr(args, "watch", False):
@@ -848,7 +735,7 @@ def cmd_pipeline(args) -> int:
                 if state == "absent":
                     return 0  # nothing to watch yet
                 print("\n" + "-" * 60)
-                sys.stdout.flush()  # show live even when piped/redirected (block-buffered)
+                sys.stdout.flush()  # show live even when piped (block-buffered)
                 time.sleep(interval)
         except KeyboardInterrupt:
             print("\nstopped watching.")
@@ -856,14 +743,14 @@ def cmd_pipeline(args) -> int:
 
     # --- resume / restart bookkeeping -----------------------------------------
     if args.restart:
-        victims = [cp_path,
-                   sub_checkpoint_path(build_prefix), sub_checkpoint_path(final_prefix)]
-        victims += list(data.glob("*.progress.jsonl"))  # every step's timeline
+        victims = [cp_path, data / "register.checkpoint.json"]
+        victims += list(data.glob("match_seg*.checkpoint.json"))  # L2 :OFFERS offset
         for p in victims:
             if p.exists():
                 p.unlink()
-        log(f"--restart: cleared {cp_path.name}, the resolve sub-checkpoints "
-            "and all step progress timelines")
+        log(f"--restart: cleared {cp_path.name}, the match sub-checkpoint(s) and the "
+            "register vet checkpoint (the L1 profile + L3 verdict stores are left "
+            "intact — delete data\\profiles.jsonl by hand to recanonicalize from scratch)")
 
     cp = load_pipeline_checkpoint(cp_path)
     if cp is not None and not (args.resume or args.restart or args.from_step or args.only):
@@ -889,61 +776,76 @@ def cmd_pipeline(args) -> int:
         print(f"pipeline already complete ({len(cp.done)} steps done) — nothing to do")
         return 0
 
-    # Backfill the loop sizes onto a checkpoint that predates this field (or a
-    # resume that skipped a fresh establishment): the data is already migrated,
-    # so the count is available now.
-    if not cp.loop_sizes and STEP_MIGRATE in cp.done:
-        compute_loop_sizes(cp)
-
     # --- step implementations -------------------------------------------------
-    def run_resolve(prefix, step, *, brands: bool, tier2: bool) -> int:
-        sub = load_sub_checkpoint(sub_checkpoint_path(prefix))
-        if sub is not None and sub.done:
-            log(f"    {prefix.name}: already complete ({sub.processed} records) "
-                "— skipping the resolve")
-            return 0
-        resume = sub is not None and not sub.done
-        if resume:
-            log(f"    {prefix.name}: continuing within-run checkpoint "
-                f"({sub.processed} records done)")
-        return cmd_resolve(_ns(
-            kind="item", contains=None, segment=segment, persist=True,
-            limit=limit, skip=0, out=prefix, show=0, fallback="unspsc",
-            progress_every=args.progress_every, resume=resume,
-            brands=brands, tier2=tier2, tier2_model=None, tier2_threshold=None,
-            total=cp.loop_sizes.get(step)))
+    def run_register() -> int:
+        """VOCABULARY (incremental). Build from nothing when the register is empty;
+        when families already exist, do NOT re-profile/re-vet — only DRAFT any
+        missing schemas (a cheap gap-fill). --rebuild-vocab forces a full
+        profile+vet pass that builds over what's there (extends coverage)."""
+        from .categories.schema import CATEGORIES_DIR, load_register
 
-    def run_register(*, from_fallback: bool) -> int:
-        # Within-step resume: a kill mid-vet leaves this checkpoint, and the next
-        # `pipeline --resume` (which re-enters the unfinished register step)
-        # continues the scan instead of re-vetting from the top.
-        step = STEP_REGISTER_FALLBACK if from_fallback else STEP_REGISTER
-        ckpt = data / ("register_fallback.checkpoint.json" if from_fallback
-                       else "register.checkpoint.json")
+        reg = load_register()
+        cats = reg.get("categories", [])
+        missing = [c for c in cats
+                   if not (CATEGORIES_DIR / c.get("schema_file", "")).exists()]
+        force = getattr(args, "rebuild_vocab", False)
+
+        if not force and cats and not missing:
+            log(f"    vocabulary present: {len(cats)} families, all schemas drafted "
+                "— skipping (use --rebuild-vocab to extend/redraft)")
+            return 0
+        if not force and cats and missing:
+            log(f"    vocabulary present ({len(cats)} families) but {len(missing)} "
+                "schema(s) missing — drafting only the gaps (no re-vet)")
+            return cmd_generate_schemas(_ns(only=None, samples=50, overwrite=False))
+
+        # Empty register (from nothing) OR --rebuild-vocab: full profile + vet +
+        # register + draft. `register` is itself incremental — it builds over the
+        # existing register (already-covered families skipped) and generate()
+        # leaves existing schema files untouched — so a forced run only EXTENDS.
+        ckpt = data / "register.checkpoint.json"
         return cmd_register(_ns(
-            apply=False, preview=False, from_fallback=from_fallback,
+            apply=False, preview=False, from_fallback=False,
             proposals=data / "proposals.json", ranking=data / "profiling.csv",
             reprofile=False, all_segments=args.all_segments, segment=args.segment,
             limit=None, count=None, min_samples=15, min_spend=0.0005, revisit=False,
-            checkpoint=ckpt, resume=True, progress=step_progress_path(step)))
+            checkpoint=ckpt, resume=ckpt.exists(), progress=None))
+
+    def run_canonicalize() -> int:
+        return cmd_canonicalize(_ns(
+            from_file=None, out=store, model=args.model, workers=args.workers,
+            group_size=args.group_size, segment=segment, limit=limit, dry_run=False))
+
+    def run_match() -> int:
+        seg = segment if segment is not None else "all"
+        ckpt = data / f"match_seg{seg}.checkpoint.json"
+        return cmd_match(_ns(
+            store=store, attach_partials=False, persist=True, resume=ckpt.exists(),
+            segment=segment, limit=limit, show=15))
+
+    def run_adjudicate() -> int:
+        """L3 is non-fatal: the residue is a review backlog, not a build gate. A
+        failure (or usage-limit abort) is logged but never halts the pipeline."""
+        rc = cmd_adjudicate(_ns(
+            store=store, verdicts=verdicts, model=args.adjudicate_model,
+            dry_run=False))
+        if rc != 0:
+            log(f"    adjudicate returned rc={rc} — continuing (L3 is non-fatal)")
+        return 0
+
+    def run_coherence() -> int:
+        # Structural breaches DO fail the run (rc=1) — the build's gate.
+        return cmd_coherence_check(_ns(
+            store=store, graph=True, tier="all", out=None))
 
     steps = {
         STEP_INSTANCE: lambda: cmd_instance(_ns(action="start")),
         STEP_MIGRATE: lambda: cmd_migrate(_ns(dry_run=False)),
-        STEP_REGISTER: lambda: run_register(from_fallback=False),
-        STEP_BUILD: lambda: run_resolve(build_prefix, STEP_BUILD,
-                                        brands=False, tier2=False),
-        STEP_FALLBACK_REPORT: lambda: cmd_fallback_report(_ns(
-            top=20, min_count=5, out=data / "fallback_ranking.csv")),
-        STEP_REGISTER_FALLBACK: lambda: run_register(from_fallback=True),
-        STEP_TRAIN_TIER2: lambda: cmd_train_tier2(_ns(
-            threshold=0.60, min_rows=500, eval=False, out=None,
-            skip_if_exists=True)),
-        STEP_BRANDS: lambda: cmd_build_brand_lexicon(_ns(
-            only=None, samples=50, max_per_category=15, overwrite=False,
-            dry_run=False, progress=step_progress_path(STEP_BRANDS))),
-        STEP_FINAL: lambda: run_resolve(final_prefix, STEP_FINAL,
-                                        brands=True, tier2=True),
+        STEP_REGISTER: run_register,
+        STEP_CANONICALIZE: run_canonicalize,
+        STEP_MATCH: run_match,
+        STEP_ADJUDICATE: run_adjudicate,
+        STEP_COHERENCE: run_coherence,
     }
 
     log(f"pipeline: {len(cp.done)}/{len(PIPELINE_STEPS)} steps done; "
@@ -962,21 +864,15 @@ def cmd_pipeline(args) -> int:
         cp.mark_done(step)
         save_pipeline_checkpoint(cp_path, cp)
         log(f"=== step {step!r} done (checkpoint saved) ===")
-        # The graph is populated once migrate finishes, so the resolve loop size
-        # becomes knowable here: precompute + persist it before the resolve steps
-        # run (so their progress shows N/total, and `--status` can report it).
-        if step == STEP_MIGRATE and not cp.loop_sizes:
-            compute_loop_sizes(cp)
 
     if args.only or args.from_step:
         print(f"\nran {todo} (manual selection). Checkpoint: {cp_path}")
     elif cp.is_complete():
         print(f"\npipeline COMPLETE — all {len(PIPELINE_STEPS)} steps done.")
-        print(f"  build resolutions : {build_prefix}_resoluciones.csv")
-        print(f"  final resolutions : {final_prefix}_resoluciones.csv")
-        print(f"  checkpoint        : {cp_path}")
+        print(f"  profile store : {store}")
+        print(f"  checkpoint    : {cp_path}")
+        print("  next: chilecompra-er price-clusters --category <id>   (L5 price query)")
     return 0
-
 
 def cmd_canonicalize(args) -> int:
     """L1 canonicalization (redesign): turn descriptions into persisted canonical
@@ -1009,6 +905,7 @@ def cmd_canonicalize(args) -> int:
             records = fetch_distinct_descriptions(
                 conn, unspsc_segment=args.segment, limit=args.limit)
             stats = canonicalize(records, store, model=args.model,
+                                 workers=args.workers, group_size=args.group_size,
                                  dry_run=args.dry_run, log=log)
         finally:
             conn.close()
@@ -1725,15 +1622,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_resolve)
 
     p = sub.add_parser("pipeline",
-                       help="run the whole end-to-end build (instance -> migrate "
-                            "-> register -> resolve -> fallback loop -> re-resolve) "
-                            "with step-level resume")
+                       help="run the whole redesign build end-to-end (instance -> "
+                            "migrate -> register -> canonicalize -> match -> "
+                            "adjudicate -> coherence-check) with step-level resume")
     p.add_argument("--resume", action="store_true",
                    help="continue the run in data\\pipeline.checkpoint.json, "
                         "skipping completed steps")
     p.add_argument("--restart", action="store_true",
-                   help="discard the pipeline checkpoint + resolve sub-checkpoints "
-                        "and start from the first step")
+                   help="discard the pipeline checkpoint + match/register sub-"
+                        "checkpoints and start from the first step")
     p.add_argument("--from-step", default=None, dest="from_step",
                    choices=PIPELINE_STEPS,
                    help="force-run this step and everything after it (ignores the "
@@ -1741,23 +1638,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--only", default=None, choices=PIPELINE_STEPS,
                    help="run just this one step")
     p.add_argument("--status", action="store_true",
-                   help="print the plan: steps done/pending + each resolve "
-                        "step's precomputed loop size and live progress, then exit")
+                   help="print the plan (steps done/pending) and exit")
     p.add_argument("--watch", action="store_true",
-                   help="like --status but refresh on an interval (rate + ETA "
-                        "from the progress timeline), until complete or Ctrl-C")
+                   help="like --status but refresh on an interval until complete or Ctrl-C")
     p.add_argument("--interval", type=int, default=15,
                    help="--watch refresh seconds (default 15)")
     p.add_argument("--segment", type=int, default=42,
-                   help="UNSPSC segment scope for register + resolve (default 42)")
+                   help="UNSPSC segment scope for the build (default 42)")
     p.add_argument("--all-segments", action="store_true",
                    help="run over the whole marketplace (overrides --segment)")
     p.add_argument("--limit", type=_opt_limit, default=None,
-                   help="cap records per resolve step; 'all'/0 = no cap (default all)")
-    p.add_argument("--progress-every", type=int, default=200,
-                   help="resolve progress/checkpoint cadence (default 200)")
+                   help="cap inputs per stage; 'all'/0 = no cap (default all)")
+    p.add_argument("--rebuild-vocab", action="store_true", dest="rebuild_vocab",
+                   help="force the vocabulary step to re-profile + vet and extend "
+                        "register/schemas (default: build only when absent, else just "
+                        "fill missing schemas — never regenerate what already exists)")
+    p.add_argument("--model", default="claude-haiku-4-5",
+                   help="L1 canonicalize model (default Haiku 4.5)")
+    p.add_argument("--workers", type=int, default=2,
+                   help="L1 concurrent LLM calls on the Max backend (default 2)")
+    p.add_argument("--group-size", type=int, default=25, dest="group_size",
+                   help="L1 descriptions per LLM call (default 25)")
+    p.add_argument("--adjudicate-model", default="claude-sonnet-4-6",
+                   dest="adjudicate_model",
+                   help="L3 adjudicate model (default Sonnet 4.6)")
     p.add_argument("--data-dir", type=Path, default=Path("data"), dest="data_dir",
-                   help="directory for the checkpoint + resolve outputs (default data\\)")
+                   help="directory for the checkpoint + profile/verdict stores (default data\\)")
     p.set_defaults(func=cmd_pipeline)
 
     p = sub.add_parser("canonicalize",

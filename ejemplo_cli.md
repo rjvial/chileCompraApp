@@ -27,7 +27,8 @@ independent of brand and packaging — so price comparison **over time** and
 The data already lives in a **Neo4j graph** (the transactional layer: tenders,
 line items, offers). The pipeline reads from that graph and *adds* a cluster
 catalog on top — it never modifies the source data. The **CLI is the single
-operational surface**.
+operational surface**, and **`chilecompra-er pipeline` runs the whole build in one
+resumable command** (§4.1) — the per-stage commands below are what it drives.
 
 The heart of the pipeline is one Claude **canonicalization** step: each distinct
 supplier description becomes a structured *profile*, and a deterministic matcher
@@ -87,8 +88,11 @@ cluster).
    ItemLicitacion   (buyer text + UNSPSC)
       ▲
       │ :PARA_ITEM
-   Oferta ─:OFFERS {price,rut,date}─▶ Product ─:VARIANT_OF─▶ ProductCluster ─:REFINES─▶ ProductCluster
-    supplier text                      {brand, specs,         (signature =         (coarser)
+      │                                                          ┌───────────┐
+      │                                                          │ :REFINES  │  (self-loop: a finer
+      │                                                          ▼           │   cluster refines a coarser)
+   Oferta ─:OFFERS {price,rut,date}─▶ Product ─:VARIANT_OF─▶ ProductCluster ─┘
+    supplier text                      {brand, specs,         (signature =
                                         packaging}             category + attrs)
 ```
 
@@ -117,6 +121,11 @@ L0 dedup → L1 canonicalize (Claude) → L2 match → L3 adjudicate → L4 cohe
   over the profiles + clusters (+ the persisted graph).
 - **L5 — price-clusters** (`price-clusters`). Price series over the clusters —
   per-base-unit price over time and across competition.
+
+`chilecompra-er pipeline` runs the whole build (L0–L4, with the graph infra and the
+vocabulary step ahead of it) as one resumable, step-checkpointed command (§4.1);
+L5 `price-clusters` is the query you run on the finished catalog. Or drive any stage
+on its own — the pipeline just calls the same per-stage commands (§3 Part 2).
 
 ### What a profile is (and the rules that make clustering work)
 
@@ -191,32 +200,60 @@ chilecompra-er generate-schemas --only mascarillas    # draft / refine one famil
 ```
 
 You mostly do this once; thereafter you only **extend** it (a new family, a richer
-schema). **Editing a schema's attribute names changes the L1 vocabulary**, so
-re-canonicalize that family afterward (§3 Part 2, and `wipe-clusters` first).
+schema). `chilecompra-er pipeline` also bootstraps it — its `register` step builds
+the vocabulary from nothing, fills only missing schemas, or skips when complete (§3
+Part 2) — so this Part is **deliberate curation**, not a hard prerequisite. **Editing
+a schema's attribute names changes the L1 vocabulary**, so re-canonicalize that family
+afterward (§3 Part 2, and `wipe-clusters` first).
 
 ### Part 2 — run the pipeline
 
+**One command runs the whole build end-to-end** — infra, vocabulary, and L1→L4 —
+resumable at any step (`pipeline`, §4.1):
+
+```powershell
+chilecompra-er pipeline --segment 42             # instance→migrate→register→canonicalize→match→adjudicate→coherence-check
+chilecompra-er pipeline --resume                 # continue after a Ctrl-C / failure (skips finished steps)
+chilecompra-er pipeline --status                 # show which steps are done / pending
+chilecompra-er price-clusters --category sondas  # L5: prices over time + competition (a query — run when you need it)
+```
+
+- **Vocabulary is incremental.** The `register` step builds the families + schemas
+  **from nothing** when none exist, **fills only missing schemas** when some do, and
+  **skips** entirely when the vocabulary is already complete — it never regenerates
+  what's there. `--rebuild-vocab` forces a fresh profile+vet that *extends* coverage.
+  (Curate it deliberately with the Part 1 commands.)
+- **Build only.** The pipeline ends at `coherence-check` (the structural gate). L3
+  `adjudicate` runs but is **non-fatal** (a backlog, not a gate); L5 `price-clusters`
+  is a separate read you run per category/signature.
+- **Per `--segment`, resumable.** Work one segment at a time; validate a small
+  `--limit` slice first. Every step is safe to **Ctrl-C and `--resume`** — each long
+  stage also resumes *within* itself (the L1 profile store, the L2 `:OFFERS` offset,
+  the L3 verdict store, the `register` vet checkpoint).
+- Keep `--workers` low (default 2) so a long L1 run doesn't burst the Max usage limit.
+
+Or **run a stage at a time** (the same handlers the pipeline drives) — useful for
+development and validating a slice before scaling up:
+
 ```powershell
 chilecompra-er instance start
-chilecompra-er migrate                                       # graph constraints + indexes (incl. migration 005)
+chilecompra-er migrate                                       # graph constraints + indexes (incl. migrations 005+006)
 chilecompra-er canonicalize --segment 42 --limit 1000        # L1: descriptions → profiles (resumable, --workers 2)
 chilecompra-er match --persist --segment 42 --limit 1000     # L2: write clusters + products + OFFERS (resumable)
+chilecompra-er adjudicate                                    # L3 (optional): settle the L2 residue
 chilecompra-er coherence-check --graph                       # L4: structural gate + review backlogs
 chilecompra-er price-clusters --category sondas              # L5: prices over time + competition
-chilecompra-er adjudicate                                    # L3 (optional): settle the L2 residue
 chilecompra-er instance stop                                 #     graph data persists
 ```
 
-- Work **per `--segment`** and validate a small `--limit` slice before scaling up.
-- Keep `--workers` low (default 2) so a long run doesn't burst past the Max usage
-  limit; drop `--limit` to run the full segment.
-- Every step is safe to **Ctrl-C and re-run** — see resumability below.
-
 ### Re-running & keeping current
 
-- **More data** (new tenders/offers): re-run `canonicalize` then `match --persist`
-  for the segment. The text-hash store skips everything already canonicalized; all
-  graph writes are `MERGE` (idempotent).
+- **Resume an interrupted build**: `chilecompra-er pipeline --resume` continues at
+  the unfinished step (and that step continues *within* itself). `--status` shows
+  what's done; `--restart` begins anew.
+- **More data** (new tenders/offers): re-run the pipeline (or just `canonicalize`
+  then `match --persist`) for the segment. The text-hash store skips everything
+  already canonicalized; all graph writes are `MERGE` (idempotent).
 - **After a vocabulary / prompt change** (you edited a schema or the L1 prompt):
   the cluster signatures change, so first **`wipe-clusters --yes`** (clears the
   `:ProductCluster` namespace + the `match` checkpoints), then re-canonicalize the
@@ -234,6 +271,20 @@ marks optional.
 
 ### 4.1 Infrastructure
 
+**`pipeline [--segment 42] [--resume] [--restart] [--status] [--watch] [--only <step>] [--from-step <step>] [--rebuild-vocab]`**
+— **the whole build in one command.** Runs the ordered steps `instance → migrate →
+register → canonicalize → match → adjudicate → coherence-check`, recording completed
+steps in `data\pipeline.checkpoint.json` so `--resume` continues at the interrupted
+one (each long step also resumes *within* itself). The `register` step is
+**incremental** (§3 Part 2): it builds the vocabulary from nothing, fills only missing
+schemas, or skips when complete — `--rebuild-vocab` forces a profile+vet that extends
+it. Ends at `coherence-check` (the structural gate); L3 `adjudicate` is non-fatal, and
+L5 `price-clusters` stays a separate query. `--status`/`--watch` print the plan
+(steps done/pending) without running anything; `--only <step>` runs one step,
+`--from-step <step>` re-runs from a chosen point; `--restart` discards the checkpoint
+(and the match/register sub-checkpoints) to begin anew. L1 tuning passes through:
+`--workers`, `--group-size`, `--model` (L1), `--adjudicate-model` (L3).
+
 **`status`** — register version, per-category schema status, Neo4j state, and
 graph node counts. Read-only; never crashes on a flaky graph.
 
@@ -243,8 +294,9 @@ down (graph data persists); `status` prints state.
 
 **`migrate [--dry-run]`** — apply graph migrations (uniqueness constraints +
 indexes) under `chilecompra_er/migrations/*.cypher`, including `005` (the
-`ProductCluster` id + signature constraints). Idempotent. `--dry-run` prints
-pending Cypher without running it.
+`ProductCluster` id + signature constraints) and `006` (the `Product` id
+constraint + category/brand indexes). Idempotent. `--dry-run` prints pending
+Cypher without running it.
 
 ### 4.2 Vocabulary (`register` / `add-category` / `generate-schemas`)
 
@@ -442,9 +494,12 @@ Outputs split by **lifecycle**:
   family). This is the real deliverable — code-reviewed, diffed in PRs, asserted by
   tests. `register` / `generate-schemas` write it here, **never** to `data\`.
 - **`data\` is gitignored scratch** — all reproducible:
+  - `pipeline.checkpoint.json` — the `pipeline` step-level resume state (which steps
+    are done; the scope it was started with).
   - `profiles.jsonl` — the **L1 profile store** (the cache and resume state).
   - `adjudications.jsonl` — the L3 verdict store.
   - `match_seg<seg>.checkpoint.json` — the `:OFFERS` write resume offset.
+  - `register.checkpoint.json` — the `register` vet-scan resume state.
   - `price_clusters_<cat>.csv` — L5 output.
   - `proposals.json` / `profiling.csv` — `register` preview/handoff + spend ranking.
 - **The cluster catalog lives in Neo4j**, written only by `match --persist`:
@@ -474,6 +529,9 @@ Outputs split by **lifecycle**:
 
 | Symptom | Cause / fix |
 |---|---|
+| `pipeline` refuses to start ("a checkpoint already exists") | A prior run is in progress — `pipeline --resume` to continue it, or `pipeline --restart` to discard it and begin anew. |
+| `pipeline` "refusing to resume: scope differs" | You changed `--segment`/`--limit` between runs. Resume with the **same** scope, or `--restart`. |
+| `pipeline` re-ran the `register` step you didn't expect | The vocabulary was absent or had a missing schema, so the incremental step built/filled it. To skip it, `--from-step canonicalize`; to deliberately extend it, `--rebuild-vocab`. |
 | `graph: unreachable` in `status` | Neo4j stopped (`instance start` — also rewrites `.mcp.json`). If *running* but bolt **times out**, the security group doesn't allow your client IP — add it. |
 | `claude_oauth` backend: "needs a Max OAuth token" | Run `claude setup-token` and put `CLAUDE_CODE_OAUTH_TOKEN=…` in `secrets.env` (gitignored). |
 | `canonicalize` stops with "usage limit reached" | You hit the Max usage window. Re-run the same command after it resets — completed work is saved. |
@@ -527,6 +585,16 @@ Outputs split by **lifecycle**:
   cleanly for a clean resume. L1 is on Haiku (the cheapest tier, ~5× gentler on the
   Max limit than Opus) — the constrained vocabulary makes that the right
   quality/cost point.
-- **Resumability.** The text-hash profile store and the verdict store *are* the
-  resume state; the `:OFFERS` write keeps a stream-offset checkpoint. Re-running
-  any stage skips finished work.
+- **Pipeline orchestration** (`pipeline.py` + `cli.cmd_pipeline`). `pipeline.py` is
+  pure state — the ordered step list + a `done`-tracking checkpoint — so ordering and
+  resume are unit-testable with no graph; `cmd_pipeline` drives the existing per-stage
+  `cmd_*` handlers. The vocabulary step is incremental: empty register → full
+  profile+vet+draft; present-with-gaps → draft only the missing schemas; complete →
+  skip (`--rebuild-vocab` forces an extend). The build ends at `coherence-check`; L3
+  `adjudicate` is non-fatal.
+- **Resumability (two layers).** STEP level: `pipeline --resume` skips steps already
+  in the checkpoint's `done` list. WITHIN a step: the text-hash profile store and the
+  verdict store *are* the resume state, the `:OFFERS` write keeps a stream-offset
+  checkpoint, and the `register` vet keeps its own checkpoint — so re-entering an
+  unfinished step continues from the exact item. Re-running any stage skips finished
+  work.
