@@ -346,7 +346,7 @@ def fetch_offer_descriptions(conn, unspsc_segment: int | None = None,
 
 def fetch_offer_prices(conn, unspsc_segment: int | None = None,
                        limit: int | None = None, skip: int = 0) -> Iterator[dict]:
-    """Stream the fields the match PRICED_IN edge needs: the offer id (match key),
+    """Stream the fields the match COTIZA edge needs: the offer id (match key),
     its description (-> text-hash -> cluster), unit price, currency, supplier RUT
     (the competitor), and date. One streamed scan; segment-scopable to match the
     canonicalize run that produced the profiles.
@@ -372,29 +372,3 @@ def fetch_offer_prices(conn, unspsc_segment: int | None = None,
               "seg_low": seg_low, "seg_high": seg_high}
     for rec in conn.stream(cypher, parameters=params, fetch_size=_BATCH):
         yield dict(rec)
-
-
-def count_tender_items(conn, contains: str | None = None) -> int:
-    rec = conn.query(
-        """
-        MATCH (i:ItemLicitacion)
-        WHERE i.descripcion_comprador IS NOT NULL
-          AND ($contains IS NULL OR toLower(i.descripcion_comprador) CONTAINS $contains)
-        RETURN count(i) AS c
-        """,
-        parameters={"contains": contains.lower() if contains else None},
-    )
-    return rec[0]["c"]
-
-
-def count_offers(conn, contains: str | None = None) -> int:
-    rec = conn.query(
-        """
-        MATCH (o:Oferta)-[:PARA_ITEM]->(i:ItemLicitacion)
-        WHERE o.descripcion_proveedor IS NOT NULL
-          AND ($contains IS NULL OR toLower(i.descripcion_comprador) CONTAINS $contains)
-        RETURN count(o) AS c
-        """,
-        parameters={"contains": contains.lower() if contains else None},
-    )
-    return rec[0]["c"]

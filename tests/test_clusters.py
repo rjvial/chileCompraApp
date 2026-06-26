@@ -46,10 +46,10 @@ def test_build_records_maps_offers_to_brand_specific_products():
     pid1 = product_id(fine, "bbraun", "2|caja")
     assert hash_to_product == {"h0": pid0, "h1": pid1}
     assert pack_by_hash == {"h0": 1, "h1": 2}
-    # one Product per (cluster, brand, packaging); each VARIANT_OF its cluster
+    # one Producto per (cluster, brand, packaging); each VARIANTE_DE its cluster
     assert {p["id"]: p["cluster_id"] for p in product_rows} == {pid0: coarse, pid1: fine}
     assert all(p["brand"] == "bbraun" for p in product_rows)
-    # REFINES is between clusters, unchanged
+    # ESPECIFICA is between clusters, unchanged
     assert refines_rows == [{"finer": fine, "coarser": coarse}]
 
 

@@ -671,7 +671,7 @@ def cmd_pipeline(args) -> int:
     reuses the existing cmd_* handler; the checkpoint records completed steps so
     --resume continues at the interrupted one. The long steps additionally resume
     WITHIN themselves via their own stores/checkpoints (the profile store, the
-    match :OFFERS stream offset, the adjudicate verdict store, the register vet checkpoint).
+    match :COTIZA stream offset, the adjudicate verdict store, the register vet checkpoint).
     """
     from .pipeline import (
         PIPELINE_STEPS,
@@ -744,7 +744,7 @@ def cmd_pipeline(args) -> int:
     # --- resume / restart bookkeeping -----------------------------------------
     if args.restart:
         victims = [cp_path, data / "register.checkpoint.json"]
-        victims += list(data.glob("match_seg*.checkpoint.json"))  # match :OFFERS offset
+        victims += list(data.glob("match_seg*.checkpoint.json"))  # match :COTIZA offset
         for p in victims:
             if p.exists():
                 p.unlink()
@@ -983,9 +983,9 @@ def cmd_canonicalize(args) -> int:
 
 def cmd_match(args) -> int:
     """match (redesign): cluster the profile store into product clusters. Offline
-    report by default; with --persist, write :ProductCluster + brand-specific
-    :Product nodes (VARIANT_OF their cluster) and bind offers via :OFFERS edges to
-    their Product (price per base unit on the edge)."""
+    report by default; with --persist, write :ProductoCanonico + brand-specific
+    :Producto nodes (VARIANTE_DE their cluster) and bind offers via :COTIZA edges to
+    their Producto (price per base unit on the edge)."""
     from .resolve.canonicalize import ProfileStore
     from .resolve.matcher import cluster
 
@@ -1001,7 +1001,7 @@ def cmd_match(args) -> int:
     res = cluster(profiles, attach_partials=args.attach_partials, log=log)
     print(f"profiles        : {len(profiles):,}")
     print(f"product clusters : {len(res.clusters):,}")
-    print(f"REFINES edges    : {len(res.refines):,}")
+    print(f"ESPECIFICA edges    : {len(res.refines):,}")
     print(f"residue          : {len(res.residue):,} "
           f"(model-token conflicts + ambiguous partials)")
     top = sorted(res.clusters, key=lambda c: len(c.members), reverse=True)[:args.show]
@@ -1034,7 +1034,7 @@ def cmd_match(args) -> int:
             write_clusters(conn, cluster_rows, refines_rows, log=log)
             write_products(conn, product_rows, log=log)
             if start:
-                log(f"resuming OFFERS from offer {start:,}")
+                log(f"resuming COTIZA from offer {start:,}")
             offers = fetch_offer_prices(conn, unspsc_segment=args.segment,
                                         skip=start, limit=args.limit)
             written, skipped = write_offers(
@@ -1043,7 +1043,7 @@ def cmd_match(args) -> int:
         finally:
             conn.close()
         print(f"\npersisted: {len(cluster_rows):,} clusters, {len(product_rows):,} products, "
-              f"{written:,} OFFERS edges ({skipped:,} offers unplaced)")
+              f"{written:,} COTIZA edges ({skipped:,} offers unplaced)")
     return 0
 
 
@@ -1456,7 +1456,7 @@ def cmd_price_series(args) -> int:
 def cmd_price_clusters(args) -> int:
     """price-clusters (redesign): price series over product clusters — per-base-unit price
     over time and across competition (distinct supplier RUTs / brands). Reads
-    (:Oferta)-[:OFFERS]->(:Product)-[:VARIANT_OF]->(:ProductCluster); scope with
+    (:Oferta)-[:COTIZA]->(:Producto)-[:VARIANTE_DE]->(:ProductoCanonico); scope with
     --category or a single --signature."""
     from .graphdb import get_connection
     from .price.cluster_series import (
@@ -1508,8 +1508,8 @@ def _apoc_wipe_labels(conn, labels: list[str]) -> int:
 
 
 def cmd_wipe_clusters(args) -> int:
-    """Delete the cluster catalog — `:ProductCluster` + `:Product` nodes and their
-    `:OFFERS` / `:VARIANT_OF` / `:REFINES` edges — leaving the source graph
+    """Delete the cluster catalog — `:ProductoCanonico` + `:Producto` nodes and their
+    `:COTIZA` / `:VARIANTE_DE` / `:ESPECIFICA` edges — leaving the source graph
     untouched. Use before re-matching after a canonicalize change. The match checkpoints are
     cleared so a re-run starts fresh."""
     if not args.yes:
@@ -1519,9 +1519,9 @@ def cmd_wipe_clusters(args) -> int:
 
     conn = get_connection()
     try:
-        deleted = _apoc_wipe_labels(conn, ["ProductCluster", "Product"])
-        print(f"wiped {deleted:,} ProductCluster + Product nodes "
-              "(+ OFFERS/VARIANT_OF/REFINES edges; source untouched)")
+        deleted = _apoc_wipe_labels(conn, ["ProductoCanonico", "Producto"])
+        print(f"wiped {deleted:,} ProductoCanonico + Producto nodes "
+              "(+ COTIZA/VARIANTE_DE/ESPECIFICA edges; source untouched)")
     finally:
         conn.close()
     cleared = 0
@@ -1756,12 +1756,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="profile store to cluster (default data\\profiles.jsonl)")
     p.add_argument("--attach-partials", action="store_true",
                    help="merge a coarse partial spec into its unique finer cluster "
-                        "(default off = keep separate, linked by REFINES)")
+                        "(default off = keep separate, linked by ESPECIFICA)")
     p.add_argument("--persist", action="store_true",
-                   help="WRITE :ProductCluster/:Product/:REFINES + bind offers via "
-                        ":OFFERS (default: offline report only)")
+                   help="WRITE :ProductoCanonico/:Producto/:ESPECIFICA + bind offers via "
+                        ":COTIZA (default: offline report only)")
     p.add_argument("--resume", action="store_true",
-                   help="resume the OFFERS write from its checkpoint (same scope)")
+                   help="resume the COTIZA write from its checkpoint (same scope)")
     p.add_argument("--segment", type=int, default=None,
                    help="UNSPSC segment scope for the offer-price read on --persist")
     p.add_argument("--limit", type=int, default=None,
@@ -1995,8 +1995,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_wipe_catalog)
 
     p = sub.add_parser("wipe-clusters",
-                       help="delete the cluster catalog — :ProductCluster + :Product "
-                            "nodes and their OFFERS/VARIANT_OF/REFINES edges "
+                       help="delete the cluster catalog — :ProductoCanonico + :Producto "
+                            "nodes and their COTIZA/VARIANTE_DE/ESPECIFICA edges "
                             "(destructive; source untouched). Use before re-matching.")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=cmd_wipe_clusters)

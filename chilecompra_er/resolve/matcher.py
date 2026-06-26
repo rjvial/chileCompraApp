@@ -4,7 +4,7 @@
 The heart is the pairwise predicate `same_product(a, b)`. Clustering is built on
 top of it: identical canonical signatures seed clusters, a shared model_token is
 a sufficient merge (even cross-brand), a conflicting attribute is a hard cut, and
-partial (subset) specs are linked by a REFINES hierarchy rather than greedily
+partial (subset) specs are linked by a ESPECIFICA hierarchy rather than greedily
 merged — so a vague bid can never bridge two real products into one.
 
 Pure and offline: no graph, no LLM. Persistence (ingest/clusters.py) and the
@@ -95,7 +95,7 @@ class _UnionFind:
         self.parent[self.find(a)] = self.find(b)
 
 
-# Above this many distinct signatures in one category, skip the O(n^3) REFINES /
+# Above this many distinct signatures in one category, skip the O(n^3) ESPECIFICA /
 # ambiguous-partial computation for that block (the clusters themselves are still
 # produced — only the auxiliary hierarchy is skipped) so a pathological category
 # can't hang the run.
@@ -108,7 +108,7 @@ def cluster(profiles: list[Profile], *, attach_partials: bool = False,
 
     `attach_partials` is the strictness dial (design match, Step D / open decision):
     when False (default, conservative) a coarse partial spec stays its own cluster
-    linked by REFINES; when True it merges into a finer cluster *iff* that finer
+    linked by ESPECIFICA; when True it merges into a finer cluster *iff* that finer
     cluster is its unique immediate child. Tune it on same-item labels.
     """
     # 1. seed clusters by exact signature (within a category by construction).
@@ -156,7 +156,7 @@ def cluster(profiles: list[Profile], *, attach_partials: bool = False,
         merged.append(Cluster(signature=finest.signature, category=finest.category,
                               pairs=finest.pairs, members=members, model_tokens=toks))
 
-    # 4. REFINES hierarchy + partial handling, within each category block.
+    # 4. ESPECIFICA hierarchy + partial handling, within each category block.
     refines: list[tuple[str, str]] = []
     by_cat: dict[str, list[Cluster]] = {}
     for c in merged:

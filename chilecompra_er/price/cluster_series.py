@@ -1,10 +1,10 @@
 """Price series over product clusters (design: the redesign, "price-clusters").
 
 Reads prices two hops out:
-`(:Oferta)-[:OFFERS {normalized_price, unit_price, rut, date}]->(:Product)-[:VARIANT_OF]->(:ProductCluster)`.
+`(:Oferta)-[:COTIZA {precio_normalizado, precio_unitario, rut, fecha}]->(:Producto)-[:VARIANTE_DE]->(:ProductoCanonico)`.
 Normalization already happened at persist time (price per base unit is on the
 edge), so this just reads and aggregates. Each row carries the offer's `brand`
-(from its Product), so the series can also be sliced by brand.
+(from its Producto), so the series can also be sliced by brand.
 
 A cluster IS the substitutable-product comparison unit, so its series answers
 both goals directly: price **over time** (rows ordered by date) and **across
@@ -22,13 +22,13 @@ def build_cluster_series(conn, category: str | None = None,
                          signature: str | None = None) -> list[dict]:
     records = conn.query(
         """
-        MATCH (o:Oferta)-[e:OFFERS]->(p:Product)-[:VARIANT_OF]->(c:ProductCluster)
+        MATCH (o:Oferta)-[e:COTIZA]->(p:Producto)-[:VARIANTE_DE]->(c:ProductoCanonico)
         WHERE ($cat IS NULL OR c.category = $cat)
           AND ($sig IS NULL OR c.signature = $sig)
-          AND e.normalized_price IS NOT NULL
+          AND e.precio_normalizado IS NOT NULL
         RETURN c.signature AS cluster, c.category AS category, p.brand AS brand,
-               e.normalized_price AS price, e.unit_price AS unit_price,
-               e.rut AS rut, e.date AS date, e.currency AS currency
+               e.precio_normalizado AS price, e.precio_unitario AS unit_price,
+               e.rut AS rut, e.fecha AS date, e.moneda AS currency
         ORDER BY cluster, date
         """,
         parameters={"cat": category, "sig": signature},

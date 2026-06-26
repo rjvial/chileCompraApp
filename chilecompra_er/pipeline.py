@@ -9,7 +9,7 @@ Two layers of resume:
   * STEP level (this module): the checkpoint's `done` list says which whole
     steps finished; `--resume` re-runs only what's left.
   * WITHIN a step: each long stage already owns its resume state — the profile
-    store (text-hash cache, skip-done), the match `:OFFERS` stream-offset checkpoint,
+    store (text-hash cache, skip-done), the match `:COTIZA` stream-offset checkpoint,
     the adjudicate verdict store, the `register` vet checkpoint. So re-entering an
     unfinished step continues from the exact item, never the top.
 
@@ -32,7 +32,7 @@ from pathlib import Path
 #   register  — VOCABULARY: profile + vet families, register them + draft schemas.
 #               Incremental: built only when absent / to fill gaps (see cmd_pipeline).
 #   canonicalize — descriptions → profiles (Haiku; text-hash cache)
-#   match     — cluster profiles → :ProductCluster/:Product, bind :OFFERS
+#   match     — cluster profiles → :ProductoCanonico/:Producto, bind :COTIZA
 #   adjudicate — Claude settles the matcher residue (non-fatal)
 #   coherence-check — structural gate + semantic/health backlogs
 STEP_INSTANCE = "instance"

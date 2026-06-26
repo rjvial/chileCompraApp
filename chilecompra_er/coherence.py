@@ -10,7 +10,7 @@ invariants over the canonicalize profiles + clusters (+ the persisted graph):
 Each invariant maps to a failure mode — imputation (S1/S2), false merge (S5/S6/
 S8/M1/M4), false split (S7/M6). The offline tier runs over the profile store +
 recomputed clusters (no graph, no LLM); the graph tier queries the persisted
-:ProductCluster / :Product / :OFFERS catalog when it exists.
+:ProductoCanonico / :Producto / :COTIZA catalog when it exists.
 """
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def check_clusters(result: MatchResult) -> list[Finding]:
     seen: set[str] = set()
     dups = [c.signature for c in result.clusters
             if c.signature in seen or seen.add(c.signature)]
-    # S7 REFINES is a strict-subset DAG (coarser ⊂ finer; no self-loops)
+    # S7 ESPECIFICA is a strict-subset DAG (coarser ⊂ finer; no self-loops)
     pairs_by_sig = {c.signature: c.pairs for c in result.clusters}
     bad_ref = []
     for finer, coarser in result.refines:
@@ -101,7 +101,7 @@ def check_clusters(result: MatchResult) -> list[Finding]:
     amb = [r for r in result.residue if r["type"] == "ambiguous_partial"]
     return [
         Finding("S5", "structural", "duplicate cluster signature", len(dups), True, dups[:10]),
-        Finding("S7", "structural", "REFINES edge not strict-subset / self-loop",
+        Finding("S7", "structural", "ESPECIFICA edge not strict-subset / self-loop",
                 len(bad_ref), True, bad_ref[:10]),
         Finding("M1", "semantic", "single bare-number-attribute cluster (weak identity)",
                 len(m1), False, m1[:10]),
@@ -137,7 +137,7 @@ def audit_offline(items) -> list[Finding]:
     return [*check_profiles(items), *check_clusters(result), *health_metrics(items, result)]
 
 
-# --- graph tier (runs against the persisted :ProductCluster catalog) -----------
+# --- graph tier (runs against the persisted :ProductoCanonico catalog) -----------
 
 def check_graph(conn) -> list[Finding]:
     """Invariants only the persisted graph can answer. (S6 intra-cluster conflict
@@ -147,26 +147,26 @@ def check_graph(conn) -> list[Finding]:
         rows = conn.query(q)
         return int(rows[0]["n"]) if rows else 0
 
-    s9 = n("MATCH (c:ProductCluster) WHERE NOT (c)<-[:VARIANT_OF]-(:Product) "
+    s9 = n("MATCH (c:ProductoCanonico) WHERE NOT (c)<-[:VARIANTE_DE]-(:Producto) "
            "RETURN count(c) AS n")
-    s4 = n("MATCH (o:Oferta)-[r:OFFERS]->(:Product) WITH o, count(r) AS k "
+    s4 = n("MATCH (o:Oferta)-[r:COTIZA]->(:Producto) WITH o, count(r) AS k "
            "WHERE k > 1 RETURN count(o) AS n")
-    placed = n("MATCH (:Oferta)-[:OFFERS]->(:Product) RETURN count(*) AS n")
+    placed = n("MATCH (:Oferta)-[:COTIZA]->(:Producto) RETURN count(*) AS n")
     total = n("MATCH (o:Oferta) WHERE o.descripcion_proveedor IS NOT NULL RETURN count(o) AS n")
     unplaced = total - placed
     # M2 price incoherence: clusters whose normalized price has a high spread.
     m2 = conn.query(
         """
-        MATCH (:Oferta)-[e:OFFERS]->(:Product)-[:VARIANT_OF]->(c:ProductCluster)
-        WHERE e.normalized_price IS NOT NULL
-        WITH c, count(e) AS n, avg(e.normalized_price) AS mean, stDev(e.normalized_price) AS sd
+        MATCH (:Oferta)-[e:COTIZA]->(:Producto)-[:VARIANTE_DE]->(c:ProductoCanonico)
+        WHERE e.precio_normalizado IS NOT NULL
+        WITH c, count(e) AS n, avg(e.precio_normalizado) AS mean, stDev(e.precio_normalizado) AS sd
         WHERE n >= 5 AND mean > 0 AND sd / mean > 1.0
         RETURN c.signature AS signature, n, sd / mean AS cv
         ORDER BY cv * n DESC LIMIT 10
         """)
     return [
-        Finding("S9", "structural", "orphan cluster (no Product)", s9, True),
-        Finding("S4", "structural", "offer bound to more than one Product", s4, True),
+        Finding("S9", "structural", "orphan cluster (no Producto)", s9, True),
+        Finding("S4", "structural", "offer bound to more than one Producto", s4, True),
         Finding("S10", "semantic", "unplaced offers (no cluster)", unplaced, False,
                 [f"{unplaced:,}/{total:,}"]),
         Finding("M2", "semantic", "price-incoherent cluster (CV>1, n≥5)", len(m2), False,

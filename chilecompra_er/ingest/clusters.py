@@ -1,17 +1,17 @@
 """Persist the match result to the graph (design: redesign, persistence).
 
 Writes a three-tier catalog:
-    (:ProductCluster {id, signature, category, ...})              -- brand-INDEPENDENT product
-    (:Product {id, brand, category, signature, pack_size, ...})   -- brand-SPECIFIC offering
-    (:Oferta)-[:OFFERS {normalized_price, unit_price, rut, date}]->(:Product)
-    (:Product)-[:VARIANT_OF]->(:ProductCluster)
-    (finer:ProductCluster)-[:REFINES]->(coarser:ProductCluster)
+    (:ProductoCanonico {id, signature, category, ...})              -- brand-INDEPENDENT product
+    (:Producto {id, brand, category, signature, pack_size, ...})   -- brand-SPECIFIC offering
+    (:Oferta)-[:COTIZA {precio_normalizado, precio_unitario, rut, fecha}]->(:Producto)
+    (:Producto)-[:VARIANTE_DE]->(:ProductoCanonico)
+    (finer:ProductoCanonico)-[:ESPECIFICA]->(coarser:ProductoCanonico)
 
-A `Product` is the offer's resolved, brand-specific form: deduped by
+A `Producto` is the offer's resolved, brand-specific form: deduped by
 (cluster, brand, packaging), so every bid of the same brand+spec+pack shares one
-node. Price is per-bid and lives on the `OFFERS` edge (a deduped node can't carry a
+node. Price is per-bid and lives on the `COTIZA` edge (a deduped node can't carry a
 single price); the cluster is the brand-independent rollup. Offers join to their
-Product by text-hash: each cluster member is an index into the profile list, which
+Producto by text-hash: each cluster member is an index into the profile list, which
 is parallel to the store's (text_hash, profile) items; an offer's normalized
 description hashes to that key.
 """
@@ -34,7 +34,7 @@ def cluster_id(signature: str) -> str:
 
 
 def _pack_key(packaging) -> str:
-    """Canonical packaging key for the Product identity. `granel` (loose) when there
+    """Canonical packaging key for the Producto identity. `granel` (loose) when there
     is no pack evidence, else size|unit."""
     size = getattr(packaging, "pack_size", None)
     unit = getattr(packaging, "pack_unit", None)
@@ -44,7 +44,7 @@ def _pack_key(packaging) -> str:
 
 
 def product_id(cid: str, brand: str, pack_key: str) -> str:
-    """Deterministic id for a brand-specific Product within a cluster — keyed by
+    """Deterministic id for a brand-specific Producto within a cluster — keyed by
     (cluster, brand, packaging)."""
     return PRODUCT_PREFIX + hashlib.sha1(
         f"{cid}|{brand}|{pack_key}".encode("utf-8")).hexdigest()[:12]
@@ -67,9 +67,9 @@ def build_records(result: MatchResult, items: list[tuple[str, object]]):
     (cluster_rows, refines_rows, product_rows, hash_to_product, pack_by_hash).
 
     `items` MUST be the same list (same order) whose profiles were passed to
-    cluster() — Cluster.members are indices into it. Each member maps to a Product
+    cluster() — Cluster.members are indices into it. Each member maps to a Producto
     keyed by (its cluster, its brand, its packaging); Products carry the cluster's
-    signature and VARIANT_OF that cluster.
+    signature and VARIANTE_DE that cluster.
     """
     sig_to_id = {c.signature: cluster_id(c.signature) for c in result.clusters}
 
@@ -120,47 +120,47 @@ def _chunks(seq, n):
 
 
 def write_clusters(conn, cluster_rows, refines_rows, *, chunk=_CHUNK, log=lambda _m: None):
-    """MERGE the ProductCluster nodes, then the REFINES edges (edges need both
+    """MERGE the ProductoCanonico nodes, then the ESPECIFICA edges (edges need both
     endpoints present, so nodes go first)."""
     for c in _chunks(cluster_rows, chunk):
         conn.query(
             """
             UNWIND $rows AS r
-            MERGE (c:ProductCluster {id: r.id})
+            MERGE (c:ProductoCanonico {id: r.id})
             SET c.signature = r.signature, c.category = r.category,
                 c.model_tokens = r.model_tokens, c.flags = r.flags,
                 c.n_profiles = r.n_profiles, c.base_unit = r.base_unit
             """,
             parameters={"rows": c})
-    log(f"wrote {len(cluster_rows):,} ProductCluster nodes")
+    log(f"wrote {len(cluster_rows):,} ProductoCanonico nodes")
     for c in _chunks(refines_rows, chunk):
         conn.query(
             """
             UNWIND $rows AS r
-            MATCH (f:ProductCluster {id: r.finer})
-            MATCH (co:ProductCluster {id: r.coarser})
-            MERGE (f)-[:REFINES]->(co)
+            MATCH (f:ProductoCanonico {id: r.finer})
+            MATCH (co:ProductoCanonico {id: r.coarser})
+            MERGE (f)-[:ESPECIFICA]->(co)
             """,
             parameters={"rows": c})
-    log(f"wrote {len(refines_rows):,} REFINES edges")
+    log(f"wrote {len(refines_rows):,} ESPECIFICA edges")
 
 
 def write_products(conn, product_rows, *, chunk=_CHUNK, log=lambda _m: None):
-    """MERGE the brand-specific Product nodes and link each VARIANT_OF its cluster
+    """MERGE the brand-specific Producto nodes and link each VARIANTE_DE its cluster
     (clusters must already be written)."""
     for c in _chunks(product_rows, chunk):
         conn.query(
             """
             UNWIND $rows AS r
-            MERGE (p:Product {id: r.id})
+            MERGE (p:Producto {id: r.id})
             SET p.brand = r.brand, p.category = r.category, p.signature = r.signature,
                 p.pack_size = r.pack_size, p.pack_unit = r.pack_unit
             WITH p, r
-            MATCH (c:ProductCluster {id: r.cluster_id})
-            MERGE (p)-[:VARIANT_OF]->(c)
+            MATCH (c:ProductoCanonico {id: r.cluster_id})
+            MERGE (p)-[:VARIANTE_DE]->(c)
             """,
             parameters={"rows": c})
-    log(f"wrote {len(product_rows):,} Product nodes (+ VARIANT_OF)")
+    log(f"wrote {len(product_rows):,} Producto nodes (+ VARIANTE_DE)")
 
 
 def read_offers_checkpoint(path) -> int:
@@ -179,8 +179,8 @@ def _write_offers_checkpoint(path, processed: int) -> None:
 def write_offers(conn, offer_rows, hash_to_product, pack_by_hash, normalizer,
                  *, chunk=_CHUNK, start=0, checkpoint_path=None,
                  log=lambda _m: None):
-    """Stream offers, route each to its Product by normalized-text-hash, and MERGE
-    the `OFFERS` edge with the per-bid price (per-base-unit + raw). Offers whose
+    """Stream offers, route each to its Producto by normalized-text-hash, and MERGE
+    the `COTIZA` edge with the per-bid price (per-base-unit + raw). Offers whose
     text didn't canonicalize to a clustered profile are skipped (counted).
 
     Resumable: `offer_rows` must already be fetched with `skip=start` (the stream
@@ -201,10 +201,10 @@ def write_offers(conn, offer_rows, hash_to_product, pack_by_hash, normalizer,
             """
             UNWIND $rows AS r
             MATCH (o:Oferta {id_licitacion: r.lic, id_item: r.item, id_oferta: r.oferta})
-            MATCH (p:Product {id: r.product_id})
-            MERGE (o)-[e:OFFERS]->(p)
-            SET e.normalized_price = r.np, e.unit_price = r.up,
-                e.currency = r.cur, e.rut = r.rut, e.date = r.date
+            MATCH (p:Producto {id: r.product_id})
+            MERGE (o)-[e:COTIZA]->(p)
+            SET e.precio_normalizado = r.np, e.precio_unitario = r.up,
+                e.moneda = r.cur, e.rut = r.rut, e.fecha = r.date
             """,
             parameters={"rows": buf})
         written += len(buf)
@@ -228,7 +228,7 @@ def write_offers(conn, offer_rows, hash_to_product, pack_by_hash, normalizer,
                         "rut": o.get("rut"), "date": o.get("date")})
         if len(buf) >= chunk:
             flush()
-            log(f"  OFFERS written {written:,} (skipped {skipped:,}, pos {processed:,})")
+            log(f"  COTIZA written {written:,} (skipped {skipped:,}, pos {processed:,})")
     flush()
-    log(f"OFFERS done: {written:,} edges, {skipped:,} offers unplaced")
+    log(f"COTIZA done: {written:,} edges, {skipped:,} offers unplaced")
     return written, skipped
