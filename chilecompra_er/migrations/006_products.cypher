@@ -1,4 +1,4 @@
-// L2 brand-specific Product layer (design: the L0->L3 resolution redesign).
+// brand-specific Product layer (design: the resolution redesign).
 //
 // A :Product is the offer's resolved, brand-specific form — deduped by
 // (cluster, brand, packaging). Bids attach to it (price per bid on the edge):

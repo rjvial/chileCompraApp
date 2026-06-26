@@ -1,4 +1,4 @@
-"""L0 dedup -> L1 canonicalize driver (design: the L0->L3 redesign).
+"""dedup -> canonicalize driver (design: the redesign).
 
 Turns raw `descripcion_proveedor` strings into persisted canonical Profiles.
 Canonicalize ONCE per distinct normalized text, cache by text-hash, reuse — so
@@ -49,7 +49,7 @@ class ProfileStore:
                                    ensure_ascii=False) + "\n")
 
     def profiles(self) -> list[P.Profile]:
-        """Every stored profile, for the L2 matcher."""
+        """Every stored profile, for the matcher."""
         return [P.parse_profile(d) for d in self._cache.values()]
 
     def items(self) -> list[tuple[str, P.Profile]]:
@@ -87,7 +87,7 @@ def canonicalize(records, store: ProfileStore, *,
 
     Each record is either a raw description string, or a `(description, unspsc)`
     tuple (the graph source supplies the item's UNSPSC as a category hint).
-    L0 dedup: distinct *normalized* texts only. Skips any text already in the
+    dedup: distinct *normalized* texts only. Skips any text already in the
     store (the persisted cache), so re-runs only pay for genuinely new strings.
     """
     register = register or load_register()
@@ -95,7 +95,7 @@ def canonicalize(records, store: ProfileStore, *,
     system = P.system_prompt(register)
     stats = CanonStats()
 
-    # L0: dedup by normalized text-hash; keep one raw exemplar + UNSPSC per hash.
+    # dedup by normalized text-hash; keep one raw exemplar + UNSPSC per hash.
     by_hash: dict[str, str] = {}
     unspsc_by_hash: dict[str, int] = {}
     for rec in records:
@@ -112,11 +112,11 @@ def canonicalize(records, store: ProfileStore, *,
 
     todo = {h: raw for h, raw in by_hash.items() if not store.has(h)}
     stats.cached = stats.distinct - len(todo)
-    log(f"L0: {stats.total_inputs:,} inputs -> {stats.distinct:,} distinct; "
+    log(f"dedup: {stats.total_inputs:,} inputs -> {stats.distinct:,} distinct; "
         f"{stats.cached:,} cached, {len(todo):,} to canonicalize")
 
     if dry_run:
-        log("dry run — L0 only, no LLM calls (no API credits spent)")
+        log("dry run — dedup only, no LLM calls (no API credits spent)")
         return stats
 
     # Multi-item batching: each LLM call canonicalizes a GROUP of `group_size`
@@ -136,7 +136,7 @@ def canonicalize(records, store: ProfileStore, *,
         msg_items = [(str(j), raw, unspsc_by_hash.get(h))
                      for j, (h, raw) in enumerate(chunk)]
         requests.append((cid, P.build_batch_message(msg_items)))
-    log(f"L1: {len(items):,} items in {len(requests):,} groups of ≤{group_size}")
+    log(f"canonicalize: {len(items):,} items in {len(requests):,} groups of ≤{group_size}")
 
     buf: dict[str, dict] = {}
 
@@ -166,7 +166,7 @@ def canonicalize(records, store: ProfileStore, *,
 
 def fetch_distinct_descriptions(conn, *, unspsc_segment: int | None = None,
                                 limit: int | None = None):
-    """Stream `(description, unspsc)` records from the graph for L0/L1.
+    """Stream `(description, unspsc)` records from the graph for dedup/canonicalize.
 
     A thin generator over ingest.neo4j_source.fetch_offer_descriptions —
     dedup is done by `canonicalize()` (by normalized text-hash), so this stays a

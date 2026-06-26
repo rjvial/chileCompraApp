@@ -1,4 +1,4 @@
-"""Price series over L2 product clusters (design: the L0->L3 redesign, "L5").
+"""Price series over product clusters (design: the redesign, "price-clusters").
 
 Reads prices two hops out:
 `(:Oferta)-[:OFFERS {normalized_price, unit_price, rut, date}]->(:Product)-[:VARIANT_OF]->(:ProductCluster)`.

@@ -1,7 +1,7 @@
-"""Coherence auditor (design: the L0->L3 redesign, "coherence-check").
+"""Coherence auditor (design: the redesign, "coherence-check").
 
 "You can't keep coherent what you can't detect drift in." Three tiers of named
-invariants over the L1 profiles + L2 clusters (+ the persisted graph):
+invariants over the canonicalize profiles + clusters (+ the persisted graph):
 
 - STRUCTURAL (must be 0; a breach is a bug → CI-gate exit code): the contract.
 - SEMANTIC  (ranked review backlogs, expected nonzero): what structure can't catch.
@@ -55,7 +55,7 @@ class Finding:
     examples: list = field(default_factory=list)
 
 
-# --- offline: over the L1 profiles --------------------------------------------
+# --- offline: over the canonicalize profiles ----------------------------------
 
 def check_profiles(items: list[tuple[str, object]]) -> list[Finding]:
     s1, s2, s8 = [], [], []
@@ -79,7 +79,7 @@ def check_profiles(items: list[tuple[str, object]]) -> list[Finding]:
     ]
 
 
-# --- offline: over the L2 clusters --------------------------------------------
+# --- offline: over the clusters -----------------------------------------------
 
 def check_clusters(result: MatchResult) -> list[Finding]:
     # S5 signature uniqueness
@@ -121,7 +121,7 @@ def health_metrics(items, result: MatchResult) -> list[Finding]:
         below += int("below_min_info" in p.flags)
     members = sum(len(c.members) for c in result.clusters)
     return [
-        Finding("H-confidence", "health", f"L1 confidence mix {confidence}", 0, False),
+        Finding("H-confidence", "health", f"canonicalize confidence mix {confidence}", 0, False),
         Finding("H-product", "health",
                 f"is_product {is_product}/{len(items)}, below_min_info {below}", 0, False),
         Finding("H-clusters", "health",

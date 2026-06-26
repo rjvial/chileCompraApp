@@ -670,8 +670,8 @@ def cmd_pipeline(args) -> int:
     step-level-resumable sequence (see chilecompra_er/pipeline.py). Each step
     reuses the existing cmd_* handler; the checkpoint records completed steps so
     --resume continues at the interrupted one. The long steps additionally resume
-    WITHIN themselves via their own stores/checkpoints (the L1 profile store, the
-    L2 :OFFERS stream offset, the L3 verdict store, the register vet checkpoint).
+    WITHIN themselves via their own stores/checkpoints (the profile store, the
+    match :OFFERS stream offset, the adjudicate verdict store, the register vet checkpoint).
     """
     from .pipeline import (
         PIPELINE_STEPS,
@@ -744,12 +744,12 @@ def cmd_pipeline(args) -> int:
     # --- resume / restart bookkeeping -----------------------------------------
     if args.restart:
         victims = [cp_path, data / "register.checkpoint.json"]
-        victims += list(data.glob("match_seg*.checkpoint.json"))  # L2 :OFFERS offset
+        victims += list(data.glob("match_seg*.checkpoint.json"))  # match :OFFERS offset
         for p in victims:
             if p.exists():
                 p.unlink()
         log(f"--restart: cleared {cp_path.name}, the match sub-checkpoint(s) and the "
-            "register vet checkpoint (the L1 profile + L3 verdict stores are left "
+            "register vet checkpoint (the profile + adjudicate verdict stores are left "
             "intact — delete data\\profiles.jsonl by hand to recanonicalize from scratch)")
 
     cp = load_pipeline_checkpoint(cp_path)
@@ -842,13 +842,13 @@ def cmd_pipeline(args) -> int:
             segment=segment, limit=limit, show=15))
 
     def run_adjudicate() -> int:
-        """L3 is non-fatal: the residue is a review backlog, not a build gate. A
+        """adjudicate is non-fatal: the residue is a review backlog, not a build gate. A
         failure (or usage-limit abort) is logged but never halts the pipeline."""
         rc = cmd_adjudicate(_ns(
             store=store, verdicts=verdicts, model=args.adjudicate_model,
             dry_run=False))
         if rc != 0:
-            log(f"    adjudicate returned rc={rc} — continuing (L3 is non-fatal)")
+            log(f"    adjudicate returned rc={rc} — continuing (adjudicate is non-fatal)")
         return 0
 
     def run_coherence() -> int:
@@ -933,11 +933,11 @@ def cmd_pipeline(args) -> int:
         print(f"\npipeline COMPLETE — all {len(PIPELINE_STEPS)} steps done.")
         print(f"  profile store : {store}")
         print(f"  checkpoint    : {cp_path}")
-        print("  next: chilecompra-er price-clusters --category <id>   (L5 price query)")
+        print("  next: chilecompra-er price-clusters --category <id>   (price-clusters price query)")
     return 0
 
 def cmd_canonicalize(args) -> int:
-    """L1 canonicalization (redesign): turn descriptions into persisted canonical
+    """canonicalization (redesign): turn descriptions into persisted canonical
     profiles via Claude Haiku 4.5 (batch + caching). SCAFFOLD — the graph source
     fetch lands in the Phase-1 build; --from-file + --dry-run are runnable now."""
     from .resolve.canonicalize import (
@@ -982,7 +982,7 @@ def cmd_canonicalize(args) -> int:
 
 
 def cmd_match(args) -> int:
-    """L2 (redesign): cluster the L1 profile store into product clusters. Offline
+    """match (redesign): cluster the profile store into product clusters. Offline
     report by default; with --persist, write :ProductCluster + brand-specific
     :Product nodes (VARIANT_OF their cluster) and bind offers via :OFFERS edges to
     their Product (price per base unit on the edge)."""
@@ -1002,7 +1002,7 @@ def cmd_match(args) -> int:
     print(f"profiles        : {len(profiles):,}")
     print(f"product clusters : {len(res.clusters):,}")
     print(f"REFINES edges    : {len(res.refines):,}")
-    print(f"L3 residue       : {len(res.residue):,} "
+    print(f"residue          : {len(res.residue):,} "
           f"(model-token conflicts + ambiguous partials)")
     top = sorted(res.clusters, key=lambda c: len(c.members), reverse=True)[:args.show]
     print(f"\ntop {args.show} clusters by bid count:")
@@ -1048,7 +1048,7 @@ def cmd_match(args) -> int:
 
 
 def cmd_adjudicate(args) -> int:
-    """L3 (redesign): Claude adjudicates the L2 matcher's residue (model-token
+    """adjudicate (redesign): Claude adjudicates the matcher's residue (model-token
     conflicts + ambiguous partials). Verdicts persisted by case key. Uses
     Sonnet/Opus → API credits; --dry-run reports the case count with no spend."""
     from .resolve.adjudicate import (
@@ -1082,8 +1082,8 @@ def cmd_adjudicate(args) -> int:
 
 
 def cmd_coherence_check(args) -> int:
-    """Coherence auditor (redesign): run the named invariants over the L1
-    profiles + L2 clusters (and, with --graph, the persisted catalog). STRUCTURAL
+    """Coherence auditor (redesign): run the named invariants over the canonicalize
+    profiles + clusters (and, with --graph, the persisted catalog). STRUCTURAL
     breaches fail the run (exit 1); SEMANTIC are ranked review backlogs; HEALTH is
     a trend snapshot. Read-only."""
     from .coherence import audit_offline, check_graph
@@ -1454,7 +1454,7 @@ def cmd_price_series(args) -> int:
 
 
 def cmd_price_clusters(args) -> int:
-    """L5 (redesign): price series over L2 product clusters — per-base-unit price
+    """price-clusters (redesign): price series over product clusters — per-base-unit price
     over time and across competition (distinct supplier RUTs / brands). Reads
     (:Oferta)-[:OFFERS]->(:Product)-[:VARIANT_OF]->(:ProductCluster); scope with
     --category or a single --signature."""
@@ -1510,7 +1510,7 @@ def _apoc_wipe_labels(conn, labels: list[str]) -> int:
 def cmd_wipe_clusters(args) -> int:
     """Delete the cluster catalog — `:ProductCluster` + `:Product` nodes and their
     `:OFFERS` / `:VARIANT_OF` / `:REFINES` edges — leaving the source graph
-    untouched. Use before re-matching after an L1 change. The match checkpoints are
+    untouched. Use before re-matching after a canonicalize change. The match checkpoints are
     cleared so a re-run starts fresh."""
     if not args.yes:
         print("refusing to wipe clusters without --yes")
@@ -1716,26 +1716,26 @@ def build_parser() -> argparse.ArgumentParser:
                         "register/schemas (default: build only when absent, else just "
                         "fill missing schemas — never regenerate what already exists)")
     p.add_argument("--model", default="claude-haiku-4-5",
-                   help="L1 canonicalize model (default Haiku 4.5)")
+                   help="canonicalize model (default Haiku 4.5)")
     p.add_argument("--workers", type=int, default=2,
-                   help="L1 concurrent LLM calls on the Max backend (default 2)")
+                   help="canonicalize concurrent LLM calls on the Max backend (default 2)")
     p.add_argument("--group-size", type=int, default=25, dest="group_size",
-                   help="L1 descriptions per LLM call (default 25)")
+                   help="canonicalize descriptions per LLM call (default 25)")
     p.add_argument("--adjudicate-model", default="claude-sonnet-4-6",
                    dest="adjudicate_model",
-                   help="L3 adjudicate model (default Sonnet 4.6)")
+                   help="adjudicate model (default Sonnet 4.6)")
     p.add_argument("--data-dir", type=Path, default=Path("data"), dest="data_dir",
                    help="directory for the checkpoint + profile/verdict stores (default data\\)")
     p.set_defaults(func=cmd_pipeline)
 
     p = sub.add_parser("canonicalize",
-                       help="L1 (redesign): canonicalize descriptions into profiles "
+                       help="canonicalize (redesign): canonicalize descriptions into profiles "
                             "via Haiku 4.5 batch (scaffold; --from-file/--dry-run runnable)")
     p.add_argument("--from-file", default=None,
                    help="read newline-separated descriptions from a file instead of the graph")
     p.add_argument("--out", type=Path, default=Path("data/profiles.jsonl"),
-                   help="profile store (JSONL, keyed by text-hash; the L1 cache)")
-    p.add_argument("--model", default="claude-haiku-4-5", help="L1 model (default Haiku 4.5)")
+                   help="profile store (JSONL, keyed by text-hash; the canonicalize cache)")
+    p.add_argument("--model", default="claude-haiku-4-5", help="canonicalize model (default Haiku 4.5)")
     p.add_argument("--workers", type=int, default=2,
                    help="concurrent LLM calls on the Max backend (default 2 — keeps "
                         "burst rate low so a long run doesn't trip the usage limit)")
@@ -1746,14 +1746,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="UNSPSC segment scope for the graph read, e.g. 42 (bounds a run)")
     p.add_argument("--limit", type=int, default=None, help="cap inputs (dev runs)")
     p.add_argument("--dry-run", action="store_true",
-                   help="L0 dedup only — report distinct/cached counts, no LLM calls")
+                   help="dedup only — report distinct/cached counts, no LLM calls")
     p.set_defaults(func=cmd_canonicalize)
 
     p = sub.add_parser("match",
-                       help="L2 (redesign): cluster the L1 profile store into "
+                       help="match (redesign): cluster the profile store into "
                             "product clusters (offline report; no graph writes yet)")
     p.add_argument("--store", type=Path, default=Path("data/profiles.jsonl"),
-                   help="L1 profile store to cluster (default data\\profiles.jsonl)")
+                   help="profile store to cluster (default data\\profiles.jsonl)")
     p.add_argument("--attach-partials", action="store_true",
                    help="merge a coarse partial spec into its unique finer cluster "
                         "(default off = keep separate, linked by REFINES)")
@@ -1770,23 +1770,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_match)
 
     p = sub.add_parser("adjudicate",
-                       help="L3 (redesign): Claude adjudicates the L2 residue "
+                       help="adjudicate (redesign): Claude adjudicates the match residue "
                             "(model-token conflicts + ambiguous partials)")
     p.add_argument("--store", type=Path, default=Path("data/profiles.jsonl"),
-                   help="L1 profile store (default data\\profiles.jsonl)")
+                   help="profile store (default data\\profiles.jsonl)")
     p.add_argument("--verdicts", type=Path, default=Path("data/adjudications.jsonl"),
                    help="verdict store, keyed by case (default data\\adjudications.jsonl)")
     p.add_argument("--model", default="claude-sonnet-4-6",
-                   help="L3 model (default Sonnet 4.6; Opus for the hardest)")
+                   help="adjudicate model (default Sonnet 4.6; Opus for the hardest)")
     p.add_argument("--dry-run", action="store_true",
                    help="report the case count only — no LLM calls, no credits")
     p.set_defaults(func=cmd_adjudicate)
 
     p = sub.add_parser("coherence-check",
-                       help="L4 (redesign): run coherence invariants over the L1 "
-                            "profiles + L2 clusters (structural gate / semantic backlog / health)")
+                       help="coherence-check (redesign): run coherence invariants over the canonicalize "
+                            "profiles + clusters (structural gate / semantic backlog / health)")
     p.add_argument("--store", type=Path, default=Path("data/profiles.jsonl"),
-                   help="L1 profile store to audit (default data\\profiles.jsonl)")
+                   help="profile store to audit (default data\\profiles.jsonl)")
     p.add_argument("--graph", action="store_true",
                    help="also run graph-tier checks against the persisted catalog")
     p.add_argument("--tier", choices=["structural", "semantic", "health", "all"],
@@ -1979,7 +1979,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_price_series)
 
     p = sub.add_parser("price-clusters",
-                       help="L5 (redesign): price series over L2 product clusters "
+                       help="price-clusters (redesign): price series over product clusters "
                             "(per-base-unit, over time + across competition)")
     p.add_argument("--category", default=None, help="scope to a cluster category")
     p.add_argument("--signature", default=None, help="scope to one cluster signature")

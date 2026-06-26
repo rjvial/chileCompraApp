@@ -49,7 +49,7 @@ def _cli_complete(prompt: str, system: str | None, model: str) -> str:
     # --strict-mcp-config (with no --mcp-config) starts the headless session with
     # NO MCP servers: these are pure text->JSON calls that need no tools and no
     # Neo4j MCP connection, so we skip that per-call boot cost. Matters a lot at
-    # L1 scale, where each call is its own `claude -p` process.
+    # canonicalize scale, where each call is its own `claude -p` process.
     cmd = [_claude_exe(), "-p", "--output-format", "json", "--model", model,
            "--strict-mcp-config"]
     if system:
@@ -213,10 +213,10 @@ def complete_json_batch(
 ) -> dict[str, dict]:
     """Run a batch of structured-output calls and return {custom_id: parsed_dict}.
 
-    The L1 canonicalization workhorse (design: L1). One shared, cached `system`
+    The canonicalization workhorse (design: canonicalize). One shared, cached `system`
     prefix (the prompt + the implicit json schema) across every request → ~0.1x
     on the prefix; the Batch API takes another 50% off all tokens. Defaults to
-    Haiku 4.5 (the decided L1 tier).
+    Haiku 4.5 (the decided canonicalize tier).
 
     NOTE — this is SDK-only and bills API CREDITS, not the Max subscription: the
     Batch API has no Claude-CLI equivalent. Load credits / use the anthropic_sdk
@@ -342,7 +342,7 @@ def complete_json_many(requests, schema, system, *,
 
     `on_result(custom_id, dict)`, if given, fires as each result is ready so the
     caller can persist incrementally (kill-resumable). `requests` is a list of
-    (custom_id, user_message). The L1/L3 workhorse."""
+    (custom_id, user_message). The canonicalize/adjudicate workhorse."""
     backend = _backend()
     if backend == "anthropic_sdk":
         out = complete_json_batch(requests, schema, system, model=model,

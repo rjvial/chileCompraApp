@@ -1,4 +1,4 @@
-"""Unit tests for the pure L2-persistence record-builders (ingest/clusters.py).
+"""Unit tests for the pure match-persistence record-builders (ingest/clusters.py).
 No graph — the impure writers are exercised by `match --persist` against Neo4j."""
 from __future__ import annotations
 

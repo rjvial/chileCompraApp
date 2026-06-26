@@ -323,8 +323,8 @@ def fetch_oc_items(conn, contains: str | None = None,
 def fetch_offer_descriptions(conn, unspsc_segment: int | None = None,
                              limit: int | None = None, skip: int = 0
                              ) -> Iterator[tuple[str, int | None]]:
-    """Stream every offer's (descripcion_proveedor, item UNSPSC) for L1
-    canonicalization (the redesign's L0 source). Yields raw rows in the source's
+    """Stream every offer's (descripcion_proveedor, item UNSPSC) for
+    canonicalization (the redesign's dedup source). Yields raw rows in the source's
     stable scan order; dedup happens downstream in resolve/canonicalize (by
     normalized text-hash), so this is a plain streamed scan — no server-side
     DISTINCT/grouping that would strain the heap. Scope with `unspsc_segment`
@@ -346,20 +346,26 @@ def fetch_offer_descriptions(conn, unspsc_segment: int | None = None,
 
 def fetch_offer_prices(conn, unspsc_segment: int | None = None,
                        limit: int | None = None, skip: int = 0) -> Iterator[dict]:
-    """Stream the fields the L2 PRICED_IN edge needs: the offer id (match key),
+    """Stream the fields the match PRICED_IN edge needs: the offer id (match key),
     its description (-> text-hash -> cluster), unit price, currency, supplier RUT
     (the competitor), and date. One streamed scan; segment-scopable to match the
-    canonicalize run that produced the profiles."""
+    canonicalize run that produced the profiles.
+
+    The time axis is the parent tender's `fecha_publicacion` (the offer node carries
+    no date of its own); OPTIONAL so an offer is never dropped if its tender link is
+    missing — its date just stays null."""
     seg_low, seg_high = segment_bounds(unspsc_segment)
     cypher = """
         MATCH (o:Oferta)-[:PARA_ITEM]->(i:ItemLicitacion)
         WHERE o.descripcion_proveedor IS NOT NULL
           AND ($seg_low IS NULL OR
                (i.codigo_unspsc_producto >= $seg_low AND i.codigo_unspsc_producto < $seg_high))
+        OPTIONAL MATCH (i)<-[:TIENE_ITEM]-(l:Licitacion)
         RETURN o.id_licitacion AS lic, o.id_item AS item, o.id_oferta AS oferta,
                o.descripcion_proveedor AS text,
                coalesce(o.precio_unitario_clean, o.precio_unitario) AS unit_price,
-               o.moneda AS currency, o.rut_proveedor AS rut, o.fecha AS date
+               o.moneda AS currency, o.rut_proveedor AS rut,
+               l.fecha_publicacion AS date
         SKIP $skip LIMIT $limit
     """
     params = {"skip": skip, "limit": limit if limit is not None else _NO_LIMIT,

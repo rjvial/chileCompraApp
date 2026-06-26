@@ -1,5 +1,5 @@
-"""L1 canonical profile — the structured representation Claude produces for ONE
-product description (design: the L0→L3 redesign, "L1 canonicalize").
+"""canonical profile — the structured representation Claude produces for ONE
+product description (design: the redesign, "canonicalize").
 
 A profile decides whether two bids are THE SAME SUBSTITUTABLE PRODUCT, brand- and
 packaging-independent. Its cardinal rule: every identity attribute must quote the
@@ -50,7 +50,7 @@ class Profile:
     flags: tuple[str, ...] = ()
 
     def signature(self) -> str:
-        """The canonical identity signature used by the L2 matcher: category plus
+        """The canonical identity signature used by the matcher: category plus
         the sorted identity name=value pairs. Brand and packaging are excluded by
         construction. Empty-attribute profiles signature to the bare category."""
         attrs = "|".join(f"{a.name}={a.value}"
@@ -59,7 +59,7 @@ class Profile:
         return f"{self.category}|{attrs}" if attrs else self.category
 
 
-# --- structured-outputs JSON schema (the L1 output contract) ------------------
+# --- structured-outputs JSON schema (the canonicalize output contract) --------
 
 FLAGS = ["ambiguous_category", "below_min_info", "multi_product",
          "non_medical", "conflicting_attributes"]
@@ -203,7 +203,7 @@ def known_families(register: dict) -> list[str]:
 def category_vocabulary(register: dict) -> dict[str, tuple[str, ...]]:
     """{category_id: (identity attribute names)} from each registered schema — the
     constrained per-category vocabulary. Families without a schema map to (); the
-    L1 prompt then asks the model to use EXACTLY these names (no inventing
+    canonicalize prompt then asks the model to use EXACTLY these names (no inventing
     `gauge` when the family's schema says `calibre`)."""
     from ..categories.schema import CATEGORIES_DIR, load_schema
 
@@ -250,11 +250,11 @@ def build_user_message(description: str, *, unspsc: int | str | None = None,
 
 
 def normalize_category(c: str) -> str:
-    """Canonicalize the L1 category string to a stable snake_case block key:
+    """Canonicalize the canonicalize category string to a stable snake_case block key:
     lowercase, strip accents, non-alphanumeric runs → '_'. Removes trivial drift
-    ("Cordón eléctrico" / "cordon electrico" → "cordon_electrico") so the L2
+    ("Cordón eléctrico" / "cordon electrico" → "cordon_electrico") so the match
     blocking key is stable. (Synonym-level reconciliation — e.g. concentrado_
-    dialisis vs soluciones_dialisis_peritoneal — is a separate L2 concern.)"""
+    dialisis vs soluciones_dialisis_peritoneal — is a separate match concern.)"""
     c = unicodedata.normalize("NFKD", c or "").encode("ascii", "ignore").decode()
     c = re.sub(r"[^a-z0-9]+", "_", c.lower().strip()).strip("_")
     return c or "unknown"

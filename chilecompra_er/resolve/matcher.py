@@ -1,5 +1,5 @@
-"""L2 matcher — deterministic same-product decision + clustering over L1 profiles
-(design: the L0->L3 redesign, "L2 match").
+"""matcher — deterministic same-product decision + clustering over canonicalize profiles
+(design: the redesign, "match").
 
 The heart is the pairwise predicate `same_product(a, b)`. Clustering is built on
 top of it: identical canonical signatures seed clusters, a shared model_token is
@@ -8,7 +8,7 @@ partial (subset) specs are linked by a REFINES hierarchy rather than greedily
 merged — so a vague bid can never bridge two real products into one.
 
 Pure and offline: no graph, no LLM. Persistence (ingest/clusters.py) and the
-residual-pair adjudication (resolve/adjudicate.py = L3) sit on top of this.
+residual-pair adjudication (resolve/adjudicate.py = adjudicate) sit on top of this.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class Verdict(str, Enum):
     SAME = "same"               # definitely the same product
     DIFFERENT = "different"     # hard separation (conflict / different model / block)
     COMPATIBLE = "compatible"   # one spec ⊆ the other, no conflict — same branch, not a merge
-    UNKNOWN = "unknown"         # both too thin to decide on text alone (defer to L3 / same-item)
+    UNKNOWN = "unknown"         # both too thin to decide on text alone (defer to adjudicate / same-item)
 
 
 def pairs(p: Profile) -> frozenset[tuple[str, str]]:
@@ -44,7 +44,7 @@ def _thin(p: Profile) -> bool:
 
 
 def same_product(a: Profile, b: Profile) -> Verdict:
-    """The pairwise decision (design L2, Step C). Order matters: block, then the
+    """The pairwise decision (design match, Step C). Order matters: block, then the
     model-token shortcut, then the conflict hard-cut, then signature comparison."""
     if a.category != b.category:
         return Verdict.DIFFERENT
@@ -59,7 +59,7 @@ def same_product(a: Profile, b: Profile) -> Verdict:
         return Verdict.SAME
     if pa < pb or pb < pa:
         return Verdict.COMPATIBLE           # one strictly finer; same branch
-    return Verdict.COMPATIBLE               # disjoint axes, no conflict — route to L3/attach
+    return Verdict.COMPATIBLE               # disjoint axes, no conflict — route to adjudicate/attach
 
 
 # --- clustering ---------------------------------------------------------------
@@ -78,7 +78,7 @@ class Cluster:
 class MatchResult:
     clusters: list[Cluster]
     refines: list[tuple[str, str]]          # (finer_signature, coarser_signature)
-    residue: list[dict]                     # cases to route to L3 (adjudication)
+    residue: list[dict]                     # cases to route to adjudicate (adjudication)
 
 
 class _UnionFind:
@@ -106,7 +106,7 @@ def cluster(profiles: list[Profile], *, attach_partials: bool = False,
             log=lambda _m: None) -> MatchResult:
     """Group profiles into product clusters (the comparison units).
 
-    `attach_partials` is the strictness dial (design L2, Step D / open decision):
+    `attach_partials` is the strictness dial (design match, Step D / open decision):
     when False (default, conservative) a coarse partial spec stays its own cluster
     linked by REFINES; when True it merges into a finer cluster *iff* that finer
     cluster is its unique immediate child. Tune it on same-item labels.

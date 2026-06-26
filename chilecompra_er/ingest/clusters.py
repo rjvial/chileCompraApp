@@ -1,4 +1,4 @@
-"""Persist the L2 match result to the graph (design: redesign L2, persistence).
+"""Persist the match result to the graph (design: redesign, persistence).
 
 Writes a three-tier catalog:
     (:ProductCluster {id, signature, category, ...})              -- brand-INDEPENDENT product

@@ -166,7 +166,7 @@ def test_halt_on_step_failure_leaves_prior_steps_done(tmp_path, monkeypatch):
 
 def test_adjudicate_failure_is_non_fatal(tmp_path, monkeypatch):
     _stub_handlers(monkeypatch)
-    # L3 adjudicate returning non-zero must NOT halt the build
+    # adjudicate returning non-zero must NOT halt the build
     monkeypatch.setattr(cli, "cmd_adjudicate", lambda a: 7)
     assert _run([], tmp_path) == 0
     cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))

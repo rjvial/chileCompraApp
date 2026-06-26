@@ -1,4 +1,4 @@
-"""Unit tests for the L1 profile contract (resolve/profile.py) and the L0 dedup
+"""Unit tests for the canonicalize profile contract (resolve/profile.py) and the dedup
 in the canonicalization driver (resolve/canonicalize.py). Pure / offline — no
 graph, no LLM."""
 from __future__ import annotations
@@ -106,7 +106,7 @@ def test_system_prompt_carries_families_and_cardinal_rule():
     assert "EVIDENCE OR NOTHING" in sp        # the cardinal rule is present
 
 
-# --- L0 dedup + cache (driver, dry-run, no LLM) ------------------------------
+# --- dedup + cache (driver, dry-run, no LLM) ---------------------------------
 
 def test_canonicalize_l0_dedup_and_cache(tmp_path):
     store = ProfileStore(tmp_path / "profiles.jsonl")

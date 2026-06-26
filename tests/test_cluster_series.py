@@ -1,4 +1,4 @@
-"""Unit test for the pure L5 cluster-price summary (price/cluster_series.py)."""
+"""Unit test for the pure price-clusters cluster-price summary (price/cluster_series.py)."""
 from __future__ import annotations
 
 from chilecompra_er.price.cluster_series import summarize

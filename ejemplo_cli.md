@@ -100,33 +100,36 @@ A `ProductCluster` is keyed by its **signature**, so identical signatures across
 different tenders collapse onto one shared cluster — that is what makes
 cross-tender, cross-competitor price comparison possible.
 
-### The pipeline (L0 → L5)
+### The pipeline
+
+There is **one** pipeline — an ordered, resumable sequence that
+`chilecompra-er pipeline` runs end to end (§4.1), or you drive a stage at a time
+(§3 Part 2):
 
 ```
-L0 dedup → L1 canonicalize (Claude) → L2 match → L3 adjudicate → L4 coherence-check → L5 price-clusters
+instance → migrate → register → canonicalize → match → adjudicate → coherence-check     price-clusters
+ starter    schema    vocabulary   profiles      cluster   settle       audit / gate    ·  (price query)
 ```
 
-- **L0 — dedup.** Collapse the corpus to **distinct normalized descriptions**,
-  keyed by a stable `text_hash`. The same string is only ever canonicalized once.
-- **L1 — canonicalize** (`canonicalize`, Claude/Haiku). Each distinct description
-  becomes a structured **profile**: `category`, evidence-anchored **identity
-  attributes**, `brand`, `model_token`, `packaging`. Persisted to a text-hash
-  store (the L1 cache and resume state).
-- **L2 — match** (`match`). A deterministic matcher clusters the profiles into
-  `:ProductCluster` nodes, materializes each bid's brand-specific `:Product`
-  (`VARIANT_OF` its cluster), and prices offers onto their Product.
-- **L3 — adjudicate** (`adjudicate`, Claude/Sonnet). Claude settles the small
-  residue the matcher couldn't decide deterministically.
-- **L4 — coherence-check** (`coherence-check`). An auditor of named invariants
-  over the profiles + clusters (+ the persisted graph).
-- **L5 — price-clusters** (`price-clusters`). Price series over the clusters —
-  per-base-unit price over time and across competition.
+- **instance / migrate** — the **starter** brings Neo4j up + reachable, then the
+  graph constraints + indexes are applied.
+- **register** — build or extend the **vocabulary** (families + attribute schemas)
+  in four stages, R1→R4 (§3 Part 1). Skipped when it's already complete.
+- **canonicalize** — dedup the corpus to **distinct normalized descriptions** (one
+  `text_hash`, canonicalized once), then turn each into a structured **profile** via
+  Claude/Haiku: `category`, evidence-anchored **identity attributes**, `brand`,
+  `model_token`, `packaging`. The text-hash store is the cache + resume state.
+- **match** — a deterministic matcher clusters the profiles into `:ProductCluster`
+  nodes, materializes each bid's brand-specific `:Product` (`VARIANT_OF` its
+  cluster), and prices offers onto their Product.
+- **adjudicate** — Claude/Sonnet settles the small residue the matcher couldn't
+  decide deterministically.
+- **coherence-check** — an auditor of named invariants over the profiles + clusters
+  (+ the persisted graph); structural breaches **fail the build**.
 
-`chilecompra-er pipeline` runs the whole build (L0–L4, with the graph infra and the
-vocabulary build **R1→R4** ahead of it — §3 Part 1) as one resumable,
-step-checkpointed command (§4.1); L5 `price-clusters` is the query you run on the
-finished catalog. Or drive any stage on its own — the pipeline just calls the same
-per-stage commands (§3 Part 2).
+After the build, **`price-clusters`** is a *query* over the finished catalog —
+per-base-unit price over time and across competition. It isn't part of the build;
+run it when you need prices.
 
 ### What a profile is (and the rules that make clustering work)
 
@@ -167,7 +170,7 @@ The result is one cluster per distinct signature, plus the REFINES hierarchy.
 ## 3. The process, step by step
 
 Two parts: **build the vocabulary** (once, then occasionally extend it), then
-**run the L0→L5 pipeline** (per `--segment`, repeatable and resumable).
+**run the pipeline** (per `--segment`, repeatable and resumable).
 
 ### Setup (one-time)
 
@@ -176,11 +179,16 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .   # editable install
 ```
 
-- **Neo4j** — `chilecompra-er instance start` boots the EC2 box; the public IP
-  changes every start, so it rewrites `.mcp.json` automatically. (A bolt *timeout*
-  right after a clean start usually means the security group doesn't allow your
-  current client IP — not that Neo4j is down.)
-- **Max auth** — the efficient backend (`claude_oauth`, §4.8) needs a token from
+- **Neo4j** — `chilecompra-er instance start` ensures the box is up **and reachable
+  from here**: it boots it if stopped, **allowlists your current public IP** on the
+  bolt port in the `neo4j-sg` security group (a managed `chilecompra_app` ingress
+  rule), rewrites `.mcp.json` (the public IP changes every start), and waits for
+  bolt. The pipeline's first step does the same. Adding the SG rule needs
+  `ec2:AuthorizeSecurityGroupIngress`; without that permission a bolt *timeout*
+  means your IP still isn't allowed — add it by hand.
+- **Max auth** — the efficient backend (`claude_oauth`, §4.8) needs **(a)** the
+  `anthropic` package (`pip install -r requirements.txt` — it's only the OAuth HTTP
+  transport, still **Max** billing, not API credits) and **(b)** a token from
   `claude setup-token` placed in `secrets.env` as `CLAUDE_CODE_OAUTH_TOKEN`
   (gitignored). It bills the **Claude Max subscription** — never API credits.
 - `chilecompra-er status` is a register + instance + graph sanity check anytime.
@@ -190,11 +198,11 @@ python -m venv .venv
 
 The pipeline canonicalizes descriptions into **product families** (categories),
 each with an **attribute schema** that defines its identity attribute *names*.
-That family list + the per-family attribute names **are** the vocabulary L1 fills
+That family list + the per-family attribute names **are** the vocabulary `canonicalize` fills
 in. They live version-controlled under `chilecompra_er\categories\`
 (`register.json` + `schemas\<id>.json`).
 
-`register` builds them in four stages — the vocabulary analogue of L0→L5:
+`register` builds them in four stages:
 
 ```
 R1 profile → R2 vet (Claude) → R3 proposals → R4 apply (register + draft schemas)
@@ -226,19 +234,19 @@ You mostly do this once; thereafter you only **extend** it (a new family, a rich
 schema). `chilecompra-er pipeline` also bootstraps it — its `register` step builds
 the vocabulary from nothing, fills only missing schemas, or skips when complete (§3
 Part 2) — so this Part is **deliberate curation**, not a hard prerequisite. **Editing
-a schema's attribute names changes the L1 vocabulary**, so re-canonicalize that family
+a schema's attribute names changes the canonicalization vocabulary**, so re-canonicalize that family
 afterward (§3 Part 2, and `wipe-clusters` first).
 
 ### Part 2 — run the pipeline
 
-**One command runs the whole build end-to-end** — infra, vocabulary, and L1→L4 —
+**One command runs the whole build end-to-end** — infra, vocabulary, and the build —
 resumable at any step (`pipeline`, §4.1):
 
 ```powershell
 chilecompra-er pipeline --segment 42             # instance→migrate→register→canonicalize→match→adjudicate→coherence-check
 chilecompra-er pipeline --resume                 # continue after a Ctrl-C / failure (skips finished steps)
 chilecompra-er pipeline --status                 # show which steps are done / pending
-chilecompra-er price-clusters --category sondas  # L5: prices over time + competition (a query — run when you need it)
+chilecompra-er price-clusters --category sondas  # prices over time + competition (a query — run when you need it)
 ```
 
 - **Vocabulary is incremental.** The `register` step builds the families + schemas
@@ -246,14 +254,14 @@ chilecompra-er price-clusters --category sondas  # L5: prices over time + compet
   **skips** entirely when the vocabulary is already complete — it never regenerates
   what's there. `--rebuild-vocab` forces a fresh profile+vet that *extends* coverage.
   (Curate it deliberately with the Part 1 commands.)
-- **Build only.** The pipeline ends at `coherence-check` (the structural gate). L3
-  `adjudicate` runs but is **non-fatal** (a backlog, not a gate); L5 `price-clusters`
+- **Build only.** The pipeline ends at `coherence-check` (the structural gate).
+  `adjudicate` runs but is **non-fatal** (a backlog, not a gate); `price-clusters`
   is a separate read you run per category/signature.
 - **Per `--segment`, resumable.** Work one segment at a time; validate a small
   `--limit` slice first. Every step is safe to **Ctrl-C and `--resume`** — each long
-  stage also resumes *within* itself (the L1 profile store, the L2 `:OFFERS` offset,
-  the L3 verdict store, the `register` vet checkpoint).
-- Keep `--workers` low (default 2) so a long L1 run doesn't burst the Max usage limit.
+  stage also resumes *within* itself (the profile store, the match `:OFFERS` offset,
+  the adjudicate verdict store, the `register` vet checkpoint).
+- Keep `--workers` low (default 2) so a long canonicalize run doesn't burst the Max usage limit.
 
 Or **run a stage at a time** (the same handlers the pipeline drives) — useful for
 development and validating a slice before scaling up:
@@ -261,11 +269,11 @@ development and validating a slice before scaling up:
 ```powershell
 chilecompra-er instance start
 chilecompra-er migrate                                       # graph constraints + indexes (incl. migrations 005+006)
-chilecompra-er canonicalize --segment 42 --limit 1000        # L1: descriptions → profiles (resumable, --workers 2)
-chilecompra-er match --persist --segment 42 --limit 1000     # L2: write clusters + products + OFFERS (resumable)
-chilecompra-er adjudicate                                    # L3 (optional): settle the L2 residue
-chilecompra-er coherence-check --graph                       # L4: structural gate + review backlogs
-chilecompra-er price-clusters --category sondas              # L5: prices over time + competition
+chilecompra-er canonicalize --segment 42 --limit 1000        # descriptions → profiles (resumable, --workers 2)
+chilecompra-er match --persist --segment 42 --limit 1000     # write clusters + products + OFFERS (resumable)
+chilecompra-er adjudicate                                    # (optional) settle the matcher residue
+chilecompra-er coherence-check --graph                       # structural gate + review backlogs
+chilecompra-er price-clusters --category sondas              # prices over time + competition
 chilecompra-er instance stop                                 #     graph data persists
 ```
 
@@ -277,11 +285,11 @@ chilecompra-er instance stop                                 #     graph data pe
 - **More data** (new tenders/offers): re-run the pipeline (or just `canonicalize`
   then `match --persist`) for the segment. The text-hash store skips everything
   already canonicalized; all graph writes are `MERGE` (idempotent).
-- **After a vocabulary / prompt change** (you edited a schema or the L1 prompt):
+- **After a vocabulary / prompt change** (you edited a schema or the canonicalize prompt):
   the cluster signatures change, so first **`wipe-clusters --yes`** (clears the
   `:ProductCluster` namespace + the `match` checkpoints), then re-canonicalize the
   affected families and re-match.
-- **If you hit the Max usage limit** mid-run, L1 stops cleanly ("re-run to
+- **If you hit the Max usage limit** mid-run, `canonicalize` stops cleanly ("re-run to
   resume") instead of churning — just re-run the same command after your usage
   window resets (§4.8).
 
@@ -301,24 +309,28 @@ steps in `data\pipeline.checkpoint.json` so `--resume` continues at the interrup
 one (each long step also resumes *within* itself). **It runs from start to finish,
 skipping stages already done and naming every skip + why:** a step recorded in the
 checkpoint is skipped (`SKIP <step>: already completed…`), and a cheap per-stage probe
-skips work that's externally complete — `instance` when Neo4j is already running,
-`register` when the vocabulary is present — while `canonicalize`/`match`/`adjudicate`
+skips work that's externally complete — `instance` when Neo4j is already reachable
+on bolt (else the starter boots it + allowlists your IP), `register` when the
+vocabulary is present — while `canonicalize`/`match`/`adjudicate`
 are idempotent and self-skip finished work via their own caches. A run-end summary
 lists exactly what **ran** vs **skipped**. The `register` step is **incremental** (§3
 Part 2): it builds the vocabulary from nothing, fills only missing schemas, or skips
-when complete — `--rebuild-vocab` forces a profile+vet that extends it. Ends at `coherence-check` (the structural gate); L3 `adjudicate` is non-fatal, and
-L5 `price-clusters` stays a separate query. `--status`/`--watch` print the plan
+when complete — `--rebuild-vocab` forces a profile+vet that extends it. Ends at `coherence-check` (the structural gate); `adjudicate` is non-fatal, and
+`price-clusters` stays a separate query. `--status`/`--watch` print the plan
 (steps done/pending) without running anything; `--only <step>` runs one step,
 `--from-step <step>` re-runs from a chosen point; `--restart` discards the checkpoint
-(and the match/register sub-checkpoints) to begin anew. L1 tuning passes through:
-`--workers`, `--group-size`, `--model` (L1), `--adjudicate-model` (L3).
+(and the match/register sub-checkpoints) to begin anew. canonicalize tuning passes through:
+`--workers`, `--group-size`, `--model` (canonicalize), `--adjudicate-model` (adjudicate).
 
 **`status`** — register version, per-category schema status, Neo4j state, and
 graph node counts. Read-only; never crashes on a flaky graph.
 
-**`instance start|stop|status`** — Neo4j EC2 lifecycle. `start` boots the box and
-prints the new bolt IP (changes each start, rewrites `.mcp.json`); `stop` shuts it
-down (graph data persists); `status` prints state.
+**`instance start|stop|status`** — Neo4j EC2 lifecycle. `start` is the **starter**:
+it boots the box if stopped, **allowlists your current public IP** on the bolt port
+in the `neo4j-sg` security group (a managed `chilecompra_app` rule — prior ones for a
+different IP are pruned), rewrites `.mcp.json` with the new IP (it changes each
+start), and waits until bolt answers. `stop` shuts it down (graph data persists);
+`status` prints state. The SG name is overridable via `NEO4J_SG_NAME`.
 
 **`migrate [--dry-run]`** — apply graph migrations (uniqueness constraints +
 indexes) under `chilecompra_er/migrations/*.cypher`, including `005` (the
@@ -328,7 +340,7 @@ Cypher without running it.
 
 ### 4.2 Vocabulary (`register` / `add-category` / `generate-schemas`)
 
-These define the **families + attribute schemas** that L1 canonicalizes into.
+These define the **families + attribute schemas** that `canonicalize` turns descriptions into.
 
 **`register [--segment 42] [--count <n>] [--preview|--apply] [--proposals <path>] [--resume]`**
 — runs the four vocabulary stages **R1→R4** (§3 Part 1): profile the corpus by
@@ -346,12 +358,12 @@ repeatable head-noun regex over normalized text. Draft its schema afterward with
 **`generate-schemas [--only <id>] [--samples 50] [--overwrite]`** — LLM strawman
 attribute schema from corpus samples. A schema already on disk is **skipped** (no
 LLM call, no clobbered hand-edits); `--overwrite` forces a redraft. The schema's
-identity attribute **names** become that family's L1 vocabulary.
+identity attribute **names** become that family's canonicalization vocabulary.
 
 > Editing a schema's attribute names is a vocabulary change → `wipe-clusters` and
 > re-canonicalize that family to apply it.
 
-### 4.3 `canonicalize` — L1 (descriptions → profiles)
+### 4.3 `canonicalize` (descriptions → profiles)
 
 ```powershell
 chilecompra-er canonicalize --segment 42 --limit 1000        # from the graph (bounded slice)
@@ -364,28 +376,28 @@ packaging), persisted by `text_hash` so each distinct string is canonicalized
 **once** (a cached pure function). The cardinal rule: every identity attribute must
 quote the substring that anchors it — a bare number can never become identity. For
 a known family, the attribute **names** are constrained to that family's schema
-vocabulary, and values are Spanish/snake_case — which is what lets L2 merge
+vocabulary, and values are Spanish/snake_case — which is what lets `match` merge
 equivalent bids.
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--from-file <path>` | none | Read newline-separated descriptions from a file instead of the graph. |
-| `--out <path>` | `data\profiles.jsonl` | Profile store — JSONL keyed by text-hash; the L1 cache (skip already-done). |
-| `--model <id>` | `claude-haiku-4-5` | L1 model. Haiku is the right tier — cheapest, gentlest on Max usage (~5× less than Opus). |
+| `--out <path>` | `data\profiles.jsonl` | Profile store — JSONL keyed by text-hash; the profile cache (skip already-done). |
+| `--model <id>` | `claude-haiku-4-5` | canonicalize model. Haiku is the right tier — cheapest, gentlest on Max usage (~5× less than Opus). |
 | `--workers <n>` | `2` | Concurrent LLM calls on the Max backend. Kept low so a long run doesn't burst the usage limit; raise it for short jobs. |
 | `--group-size <n>` | `25` | Descriptions **batched** per LLM call — the per-call overhead is paid once per *group*, not per item (≈ N× fewer calls). |
 | `--segment <n>` | all | UNSPSC segment scope for the graph read, e.g. `42`. |
 | `--limit <n>` | all | Cap inputs (validation / dev runs). |
-| `--dry-run` | off | **L0 dedup only** — report distinct/cached counts, **no LLM calls**. |
+| `--dry-run` | off | **dedup only** — report distinct/cached counts, **no LLM calls**. |
 
-### 4.4 `match` — L2 (cluster the profiles)
+### 4.4 `match` (cluster the profiles)
 
 ```powershell
 chilecompra-er match --segment 42 --show 15                  # offline report (no graph)
 chilecompra-er match --persist --segment 42 --limit 1000     # write clusters + products + OFFERS (resumable)
 ```
 
-Clusters the L1 profile store into product clusters by the pairwise rule (§2): same
+Clusters the profile store into product clusters by the pairwise rule (§2): same
 `model_token` ⇒ same; conflicting attribute ⇒ hard cut; identical signature ⇒
 merge; coarser partial spec ⇒ `REFINES` (unless `--attach-partials` and it has a
 unique finer child). Default is an **offline report** (no graph, no LLM). With
@@ -395,7 +407,7 @@ OFFERS edge); run `migrate` first.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--store <path>` | `data\profiles.jsonl` | The L1 profile store to cluster. |
+| `--store <path>` | `data\profiles.jsonl` | The profile store to cluster. |
 | `--persist` | off | **WRITE** clusters, brand-specific Products (VARIANT_OF), REFINES, and OFFERS edges to the graph. |
 | `--segment <n>` | none | UNSPSC segment for the offer-price read when persisting. |
 | `--limit <n>` | all | Cap the offer-price read (a bounded validation slice). |
@@ -403,10 +415,10 @@ OFFERS edge); run `migrate` first.
 | `--resume` | off | Continue the `:OFFERS` write from its stream-offset checkpoint (same `--segment`). |
 | `--show <n>` | `15` | Print the top clusters by bid count. |
 
-### 4.5 `adjudicate` — L3 (settle the residue)
+### 4.5 `adjudicate` (settle the residue)
 
 ```powershell
-chilecompra-er adjudicate                                    # Claude settles the L2 residue
+chilecompra-er adjudicate                                    # Claude settles the matcher residue
 chilecompra-er adjudicate --dry-run                          # just count the cases
 ```
 
@@ -420,10 +432,10 @@ re-pay. The residue is small, so this is cheap.
 |---|---|---|
 | `--store <path>` | `data\profiles.jsonl` | The profile store. |
 | `--verdicts <path>` | `data\adjudications.jsonl` | The verdict store (resume state). |
-| `--model <id>` | `claude-sonnet-4-6` | L3 model (a stronger tier; the residue is tiny). |
+| `--model <id>` | `claude-sonnet-4-6` | adjudicate model (a stronger tier; the residue is tiny). |
 | `--dry-run` | off | Report the case count with no LLM calls. |
 
-### 4.6 `coherence-check` — L4 (the auditor)
+### 4.6 `coherence-check` (the auditor)
 
 ```powershell
 chilecompra-er coherence-check                               # offline tiers (profiles + recomputed clusters)
@@ -448,14 +460,14 @@ Runs named invariants in three tiers:
 `--tier all|structural|semantic|health` selects tiers; `--out <csv>` writes the
 findings. Offline by default; `--graph` adds the catalog checks.
 
-### 4.7 `price-clusters` — L5 (prices)
+### 4.7 `price-clusters` (prices)
 
 ```powershell
 chilecompra-er price-clusters --category sondas --top 10
 chilecompra-er price-clusters --signature "sondas|calibre=16fr|material=latex"
 ```
 
-Price series over the L2 clusters, read two hops out via
+Price series over the clusters, read two hops out via
 `(:Oferta)-[:OFFERS]->(:Product)-[:VARIANT_OF]->(:ProductCluster)` (normalization
 already on the edge), sliceable by **brand** (on the Product) or supplier `rut`. A cluster is the substitutable-product comparison unit, so
 the summary answers both goals at once — per-base-unit price **over time** and
@@ -479,11 +491,11 @@ cost**, bounded by Max usage limits. Select with `CHILECOMPRA_LLM_BACKEND`:
 
 Three things keep a long run within the Max limit, and they compose:
 
-1. **Model tier** — L1 is on **Haiku 4.5**, ~5× gentler on the usage limit than
+1. **Model tier** — `canonicalize` is on **Haiku 4.5**, ~5× gentler on the usage limit than
    Opus, for no quality loss (the constrained vocabulary carries the consistency).
 2. **Batching** — `--group-size` amortizes the per-call overhead across many
    descriptions.
-3. **Graceful abort** — on a sustained usage/rate limit, L1 **stops cleanly**
+3. **Graceful abort** — on a sustained usage/rate limit, `canonicalize` **stops cleanly**
    (cancels pending calls, keeps everything done, prints "re-run to resume")
    instead of churning. Re-run the same command after the window resets; the
    text-hash store skips all completed work.
@@ -492,7 +504,7 @@ Three things keep a long run within the Max limit, and they compose:
 > as it lands (durable ~every 100) and **skips anything already in the store** on
 > re-run. `adjudicate` works the same way against its verdict store. `match
 > --persist` is idempotent (`MERGE`), and the long `:OFFERS` write keeps a
-> stream-offset checkpoint (`--resume`). So the practical workflow — run L1 per
+> stream-offset checkpoint (`--resume`). So the practical workflow — run `canonicalize` per
 > segment, killing and resuming freely — never repeats finished work.
 
 ### 4.9 Housekeeping
@@ -523,11 +535,11 @@ Outputs split by **lifecycle**:
 - **`data\` is gitignored scratch** — all reproducible:
   - `pipeline.checkpoint.json` — the `pipeline` step-level resume state (which steps
     are done; the scope it was started with).
-  - `profiles.jsonl` — the **L1 profile store** (the cache and resume state).
-  - `adjudications.jsonl` — the L3 verdict store.
+  - `profiles.jsonl` — the **profile store** (the cache and resume state).
+  - `adjudications.jsonl` — the adjudicate verdict store.
   - `match_seg<seg>.checkpoint.json` — the `:OFFERS` write resume offset.
   - `register.checkpoint.json` — the `register` vet-scan resume state.
-  - `price_clusters_<cat>.csv` — L5 output.
+  - `price_clusters_<cat>.csv` — `price-clusters` output.
   - `proposals.json` / `profiling.csv` — `register` preview/handoff + spend ranking.
 - **The cluster catalog lives in Neo4j**, written only by `match --persist`:
   `:ProductCluster` + `:Product` nodes and `:OFFERS` / `:VARIANT_OF` / `:REFINES` edges (migrations `005`+`006`).
@@ -559,7 +571,9 @@ Outputs split by **lifecycle**:
 | `pipeline` refuses to start ("a checkpoint already exists") | A prior run is in progress — `pipeline --resume` to continue it, or `pipeline --restart` to discard it and begin anew. |
 | `pipeline` "refusing to resume: scope differs" | You changed `--segment`/`--limit` between runs. Resume with the **same** scope, or `--restart`. |
 | `pipeline` re-ran the `register` step you didn't expect | The vocabulary was absent or had a missing schema, so the incremental step built/filled it. To skip it, `--from-step canonicalize`; to deliberately extend it, `--rebuild-vocab`. |
-| `graph: unreachable` in `status` | Neo4j stopped (`instance start` — also rewrites `.mcp.json`). If *running* but bolt **times out**, the security group doesn't allow your client IP — add it. |
+| `graph: unreachable` in `status` | Run `instance start` (the starter) — it boots the box, allowlists your IP (`chilecompra_app` on `neo4j-sg`), and refreshes `.mcp.json`. A *timeout* that persists after that means the starter couldn't add the SG rule (no `ec2:AuthorizeSecurityGroupIngress`) — add your IP to `neo4j-sg` on 7687 by hand. |
+| `pipeline` halts: "starter could not reach Neo4j bolt" | Same cause — the box is up but bolt isn't reachable and the SG rule couldn't be added automatically. Add your IP to `neo4j-sg` (7687), then `pipeline --resume`. |
+| LLM stages fail `ModuleNotFoundError: anthropic` | The `claude_oauth` Max backend needs the `anthropic` package — `pip install -r requirements.txt`. It's only the transport; billing stays on **Max**. |
 | `claude_oauth` backend: "needs a Max OAuth token" | Run `claude setup-token` and put `CLAUDE_CODE_OAUTH_TOKEN=…` in `secrets.env` (gitignored). |
 | `canonicalize` stops with "usage limit reached" | You hit the Max usage window. Re-run the same command after it resets — completed work is saved. |
 | A `--segment` run scans forever | The UNSPSC index is missing — run `migrate`. |
@@ -574,12 +588,12 @@ Outputs split by **lifecycle**:
 - **The source is the graph itself** — the transactional layer. The pipeline only
   *adds* the cluster catalog and never mutates source nodes.
 - **Evidence-anchoring** (`resolve/profile.py`). Every identity attribute carries
-  the source substring that names it; the L1 prompt forbids turning a bare number
+  the source substring that names it; the canonicalize prompt forbids turning a bare number
   into identity and asks for the full anchored span (`"70%"`, not `"70"`). This is
   the structural answer to the false-merge class where "Ca 2,5 mEq" and "cable
   3x2,5 mm" could read as "dextrose 2.5%".
 - **Constrained vocabulary** (`profile.category_vocabulary`). Each family's schema
-  identity attribute **names** are injected into the L1 prompt, and the model must
+  identity attribute **names** are injected into the canonicalize prompt, and the model must
   use exactly those names for that category (no `gauge` when the schema says
   `calibre`), values Spanish/snake_case. This is what collapses false splits —
   validated at 1.27→1.67 profiles/cluster on a 1,000-offer slice.
@@ -607,9 +621,9 @@ Outputs split by **lifecycle**:
   backlogs; health metrics are trend snapshots. The graph tier runs against the
   persisted catalog.
 - **Max efficiency** (`llm.py`). The `claude_oauth` backend makes bare
-  `messages.create` calls billed to Max (~11× leaner than `claude -p`); L1 batches
+  `messages.create` calls billed to Max (~11× leaner than `claude -p`); `canonicalize` batches
   `--group-size` items per call; a sustained rate/usage limit aborts the run
-  cleanly for a clean resume. L1 is on Haiku (the cheapest tier, ~5× gentler on the
+  cleanly for a clean resume. `canonicalize` is on Haiku (the cheapest tier, ~5× gentler on the
   Max limit than Opus) — the constrained vocabulary makes that the right
   quality/cost point.
 - **Pipeline orchestration** (`pipeline.py` + `cli.cmd_pipeline`). `pipeline.py` is
@@ -617,7 +631,7 @@ Outputs split by **lifecycle**:
   resume are unit-testable with no graph; `cmd_pipeline` drives the existing per-stage
   `cmd_*` handlers. The vocabulary step is incremental: empty register → full
   profile+vet+draft; present-with-gaps → draft only the missing schemas; complete →
-  skip (`--rebuild-vocab` forces an extend). The build ends at `coherence-check`; L3
+  skip (`--rebuild-vocab` forces an extend). The build ends at `coherence-check`; adjudicate
   `adjudicate` is non-fatal.
 - **Resumability (two layers).** STEP level: `pipeline --resume` skips steps already
   in the checkpoint's `done` list. WITHIN a step: the text-hash profile store and the

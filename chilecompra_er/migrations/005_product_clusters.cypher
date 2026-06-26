@@ -1,4 +1,4 @@
-// L2 product clusters (design: the L0->L3 resolution redesign).
+// product clusters (design: the resolution redesign).
 //
 // One :ProductCluster per substitutable product — the brand-INDEPENDENT
 // price-comparison unit. Brand-specific :Product nodes roll up to it via

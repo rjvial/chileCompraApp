@@ -1,6 +1,6 @@
 """End-to-end redesign-pipeline orchestration with step-level resume.
 
-`chilecompra-er pipeline [--resume]` runs the whole L0→L5 build as an ordered
+`chilecompra-er pipeline [--resume]` runs the whole build as an ordered
 sequence of steps and records which steps have completed in
 `data/pipeline.checkpoint.json`. If any step is interrupted, re-running with
 `--resume` skips the completed steps and continues at the interrupted one.
@@ -8,9 +8,9 @@ sequence of steps and records which steps have completed in
 Two layers of resume:
   * STEP level (this module): the checkpoint's `done` list says which whole
     steps finished; `--resume` re-runs only what's left.
-  * WITHIN a step: each long stage already owns its resume state — the L1 profile
-    store (text-hash cache, skip-done), the L2 `:OFFERS` stream-offset checkpoint,
-    the L3 verdict store, the `register` vet checkpoint. So re-entering an
+  * WITHIN a step: each long stage already owns its resume state — the profile
+    store (text-hash cache, skip-done), the match `:OFFERS` stream-offset checkpoint,
+    the adjudicate verdict store, the `register` vet checkpoint. So re-entering an
     unfinished step continues from the exact item, never the top.
 
 This module is pure orchestration STATE — no graph/LLM/CLI imports — so the
@@ -31,10 +31,10 @@ from pathlib import Path
 #   migrate   — graph constraints + indexes (incl. 005 clusters, 006 products)
 #   register  — VOCABULARY: profile + vet families, register them + draft schemas.
 #               Incremental: built only when absent / to fill gaps (see cmd_pipeline).
-#   canonicalize — L1: descriptions → profiles (Haiku; text-hash cache)
-#   match     — L2: cluster profiles → :ProductCluster/:Product, bind :OFFERS
-#   adjudicate — L3: Claude settles the matcher residue (non-fatal)
-#   coherence-check — L4: structural gate + semantic/health backlogs
+#   canonicalize — descriptions → profiles (Haiku; text-hash cache)
+#   match     — cluster profiles → :ProductCluster/:Product, bind :OFFERS
+#   adjudicate — Claude settles the matcher residue (non-fatal)
+#   coherence-check — structural gate + semantic/health backlogs
 STEP_INSTANCE = "instance"
 STEP_MIGRATE = "migrate"
 STEP_REGISTER = "register"

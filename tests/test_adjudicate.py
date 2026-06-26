@@ -1,4 +1,4 @@
-"""Unit tests for the L3 adjudication scaffold (resolve/adjudicate.py) — pure
+"""Unit tests for the adjudication scaffold (resolve/adjudicate.py) — pure
 parts + dry-run; no LLM."""
 from __future__ import annotations
 

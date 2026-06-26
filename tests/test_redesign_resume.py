@@ -1,5 +1,5 @@
-"""Kill/resume guarantees for the redesign stages: L1 persists incrementally and
-resumes by skipping cached profiles; the L2 edge write has a stream-offset
+"""Kill/resume guarantees for the redesign stages: canonicalize persists incrementally and
+resumes by skipping cached profiles; the match edge write has a stream-offset
 checkpoint. Monkeypatched — no LLM, no graph."""
 from __future__ import annotations
 

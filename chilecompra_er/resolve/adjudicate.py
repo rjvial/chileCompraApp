@@ -1,14 +1,14 @@
-"""L3 adjudication — Claude resolves the L2 matcher's residue (design: L0->L3).
+"""adjudication — Claude resolves the matcher's residue (design: the redesign).
 
-The deterministic L2 matcher routes a small set of genuinely ambiguous cases to
-L3: a shared model_token whose specs conflict, and a coarse partial spec that is
-compatible with several divergent children. L3 asks a stronger model (Sonnet/Opus)
+The deterministic matcher routes a small set of genuinely ambiguous cases to
+adjudicate: a shared model_token whose specs conflict, and a coarse partial spec that is
+compatible with several divergent children. adjudicate asks a stronger model (Sonnet/Opus)
 the substitutable-product question for each, and persists the verdict keyed by the
 case (so re-runs are stable and no LLM work is re-paid).
 
 SCAFFOLD: the pure question-building + the verdict store + the dry-run are done
 and tested; the live call uses llm.complete_json_batch (Sonnet/Opus → API
-credits), so a real run is gated on the same credits decision as the L1 bulk run.
+credits), so a real run is gated on the same credits decision as the canonicalize bulk run.
 """
 from __future__ import annotations
 
@@ -131,7 +131,7 @@ def build_questions(result: MatchResult,
 
 
 def signature_profiles(items: list[tuple[str, P.Profile]]) -> dict[str, P.Profile]:
-    """Representative profile per signature (first wins) — the L3 case payload."""
+    """Representative profile per signature (first wins) — the adjudicate case payload."""
     out: dict[str, P.Profile] = {}
     for _h, p in items:
         out.setdefault(p.signature(), p)
@@ -154,7 +154,7 @@ def adjudicate(questions: list[AdjQuestion], store: VerdictStore, *,
     stats = AdjStats(questions=len(questions))
     todo = [q for q in questions if not store.has(q.key)]
     stats.cached = len(questions) - len(todo)
-    log(f"L3: {len(questions)} cases; {stats.cached} cached, {len(todo)} to adjudicate")
+    log(f"adjudicate: {len(questions)} cases; {stats.cached} cached, {len(todo)} to adjudicate")
     if dry_run:
         log("dry run — no LLM calls (no API credits spent)")
         return stats
@@ -179,6 +179,6 @@ def adjudicate(questions: list[AdjQuestion], store: VerdictStore, *,
     if buf:
         store.put_many(buf)
     stats.failed = len(todo) - stats.adjudicated
-    log(f"L3 done: {stats.adjudicated} adjudicated, {stats.failed} failed "
+    log(f"adjudicate done: {stats.adjudicated} adjudicated, {stats.failed} failed "
         f"(store now {len(store)})")
     return stats

@@ -1,4 +1,4 @@
-"""Unit tests for the L2 matcher (resolve/matcher.py) — pure/offline."""
+"""Unit tests for the matcher (resolve/matcher.py) — pure/offline."""
 from __future__ import annotations
 
 from chilecompra_er.resolve.profile import IdentityAttr, Packaging, Profile
