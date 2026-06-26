@@ -123,9 +123,10 @@ L0 dedup → L1 canonicalize (Claude) → L2 match → L3 adjudicate → L4 cohe
   per-base-unit price over time and across competition.
 
 `chilecompra-er pipeline` runs the whole build (L0–L4, with the graph infra and the
-vocabulary step ahead of it) as one resumable, step-checkpointed command (§4.1);
-L5 `price-clusters` is the query you run on the finished catalog. Or drive any stage
-on its own — the pipeline just calls the same per-stage commands (§3 Part 2).
+vocabulary build **R1→R4** ahead of it — §3 Part 1) as one resumable,
+step-checkpointed command (§4.1); L5 `price-clusters` is the query you run on the
+finished catalog. Or drive any stage on its own — the pipeline just calls the same
+per-stage commands (§3 Part 2).
 
 ### What a profile is (and the rules that make clustering work)
 
@@ -193,10 +194,32 @@ That family list + the per-family attribute names **are** the vocabulary L1 fill
 in. They live version-controlled under `chilecompra_er\categories\`
 (`register.json` + `schemas\<id>.json`).
 
+`register` builds them in four stages — the vocabulary analogue of L0→L5:
+
+```
+R1 profile → R2 vet (Claude) → R3 proposals → R4 apply (register + draft schemas)
+```
+
+- **R1 — profile** (`profiling.py`). Rank the corpus by **head-noun × spend** —
+  which candidate families carry the most procurement. Cached to
+  `data\profiling.csv` (reused unless `--reprofile`); `--from-fallback` instead
+  ranks the UNSPSC fallback residue in the graph.
+- **R2 — vet** (`register.propose`, Claude). Walk the ranking and ask, per family,
+  *"is this a real, coherent product family?"*, then mechanically validate each
+  survivor. Resumable via `data\register.checkpoint.json`.
+- **R3 — proposals** (`register.write_proposals`). Survivors are written to
+  `data\proposals.json` — the review / handoff point. `--preview` **stops here**.
+- **R4 — apply** (`register.apply`). Register the survivors (bumps
+  `register_version`) and **draft each family's schema** from corpus samples
+  (`strawman.generate`). `--apply` **resumes from** an edited proposals file.
+
+`add-category` is the manual one-family alternative to R1–R2 (it skips the LLM vet);
+`generate-schemas` runs R4's schema draft on its own.
+
 ```powershell
-chilecompra-er register --segment 42        # profile the corpus, vet families via LLM, draft schemas
+chilecompra-er register --segment 42        # R1→R4: profile, vet, draft schemas, register
 chilecompra-er add-category mascarillas --include "\bmascarilla\w*" --example "MASCARILLA QUIRURGICA 3 PLIEGUES"
-chilecompra-er generate-schemas --only mascarillas    # draft / refine one family's attribute schema
+chilecompra-er generate-schemas --only mascarillas    # R4 only: draft / refine one family's schema
 ```
 
 You mostly do this once; thereafter you only **extend** it (a new family, a richer
@@ -275,10 +298,15 @@ marks optional.
 — **the whole build in one command.** Runs the ordered steps `instance → migrate →
 register → canonicalize → match → adjudicate → coherence-check`, recording completed
 steps in `data\pipeline.checkpoint.json` so `--resume` continues at the interrupted
-one (each long step also resumes *within* itself). The `register` step is
-**incremental** (§3 Part 2): it builds the vocabulary from nothing, fills only missing
-schemas, or skips when complete — `--rebuild-vocab` forces a profile+vet that extends
-it. Ends at `coherence-check` (the structural gate); L3 `adjudicate` is non-fatal, and
+one (each long step also resumes *within* itself). **It runs from start to finish,
+skipping stages already done and naming every skip + why:** a step recorded in the
+checkpoint is skipped (`SKIP <step>: already completed…`), and a cheap per-stage probe
+skips work that's externally complete — `instance` when Neo4j is already running,
+`register` when the vocabulary is present — while `canonicalize`/`match`/`adjudicate`
+are idempotent and self-skip finished work via their own caches. A run-end summary
+lists exactly what **ran** vs **skipped**. The `register` step is **incremental** (§3
+Part 2): it builds the vocabulary from nothing, fills only missing schemas, or skips
+when complete — `--rebuild-vocab` forces a profile+vet that extends it. Ends at `coherence-check` (the structural gate); L3 `adjudicate` is non-fatal, and
 L5 `price-clusters` stays a separate query. `--status`/`--watch` print the plan
 (steps done/pending) without running anything; `--only <step>` runs one step,
 `--from-step <step>` re-runs from a chosen point; `--restart` discards the checkpoint
@@ -303,13 +331,12 @@ Cypher without running it.
 These define the **families + attribute schemas** that L1 canonicalizes into.
 
 **`register [--segment 42] [--count <n>] [--preview|--apply] [--proposals <path>] [--resume]`**
-— profiles the corpus by head-noun, walks the ranking in LLM **vet batches**
-(*"is this a real, coherent product family?"*), mechanically validates each
-proposal, and writes survivors to `register.json` **plus a drafted attribute
-schema** per family. Resumable (`--resume`); `--preview` stops at
-`data\proposals.json` for review and `--apply` registers an edited proposals file.
-It **builds over** the existing register — already-covered families are skipped, so
-a re-run only extends coverage.
+— runs the four vocabulary stages **R1→R4** (§3 Part 1): profile the corpus by
+head-noun (R1), LLM-**vet** each family (R2), write survivors to `data\proposals.json`
+(R3), then register them + draft a schema each (R4). Resumable (`--resume`);
+`--preview` stops at **R3** (the proposals file) for review and `--apply` resumes at
+**R4** from an edited proposals file. It **builds over** the existing register —
+already-covered families are skipped, so a re-run only extends coverage.
 
 **`add-category <id> --include <regex> [--exclude <regex>] [--name <txt>] [--example <txt>]`**
 — manually append one family (skips the LLM vet). `--include` is the required,

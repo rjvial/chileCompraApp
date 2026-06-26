@@ -3,7 +3,7 @@ and the incremental vocabulary policy."""
 
 import pytest
 
-from chilecompra_er import cli
+from chilecompra_er import cli, graphdb
 from chilecompra_er.categories import schema as cat_schema
 from chilecompra_er.cli import build_parser
 from chilecompra_er.pipeline import (
@@ -21,7 +21,7 @@ from chilecompra_er.pipeline import (
 
 # cmd_pipeline drives these module-level handlers; stubbing them lets us test
 # the orchestration (ordering, skipping, checkpoint persistence) with no graph.
-_HANDLERS = ["cmd_instance", "cmd_migrate", "cmd_register", "cmd_generate_schemas",
+_HANDLERS = ["cmd_migrate", "cmd_register", "cmd_generate_schemas",
              "cmd_canonicalize", "cmd_match", "cmd_adjudicate", "cmd_coherence_check"]
 
 
@@ -82,14 +82,20 @@ def test_remaining_unknown_step_raises():
 
 # --- cmd_pipeline orchestration (handlers stubbed) ---------------------------
 
-def _stub_handlers(monkeypatch, *, vocab=None):
-    """Replace every cmd_* the pipeline drives with a recorder returning rc=0.
-    `vocab` overrides what the register step sees via load_register (None = use
-    the real committed register, which is present+complete -> the step skips)."""
+def _stub_handlers(monkeypatch, *, vocab=None, reachable=False):
+    """Replace every cmd_* the pipeline drives with a recorder returning rc=0, and
+    stub the instance STARTER + reachability probe. `reachable` drives the instance
+    precheck (True -> the starter is skipped); the starter records "starter" and
+    returns a fake IP. `vocab` overrides what the register step sees via
+    load_register (None = the real committed register, which is present+complete
+    -> the register step skips)."""
     calls = []
     for name in _HANDLERS:
         monkeypatch.setattr(cli, name,
                             lambda args, _n=name: calls.append(_n) or 0)
+    monkeypatch.setattr(graphdb, "graph_reachable", lambda *a, **k: reachable)
+    monkeypatch.setattr(graphdb, "start_neo4j_instance",
+                        lambda **kw: calls.append("starter") or "1.2.3.4")
     if vocab is not None:
         monkeypatch.setattr(cat_schema, "load_register", lambda *a, **k: vocab)
     return calls
@@ -124,7 +130,7 @@ def test_resume_runs_only_remaining_steps(tmp_path, monkeypatch):
     calls = _stub_handlers(monkeypatch)
     assert _run(["--resume"], tmp_path) == 0
     # instance + migrate already done -> their handlers must NOT be called again
-    assert "cmd_instance" not in calls and "cmd_migrate" not in calls
+    assert "starter" not in calls and "cmd_migrate" not in calls
     # the remaining build steps ran
     assert "cmd_canonicalize" in calls and "cmd_match" in calls
     cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
@@ -183,7 +189,7 @@ def test_restart_clears_and_reruns(tmp_path, monkeypatch):
     calls = _stub_handlers(monkeypatch)
     assert _run(["--restart"], tmp_path) == 0
     # everything re-ran from the top
-    assert "cmd_instance" in calls and "cmd_migrate" in calls
+    assert "starter" in calls and "cmd_migrate" in calls
     cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
     assert cp.done == PIPELINE_STEPS
 
@@ -220,6 +226,54 @@ def test_rebuild_vocab_forces_register(tmp_path, monkeypatch):
         {"category_id": "x", "schema_file": "schemas/x.json"}]})
     assert _run(["--only", "register", "--rebuild-vocab"], tmp_path) == 0
     assert "cmd_register" in calls
+
+
+# --- per-stage precheck + skip reporting -------------------------------------
+
+def test_instance_skipped_when_reachable(tmp_path, monkeypatch):
+    calls = _stub_handlers(monkeypatch, reachable=True)
+    assert _run(["--only", "instance"], tmp_path) == 0
+    assert "starter" not in calls               # precheck skipped the starter
+    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
+    assert STEP_INSTANCE in cp.done             # skipped but marked done
+
+
+def test_starter_runs_when_unreachable(tmp_path, monkeypatch):
+    calls = _stub_handlers(monkeypatch, reachable=False)
+    assert _run(["--only", "instance"], tmp_path) == 0
+    assert "starter" in calls                   # not reachable -> starter ran
+    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
+    assert STEP_INSTANCE in cp.done
+
+
+def test_starter_failure_halts_cleanly(tmp_path, monkeypatch):
+    _stub_handlers(monkeypatch, reachable=False)
+
+    def boom(**kw):
+        raise RuntimeError("security group blocks this IP")
+    monkeypatch.setattr(graphdb, "start_neo4j_instance", boom)
+    assert _run([], tmp_path) == 1              # clean non-zero, not a traceback
+    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
+    assert cp is None or cp.done == []          # instance never completed
+
+
+def test_skips_are_reported_with_reasons(tmp_path, monkeypatch, capsys):
+    # instance+migrate already done (checkpoint), vocabulary complete (precheck):
+    # every skip must be named with its reason.
+    save_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path),
+                             PipelineCheckpoint(segment=42, limit=None,
+                                                done=[STEP_INSTANCE, STEP_MIGRATE]))
+    _stub_handlers(monkeypatch)  # real (complete) vocabulary -> register precheck skips
+    assert _run(["--resume"], tmp_path) == 0
+    cap = capsys.readouterr()
+    out = cap.out + cap.err
+    # checkpoint skips named
+    assert "SKIP instance: already completed" in out
+    assert "SKIP migrate: already completed" in out
+    # precheck skip named with reason
+    assert "SKIP: vocabulary present" in out
+    # summary lists what ran vs skipped
+    assert "pipeline summary" in out and "skipped : register" in out
 
 
 # --- status / watch ----------------------------------------------------------

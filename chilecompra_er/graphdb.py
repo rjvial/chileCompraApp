@@ -67,6 +67,38 @@ def instance_status() -> tuple[str, str, str | None]:
     return instance_id, state, public_ip
 
 
+def _bolt_host() -> str | None:
+    """Host the python driver would dial: NEO4J_URI's host if set, else the running
+    instance's public IP. None when neither is available."""
+    uri = env("NEO4J_URI")
+    if uri:
+        m = re.search(r"bolt://([^:/]+)", uri)
+        if m:
+            return m.group(1)
+    try:
+        _iid, state, ip = instance_status()
+        return ip if state == "running" else None
+    except Exception:  # noqa: BLE001 — a probe must never raise
+        return None
+
+
+def graph_reachable(timeout: float = 4.0) -> bool:
+    """True if the bolt port answers a TCP connect right now (a quick liveness
+    probe — it does NOT verify auth). Lets the pipeline decide whether its starter
+    must run: reachable -> skip; not reachable (stopped, or blocked by the security
+    group from here) -> run the starter."""
+    import socket
+
+    host = _bolt_host()
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, BOLT_PORT), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def stop_neo4j_instance() -> str:
     """Stop the Neo4j EC2 instance (data persists; public IP changes on next start)."""
     ec2 = _ec2_client()
@@ -97,9 +129,88 @@ def _update_mcp_bolt_ip(public_ip: str | None,
     return new_uri
 
 
+def _client_public_ip() -> str | None:
+    """This machine's public IPv4, as the security group sees it. None on failure."""
+    import urllib.request
+
+    try:
+        return urllib.request.urlopen(
+            "https://checkip.amazonaws.com", timeout=5).read().decode().strip()
+    except Exception:  # noqa: BLE001 — best-effort; caller degrades gracefully
+        return None
+
+
+SG_NAME = "neo4j-sg"           # the security group the allowlist rule lives in
+SG_RULE_DESC = "chilecompra_app"  # the named ingress rule the starter manages
+
+
+def _authorize_bolt_ingress(ec2, ports: tuple[int, ...] = (BOLT_PORT,)) -> str | None:
+    """Allow THIS machine's public IP to reach Neo4j on `ports` by adding an ingress
+    rule named `chilecompra_app` (its Description) to the `neo4j-sg` security group.
+    The public IP changes with your network, so a running box can still be
+    unreachable (bolt times out) until the IP is allowlisted — this closes that gap.
+    Keeps a SINGLE `chilecompra_app` rule per port: any prior one pointing at a
+    different IP is revoked first, then the current /32 is added. Returns the
+    authorized CIDR, or None if it couldn't (no client IP, group missing, or no
+    ec2 perms) — connectivity then relies on whatever the SG already permits.
+    The group name is overridable via NEO4J_SG_NAME."""
+    client_ip = _client_public_ip()
+    if not client_ip:
+        return None
+    cidr = f"{client_ip}/32"
+    sg_name = env("NEO4J_SG_NAME", SG_NAME)
+    try:
+        groups = ec2.describe_security_groups(
+            Filters=[{"Name": "group-name", "Values": [sg_name]}]).get(
+                "SecurityGroups", [])
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (security-group lookup failed: {exc})")
+        return None
+    if not groups:
+        print(f"  (security group {sg_name!r} not found — allowlist skipped)")
+        return None
+    sg = groups[0]
+    gid = sg["GroupId"]
+
+    # Prune stale `chilecompra_app` rules on these ports (a previous IP), so the
+    # named permission stays a single rule tracking the current address.
+    stale = []
+    for perm in sg.get("IpPermissions", []):
+        if perm.get("IpProtocol") != "tcp" or perm.get("FromPort") not in ports:
+            continue
+        for rng in perm.get("IpRanges", []):
+            if rng.get("Description") == SG_RULE_DESC and rng.get("CidrIp") != cidr:
+                stale.append({"IpProtocol": "tcp", "FromPort": perm["FromPort"],
+                              "ToPort": perm["ToPort"],
+                              "IpRanges": [{"CidrIp": rng["CidrIp"]}]})
+    if stale:
+        try:
+            ec2.revoke_security_group_ingress(GroupId=gid, IpPermissions=stale)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  (could not prune stale {SG_RULE_DESC} rules: {exc})")
+
+    authorized = False
+    for port in ports:
+        try:
+            ec2.authorize_security_group_ingress(
+                GroupId=gid,
+                IpPermissions=[{
+                    "IpProtocol": "tcp", "FromPort": port, "ToPort": port,
+                    "IpRanges": [{"CidrIp": cidr, "Description": SG_RULE_DESC}],
+                }])
+            authorized = True
+        except Exception as exc:  # noqa: BLE001 — duplicate rule or missing perms
+            if "Duplicate" in str(exc):
+                authorized = True
+            else:
+                print(f"  (could not authorize {cidr} on {sg_name}:{port}: {exc})")
+    return cidr if authorized else None
+
+
 def start_neo4j_instance(wait_for_bolt: int = 300) -> str:
-    """Bring the Neo4j EC2 box up and return its public IP (see module docstring
-    for the three steps)."""
+    """Bring the Neo4j EC2 box up + reachable and return its public IP: boot it if
+    stopped, allowlist this machine's IP on the bolt port, point .mcp.json at it,
+    and wait until bolt answers."""
     ec2 = _ec2_client()
     name = env("NEO4J_EC2_NAME", DEFAULT_INSTANCE_NAME)
 
@@ -111,6 +222,12 @@ def start_neo4j_instance(wait_for_bolt: int = 300) -> str:
         fne.start_instance(ec2, instance_id)
         ec2.get_waiter("instance_running").wait(InstanceIds=[instance_id])
         _, public_ip, _ = fne.find_instance_by_name(ec2, name)
+
+    # allowlist THIS machine's public IP on the bolt port — a running box is still
+    # unreachable from here until the security group permits the current IP.
+    cidr = _authorize_bolt_ingress(ec2)
+    if cidr:
+        print(f"allowlisted {cidr} as {SG_RULE_DESC} on {SG_NAME} (bolt {BOLT_PORT})")
 
     # register the IP so the Neo4j MCP server points at the right box
     new_uri = _update_mcp_bolt_ip(public_ip)

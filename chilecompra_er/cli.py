@@ -777,6 +777,24 @@ def cmd_pipeline(args) -> int:
         return 0
 
     # --- step implementations -------------------------------------------------
+    def run_instance() -> int:
+        """Starter: boot the box if stopped, allowlist this machine's IP on the bolt
+        port, refresh .mcp.json, and wait until bolt answers. A clean failure (e.g.
+        the security group couldn't be updated for lack of perms) halts with an
+        actionable message instead of a deep stack trace at the next graph step."""
+        from . import graphdb
+        try:
+            ip = graphdb.start_neo4j_instance(wait_for_bolt=90)
+            log(f"    Neo4j up + reachable @ {ip}")
+            return 0
+        except Exception as exc:  # noqa: BLE001 — turn infra errors into a clean halt
+            print(f"\nstarter could not reach Neo4j bolt: {exc}\n"
+                  "  the instance is up but bolt isn't answering from here — the "
+                  "security group must allow your IP on 7687. The starter tries to "
+                  "add it automatically; that needs ec2:AuthorizeSecurityGroupIngress "
+                  "permission in this shell.", file=sys.stderr)
+            return 1
+
     def run_register() -> int:
         """VOCABULARY (incremental). Build from nothing when the register is empty;
         when families already exist, do NOT re-profile/re-vet — only DRAFT any
@@ -838,8 +856,29 @@ def cmd_pipeline(args) -> int:
         return cmd_coherence_check(_ns(
             store=store, graph=True, tier="all", out=None))
 
+    def precheck(step) -> str | None:
+        """Cheap 'already done?' probe per stage — returns a skip reason, or None
+        to run it. (The work stages canonicalize/match/adjudicate are themselves
+        idempotent and self-skip finished work via their own caches; and any stage
+        already in the checkpoint's `done` list is skipped before this.)"""
+        if step == STEP_INSTANCE:
+            try:
+                from . import graphdb
+                if graphdb.graph_reachable():
+                    return "Neo4j already running and reachable on bolt"
+            except Exception:  # noqa: BLE001 — a probe failure must never block the run
+                return None
+        if step == STEP_REGISTER and not getattr(args, "rebuild_vocab", False):
+            from .categories.schema import CATEGORIES_DIR, load_register
+            cats = load_register().get("categories", [])
+            if cats and all((CATEGORIES_DIR / c.get("schema_file", "")).exists()
+                            for c in cats):
+                return (f"vocabulary present ({len(cats)} families, all schemas "
+                        "drafted) — --rebuild-vocab to extend")
+        return None
+
     steps = {
-        STEP_INSTANCE: lambda: cmd_instance(_ns(action="start")),
+        STEP_INSTANCE: run_instance,
         STEP_MIGRATE: lambda: cmd_migrate(_ns(dry_run=False)),
         STEP_REGISTER: run_register,
         STEP_CANONICALIZE: run_canonicalize,
@@ -848,11 +887,27 @@ def cmd_pipeline(args) -> int:
         STEP_COHERENCE: run_coherence,
     }
 
+    # Stages a PRIOR pipeline run already finished (recorded in the checkpoint) are
+    # not in `todo` — name each so the skip is never silent.
+    if not (args.from_step or args.only):
+        for s in (s for s in PIPELINE_STEPS if s in cp.done):
+            log(f"SKIP {s}: already completed in a prior pipeline run (checkpoint)")
+
     log(f"pipeline: {len(cp.done)}/{len(PIPELINE_STEPS)} steps done; "
-        f"running {len(todo)} -> {todo}")
+        f"{len(todo)} to consider -> {todo}")
+    ran, skipped = [], []
     for i, step in enumerate(todo, 1):
-        log(f"\n=== step {i}/{len(todo)}: {step} "
-            f"({PIPELINE_STEPS.index(step) + 1}/{len(PIPELINE_STEPS)} overall) ===")
+        head = (f"step {i}/{len(todo)}: {step} "
+                f"({PIPELINE_STEPS.index(step) + 1}/{len(PIPELINE_STEPS)} overall)")
+        # Per-stage completion probe: skip (and say why) if its work is already done.
+        reason = precheck(step)
+        if reason:
+            log(f"\n=== {head} — SKIP: {reason} ===")
+            skipped.append((step, reason))
+            cp.mark_done(step)
+            save_pipeline_checkpoint(cp_path, cp)
+            continue
+        log(f"\n=== {head} — running ===")
         rc = steps[step]()
         if rc != 0:
             print(f"\nstep {step!r} failed (rc={rc}) — pipeline halted. "
@@ -861,9 +916,16 @@ def cmd_pipeline(args) -> int:
             return rc
         # Mark done + persist immediately so an interrupt after this point
         # never re-runs a completed step.
+        ran.append(step)
         cp.mark_done(step)
         save_pipeline_checkpoint(cp_path, cp)
         log(f"=== step {step!r} done (checkpoint saved) ===")
+
+    # Run summary: exactly which stages ran vs were skipped (and why).
+    log("\n--- pipeline summary ---")
+    log(f"  ran     : {', '.join(ran) or '(none)'}")
+    for s, r in skipped:
+        log(f"  skipped : {s} — {r}")
 
     if args.only or args.from_step:
         print(f"\nran {todo} (manual selection). Checkpoint: {cp_path}")
