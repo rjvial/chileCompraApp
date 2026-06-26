@@ -30,9 +30,19 @@ from .profiling import (
     head_noun,
     profile,
 )
-from .resolve.resolver import UNSPSC_PREFIX, is_rubric
+# GenericProduct.category_id prefix for UNSPSC fallback buckets (unspsc_<code>).
+UNSPSC_PREFIX = "unspsc_"
 
-# GenericProduct.category_id prefix the resolver uses for UNSPSC fallback nodes.
+
+def is_rubric(text: str | None) -> bool:
+    """True for a UNSPSC rubric path ("Equipamiento ... / ... / Vendas..."), a
+    taxonomy string rather than a real product description — flagged by >= 2
+    ' / ' separators. Single source of this rule on the Python side (mirrored in
+    Cypher by ingest.neo4j_source.NOT_RUBRIC)."""
+    return bool(text) and text.count(" / ") >= 2
+
+
+# GenericProduct.category_id prefix the fallback resolution uses for UNSPSC nodes.
 FALLBACK_PREFIX = UNSPSC_PREFIX
 
 
@@ -46,7 +56,7 @@ class BucketStat:
     top_families: list[tuple[str, int]] = field(default_factory=list)  # head-noun -> count
 
 
-_is_rubric = is_rubric  # re-exported: the rubric rule lives in resolve.resolver
+_is_rubric = is_rubric  # legacy alias kept for existing callers/tests
 
 
 def fetch_fallback_items(conn) -> list[dict]:

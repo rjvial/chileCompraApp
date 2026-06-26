@@ -7,20 +7,20 @@ def parse(argv):
     return build_parser().parse_args(argv)
 
 
-def test_resolve_is_dry_run_by_default():
-    args = parse(["resolve", "--contains", "foley", "--limit", "10"])
+def test_match_is_offline_by_default():
+    args = parse(["match", "--segment", "42"])
     assert args.persist is False
-    assert args.kind == "tender"
+    assert args.segment == 42
 
 
-def test_resolve_limit_all_means_no_cap():
-    assert parse(["resolve", "--limit", "all"]).limit is None
-    assert parse(["resolve", "--limit", "0"]).limit is None
-    assert parse(["resolve", "--limit", "500"]).limit == 500
+def test_pipeline_limit_all_means_no_cap():
+    assert parse(["pipeline", "--limit", "all"]).limit is None
+    assert parse(["pipeline", "--limit", "0"]).limit is None
+    assert parse(["pipeline", "--limit", "500"]).limit == 500
 
 
 def test_wipe_requires_explicit_yes_flag():
-    args = parse(["wipe-category", "sondas"])
+    args = parse(["wipe-clusters"])
     assert args.yes is False  # cmd refuses without it
 
 
