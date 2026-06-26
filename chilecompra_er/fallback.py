@@ -30,9 +30,19 @@ from .profiling import (
     head_noun,
     profile,
 )
-from .resolve.resolver import UNSPSC_PREFIX, is_rubric
+# GenericProduct.category_id prefix for UNSPSC fallback buckets (unspsc_<code>).
+UNSPSC_PREFIX = "unspsc_"
 
-# GenericProduct.category_id prefix the resolver uses for UNSPSC fallback nodes.
+
+def is_rubric(text: str | None) -> bool:
+    """True for a UNSPSC rubric path ("Equipamiento ... / ... / Vendas..."), a
+    taxonomy string rather than a real product description — flagged by >= 2
+    ' / ' separators. Single source of this rule on the Python side (mirrored in
+    Cypher by ingest.neo4j_source.NOT_RUBRIC)."""
+    return bool(text) and text.count(" / ") >= 2
+
+
+# GenericProduct.category_id prefix the fallback resolution uses for UNSPSC nodes.
 FALLBACK_PREFIX = UNSPSC_PREFIX
 
 
@@ -46,7 +56,7 @@ class BucketStat:
     top_families: list[tuple[str, int]] = field(default_factory=list)  # head-noun -> count
 
 
-_is_rubric = is_rubric  # re-exported: the rubric rule lives in resolve.resolver
+_is_rubric = is_rubric  # legacy alias kept for existing callers/tests
 
 
 def fetch_fallback_items(conn) -> list[dict]:
@@ -54,23 +64,23 @@ def fetch_fallback_items(conn) -> list[dict]:
     [{"text", "spend_clp", "code"}].
 
     Items resolve (RESOLVED_TO) to the fallback GenericProduct; their offers bind
-    as Products VARIANT_OF the same node (item-centric invariant), so the bucket's
-    awarded spend is the sum over those Products. Per-item spend is the bucket
-    spend attributed uniformly across its items — enough signal to rank families
-    without an item<->offer join.
+    as branded Products (VARIANT_OF the same node) with the price on the
+    (:Oferta)-[:OFFERS]->(:Product) edge, so the bucket's awarded spend is the sum
+    over those edges. Per-item spend is the bucket spend attributed uniformly across
+    its items — enough signal to rank families without an item<->offer join.
     """
     items = conn.query(
-        "MATCH (s:SourceRecord)-[:RESOLVED_TO]->(g:GenericProduct) "
+        "MATCH (i:ItemLicitacion)-[:RESOLVED_TO]->(g:GenericProduct) "
         "WHERE g.category_id STARTS WITH $p "
-        "RETURN g.category_id AS code, s.raw_text AS text",
+        "RETURN g.category_id AS code, i.descripcion_comprador AS text",
         parameters={"p": FALLBACK_PREFIX})
     spend = conn.query(
-        "MATCH (p:Product)-[:VARIANT_OF]->(g:GenericProduct) "
-        "WHERE g.category_id STARTS WITH $p AND p.awarded = true "
+        "MATCH (:Oferta)-[r:OFFERS]->(p:Product)-[:VARIANT_OF]->(g:GenericProduct) "
+        "WHERE g.category_id STARTS WITH $p AND r.awarded = true "
         # toFloat() coerces numeric strings and nulls out non-numeric junk, so
         # SUM never trips over a dirty source price (precio_total_clp can arrive
         # as a string); IS NOT NULL alone let those through and crashed the query.
-        "RETURN g.category_id AS code, sum(toFloat(p.total_clp)) AS spend",
+        "RETURN g.category_id AS code, sum(toFloat(r.total_clp)) AS spend",
         parameters={"p": FALLBACK_PREFIX})
     bucket_spend = {r["code"]: float(r["spend"] or 0) for r in spend}
     counts: Counter[str] = Counter(r["code"] for r in items)
@@ -84,16 +94,34 @@ def fetch_fallback_items(conn) -> list[dict]:
 
 def residue_ranking(rows: list[dict], normalizer: Normalizer | None = None,
                     min_count: int = 5) -> list[GroupStat]:
-    """Head-noun families across the fallback residue, spend-ranked — the
+    """Head-noun families across the fallback residue, ranked by ITEM COUNT — the
     candidate categories to register. Thin wrapper over the M0 profiler so the
     output is the same GroupStat ranking `register`/propose already consume.
+
+    Ranked by count, NOT spend: `fetch_fallback_items` can only attribute a
+    bucket's awarded spend uniformly across its items (no item<->offer join), so
+    residue "spend" is a smeared average that floats tiny families sharing a
+    high-value bucket to the top (it surfaced services/pharma). Item count is the
+    honest priority signal here. We overload each GroupStat's `spend_share` with
+    its RECORD share and sort by records, so propose's descending-order walk and
+    `min_spend_share` floor act on counts unchanged (the floor becomes a
+    min-record-share floor).
 
     Rubric-only buyer lines are dropped first: their head noun is always the
     leading rubric word ("equipamiento"), which would otherwise swamp the
     ranking with a non-family. They are genuinely uninformative — fallback is
     the right answer for them, not a new category."""
     informative = [r for r in rows if not _is_rubric(r["text"])]
-    return profile(informative, normalizer=normalizer, min_count=min_count)
+    stats = profile(informative, normalizer=normalizer, min_count=min_count)
+    total_records = sum(s.records for s in stats) or 1
+    for s in stats:
+        s.spend_share = s.records / total_records
+    stats.sort(key=lambda s: s.records, reverse=True)
+    cum = 0.0
+    for s in stats:
+        cum += s.spend_share
+        s.cum_share = cum
+    return stats
 
 
 def bucket_ranking(rows: list[dict], normalizer: Normalizer | None = None,

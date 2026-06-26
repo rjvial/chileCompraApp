@@ -1,17 +1,14 @@
-"""End-to-end pipeline orchestration: checkpoint, step ordering, resume."""
-
-import types
+"""End-to-end redesign-pipeline orchestration: checkpoint, step ordering, resume,
+and the incremental vocabulary policy."""
 
 import pytest
 
 from chilecompra_er import cli, graphdb
+from chilecompra_er.categories import schema as cat_schema
 from chilecompra_er.cli import build_parser
-from chilecompra_er.ingest import neo4j_source
 from chilecompra_er.pipeline import (
     PIPELINE_STEPS,
-    RESOLVE_STEPS,
-    STEP_BUILD,
-    STEP_FINAL,
+    STEP_CANONICALIZE,
     STEP_INSTANCE,
     STEP_MIGRATE,
     STEP_REGISTER,
@@ -24,10 +21,8 @@ from chilecompra_er.pipeline import (
 
 # cmd_pipeline drives these module-level handlers; stubbing them lets us test
 # the orchestration (ordering, skipping, checkpoint persistence) with no graph.
-_HANDLERS = ["cmd_instance", "cmd_migrate", "cmd_register", "cmd_resolve",
-             "cmd_fallback_report", "cmd_train_tier2", "cmd_build_brand_lexicon"]
-
-_LOOP_SIZE = 1000  # what the stubbed count returns for the resolve loop size
+_HANDLERS = ["cmd_migrate", "cmd_register", "cmd_generate_schemas",
+             "cmd_canonicalize", "cmd_match", "cmd_adjudicate", "cmd_coherence_check"]
 
 
 # --- pure checkpoint + ordering logic ----------------------------------------
@@ -47,6 +42,13 @@ def test_checkpoint_complete():
     assert cp.is_complete()
 
 
+def test_old_checkpoint_json_loads_cleanly():
+    # a checkpoint JSON written before a field was dropped still loads
+    cp = PipelineCheckpoint.from_json({"segment": 42, "limit": None,
+                                       "done": [STEP_INSTANCE], "loop_sizes": {}})
+    assert cp.segment == 42 and cp.done == [STEP_INSTANCE]
+
+
 def test_mismatch_detection():
     cp = PipelineCheckpoint(segment=42, limit=5000, done=[])
     assert cp.mismatches(segment=42, limit=5000) == []
@@ -63,8 +65,8 @@ def test_remaining_skips_done():
 
 def test_remaining_from_step_ignores_done():
     # --from re-runs that step and everything after, regardless of done
-    assert remaining_steps(list(PIPELINE_STEPS), from_step=STEP_BUILD) \
-        == PIPELINE_STEPS[PIPELINE_STEPS.index(STEP_BUILD):]
+    assert remaining_steps(list(PIPELINE_STEPS), from_step=STEP_CANONICALIZE) \
+        == PIPELINE_STEPS[PIPELINE_STEPS.index(STEP_CANONICALIZE):]
 
 
 def test_remaining_only_is_single_step():
@@ -80,17 +82,22 @@ def test_remaining_unknown_step_raises():
 
 # --- cmd_pipeline orchestration (handlers stubbed) ---------------------------
 
-def _stub_handlers(monkeypatch):
-    """Replace every cmd_* the pipeline drives with a recorder returning rc=0,
-    and stub the loop-size precompute so it never touches a real graph."""
+def _stub_handlers(monkeypatch, *, vocab=None, reachable=False):
+    """Replace every cmd_* the pipeline drives with a recorder returning rc=0, and
+    stub the instance STARTER + reachability probe. `reachable` drives the instance
+    precheck (True -> the starter is skipped); the starter records "starter" and
+    returns a fake IP. `vocab` overrides what the register step sees via
+    load_register (None = the real committed register, which is present+complete
+    -> the register step skips)."""
     calls = []
     for name in _HANDLERS:
         monkeypatch.setattr(cli, name,
                             lambda args, _n=name: calls.append(_n) or 0)
-    monkeypatch.setattr(graphdb, "get_connection",
-                        lambda: types.SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(neo4j_source, "count_resolve_items",
-                        lambda conn, **kw: _LOOP_SIZE)
+    monkeypatch.setattr(graphdb, "graph_reachable", lambda *a, **k: reachable)
+    monkeypatch.setattr(graphdb, "start_neo4j_instance",
+                        lambda **kw: calls.append("starter") or "1.2.3.4")
+    if vocab is not None:
+        monkeypatch.setattr(cat_schema, "load_register", lambda *a, **k: vocab)
     return calls
 
 
@@ -123,9 +130,9 @@ def test_resume_runs_only_remaining_steps(tmp_path, monkeypatch):
     calls = _stub_handlers(monkeypatch)
     assert _run(["--resume"], tmp_path) == 0
     # instance + migrate already done -> their handlers must NOT be called again
-    assert "cmd_instance" not in calls and "cmd_migrate" not in calls
-    # register ran (the first remaining step)
-    assert "cmd_register" in calls
+    assert "starter" not in calls and "cmd_migrate" not in calls
+    # the remaining build steps ran
+    assert "cmd_canonicalize" in calls and "cmd_match" in calls
     cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
     assert cp.is_complete()
 
@@ -148,20 +155,31 @@ def test_resume_scope_mismatch_refuses(tmp_path, monkeypatch):
 
 
 def test_halt_on_step_failure_leaves_prior_steps_done(tmp_path, monkeypatch):
-    calls = []
-
-    def ok(args, _n):
-        calls.append(_n)
-        return 0
-
-    for name in _HANDLERS:
-        monkeypatch.setattr(cli, name, lambda a, _n=name: ok(a, _n))
+    _stub_handlers(monkeypatch)
     # make migrate fail
     monkeypatch.setattr(cli, "cmd_migrate", lambda a: 2)
     assert _run([], tmp_path) == 2
     cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
     # instance completed before migrate failed; migrate not marked done
     assert cp.done == [STEP_INSTANCE]
+
+
+def test_adjudicate_failure_is_non_fatal(tmp_path, monkeypatch):
+    _stub_handlers(monkeypatch)
+    # adjudicate returning non-zero must NOT halt the build
+    monkeypatch.setattr(cli, "cmd_adjudicate", lambda a: 7)
+    assert _run([], tmp_path) == 0
+    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
+    assert cp.is_complete()
+
+
+def test_coherence_breach_fails_the_run(tmp_path, monkeypatch):
+    _stub_handlers(monkeypatch)
+    # a structural breach (rc=1) at the gate fails the pipeline
+    monkeypatch.setattr(cli, "cmd_coherence_check", lambda a: 1)
+    assert _run([], tmp_path) == 1
+    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
+    assert "coherence-check" not in cp.done
 
 
 def test_restart_clears_and_reruns(tmp_path, monkeypatch):
@@ -171,77 +189,106 @@ def test_restart_clears_and_reruns(tmp_path, monkeypatch):
     calls = _stub_handlers(monkeypatch)
     assert _run(["--restart"], tmp_path) == 0
     # everything re-ran from the top
-    assert "cmd_instance" in calls and "cmd_migrate" in calls
+    assert "starter" in calls and "cmd_migrate" in calls
     cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
     assert cp.done == PIPELINE_STEPS
 
 
-# --- precomputed loop size (deterministic, saved, consultable, resumable) ----
+# --- incremental vocabulary policy (the register step) -----------------------
 
-def test_loop_sizes_roundtrip(tmp_path):
-    cp = PipelineCheckpoint(segment=42, limit=None, done=[],
-                            loop_sizes={STEP_BUILD: 1342833, STEP_FINAL: 1342833})
-    p = pipeline_checkpoint_path(tmp_path)
-    save_pipeline_checkpoint(p, cp)
-    assert load_pipeline_checkpoint(p).loop_sizes == {STEP_BUILD: 1342833,
-                                                      STEP_FINAL: 1342833}
+def test_vocab_built_from_nothing(tmp_path, monkeypatch):
+    # empty register -> full register (profile + vet + draft)
+    calls = _stub_handlers(monkeypatch, vocab={"categories": []})
+    assert _run(["--only", "register"], tmp_path) == 0
+    assert "cmd_register" in calls and "cmd_generate_schemas" not in calls
 
 
-def test_old_checkpoint_has_empty_loop_sizes():
-    # a checkpoint JSON written before the field existed loads cleanly
-    cp = PipelineCheckpoint.from_json({"segment": 42, "limit": None,
-                                       "done": [STEP_INSTANCE]})
-    assert cp.loop_sizes == {}
+def test_vocab_fills_missing_schemas_only(tmp_path, monkeypatch):
+    # families present but a schema file is missing -> draft gaps, no re-vet
+    calls = _stub_handlers(monkeypatch, vocab={"categories": [
+        {"category_id": "x", "schema_file": "schemas/__nonexistent__.json"}]})
+    assert _run(["--only", "register"], tmp_path) == 0
+    assert "cmd_generate_schemas" in calls and "cmd_register" not in calls
 
 
-def test_loop_sizes_precomputed_after_migrate(tmp_path, monkeypatch):
-    _stub_handlers(monkeypatch)
-    assert _run([], tmp_path) == 0
+def test_vocab_present_and_complete_is_skipped(tmp_path, monkeypatch):
+    # real committed register: present + all schemas on disk -> neither runs
+    calls = _stub_handlers(monkeypatch)  # vocab=None -> real load_register
+    assert _run(["--only", "register"], tmp_path) == 0
+    assert "cmd_register" not in calls and "cmd_generate_schemas" not in calls
     cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
-    # both resolve steps got the deterministic count, computed once after migrate
-    assert cp.loop_sizes == {STEP_BUILD: _LOOP_SIZE, STEP_FINAL: _LOOP_SIZE}
-    assert set(cp.loop_sizes) == set(RESOLVE_STEPS)
+    assert STEP_REGISTER in cp.done  # skipped but marked done
 
 
-def test_loop_sizes_backfilled_on_resume_when_missing(tmp_path, monkeypatch):
-    # checkpoint predates the field (migrate already done, no loop_sizes)
+def test_rebuild_vocab_forces_register(tmp_path, monkeypatch):
+    # --rebuild-vocab forces a full register even when vocabulary is present
+    calls = _stub_handlers(monkeypatch, vocab={"categories": [
+        {"category_id": "x", "schema_file": "schemas/x.json"}]})
+    assert _run(["--only", "register", "--rebuild-vocab"], tmp_path) == 0
+    assert "cmd_register" in calls
+
+
+# --- per-stage precheck + skip reporting -------------------------------------
+
+def test_instance_skipped_when_reachable(tmp_path, monkeypatch):
+    calls = _stub_handlers(monkeypatch, reachable=True)
+    assert _run(["--only", "instance"], tmp_path) == 0
+    assert "starter" not in calls               # precheck skipped the starter
+    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
+    assert STEP_INSTANCE in cp.done             # skipped but marked done
+
+
+def test_starter_runs_when_unreachable(tmp_path, monkeypatch):
+    calls = _stub_handlers(monkeypatch, reachable=False)
+    assert _run(["--only", "instance"], tmp_path) == 0
+    assert "starter" in calls                   # not reachable -> starter ran
+    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
+    assert STEP_INSTANCE in cp.done
+
+
+def test_starter_failure_halts_cleanly(tmp_path, monkeypatch):
+    _stub_handlers(monkeypatch, reachable=False)
+
+    def boom(**kw):
+        raise RuntimeError("security group blocks this IP")
+    monkeypatch.setattr(graphdb, "start_neo4j_instance", boom)
+    assert _run([], tmp_path) == 1              # clean non-zero, not a traceback
+    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
+    assert cp is None or cp.done == []          # instance never completed
+
+
+def test_skips_are_reported_with_reasons(tmp_path, monkeypatch, capsys):
+    # instance+migrate already done (checkpoint), vocabulary complete (precheck):
+    # every skip must be named with its reason.
+    save_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path),
+                             PipelineCheckpoint(segment=42, limit=None,
+                                                done=[STEP_INSTANCE, STEP_MIGRATE]))
+    _stub_handlers(monkeypatch)  # real (complete) vocabulary -> register precheck skips
+    assert _run(["--resume"], tmp_path) == 0
+    cap = capsys.readouterr()
+    out = cap.out + cap.err
+    # checkpoint skips named
+    assert "SKIP instance: already completed" in out
+    assert "SKIP migrate: already completed" in out
+    # precheck skip named with reason
+    assert "SKIP: vocabulary present" in out
+    # summary lists what ran vs skipped
+    assert "pipeline summary" in out and "skipped : register" in out
+
+
+# --- status / watch ----------------------------------------------------------
+
+def test_status_reports_plan(tmp_path, monkeypatch, capsys):
     save_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path),
                              PipelineCheckpoint(segment=42, limit=None,
                                                 done=[STEP_INSTANCE, STEP_MIGRATE]))
     _stub_handlers(monkeypatch)
-    assert _run(["--resume"], tmp_path) == 0
-    cp = load_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path))
-    assert cp.loop_sizes == {STEP_BUILD: _LOOP_SIZE, STEP_FINAL: _LOOP_SIZE}
-
-
-def test_loop_size_passed_to_resolve(tmp_path, monkeypatch):
-    seen = {}
-    _stub_handlers(monkeypatch)
-
-    def capture_resolve(args):
-        seen[args.out.name] = args.total
-        return 0
-
-    # override the resolve stub to capture the precomputed total it receives
-    monkeypatch.setattr(cli, "cmd_resolve", capture_resolve)
-    assert _run([], tmp_path) == 0
-    # both resolve invocations were handed the deterministic loop size
-    assert set(seen.values()) == {_LOOP_SIZE}
-
-
-def test_status_reports_plan_and_progress(tmp_path, monkeypatch, capsys):
-    save_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path),
-                             PipelineCheckpoint(
-                                 segment=42, limit=None,
-                                 done=[STEP_INSTANCE, STEP_MIGRATE],
-                                 loop_sizes={STEP_BUILD: 1342833,
-                                             STEP_FINAL: 1342833}))
-    _stub_handlers(monkeypatch)
     assert _run(["--status"], tmp_path) == 0
     out = capsys.readouterr().out
-    assert "2/9 steps done" in out
-    assert "1,342,833" in out          # the precomputed loop size is shown
-    assert "[x] instance" in out and "[ ] build" in out
+    assert f"2/{len(PIPELINE_STEPS)} steps done" in out
+    assert "[x] instance" in out and "[x] migrate" in out
+    assert "[>] register" in out          # the next step to run
+    assert "[ ] coherence-check" in out
 
 
 def test_status_with_no_checkpoint_is_noop(tmp_path, monkeypatch):
@@ -249,76 +296,7 @@ def test_status_with_no_checkpoint_is_noop(tmp_path, monkeypatch):
     assert _run(["--status"], tmp_path) == 0  # nothing established yet
 
 
-def test_status_shows_rate_and_eta_from_history(tmp_path, capsys):
-    from chilecompra_er.ingest.resume import (
-        Checkpoint,
-        append_progress,
-        progress_path,
-        save_checkpoint,
-    )
-    from chilecompra_er.ingest.resume import checkpoint_path as subcp
-    from chilecompra_er.pipeline import BUILD_PREFIX_NAME
-
-    save_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path),
-                             PipelineCheckpoint(
-                                 segment=42, limit=None,
-                                 done=[STEP_INSTANCE, STEP_MIGRATE, STEP_REGISTER],
-                                 loop_sizes={STEP_BUILD: 1342833,
-                                             STEP_FINAL: 1342833}))
-    prefix = tmp_path / BUILD_PREFIX_NAME
-    save_checkpoint(subcp(prefix), Checkpoint(
-        kind="item", contains=None, segment=42, persist=True, limit=None,
-        start_skip=0, processed=461000, done=False,
-        stats_dict={"total": 461000}, total=1342833))
-    # two timeline points 60s apart -> 1,000 records/min
-    pp = progress_path(prefix)
-    append_progress(pp, {"ts": 1000.0, "processed": 460000, "total": 1342833})
-    append_progress(pp, {"ts": 1060.0, "processed": 461000, "total": 1342833})
-
-    assert _run(["--status"], tmp_path) == 0
-    out = capsys.readouterr().out
-    assert "1,000/min" in out          # rate computed from the timeline
-    assert "ETA" in out                # extrapolated from remaining/rate
-    assert "461,000/1,342,833" in out
-
-
 def test_watch_flag_parses(tmp_path):
     args = build_parser().parse_args(
         ["pipeline", "--data-dir", str(tmp_path), "--watch", "--interval", "5"])
     assert args.watch is True and args.interval == 5
-
-
-def test_status_rate_ignores_kill_resume_gap(tmp_path, capsys):
-    """A long idle gap (overnight kill) between two timeline points must not drag
-    the reported rate down — it's summed over active intervals only."""
-    from chilecompra_er.ingest.resume import (
-        Checkpoint,
-        append_progress,
-        progress_path,
-        save_checkpoint,
-    )
-    from chilecompra_er.ingest.resume import checkpoint_path as subcp
-    from chilecompra_er.pipeline import BUILD_PREFIX_NAME
-
-    save_pipeline_checkpoint(pipeline_checkpoint_path(tmp_path),
-                             PipelineCheckpoint(
-                                 segment=42, limit=None,
-                                 done=[STEP_INSTANCE, STEP_MIGRATE, STEP_REGISTER],
-                                 loop_sizes={STEP_BUILD: 1342833,
-                                             STEP_FINAL: 1342833}))
-    prefix = tmp_path / BUILD_PREFIX_NAME
-    save_checkpoint(subcp(prefix), Checkpoint(
-        kind="item", contains=None, segment=42, persist=True, limit=None,
-        start_skip=0, processed=462000, done=False,
-        stats_dict={"total": 462000}, total=1342833))
-    pp = progress_path(prefix)
-    # 1,000/min before the kill, a ~28h idle gap, then 1,000/min after resume
-    append_progress(pp, {"ts": 0.0, "processed": 460000, "total": 1342833})
-    append_progress(pp, {"ts": 60.0, "processed": 461000, "total": 1342833})
-    append_progress(pp, {"ts": 100000.0, "processed": 461000, "total": 1342833})
-    append_progress(pp, {"ts": 100060.0, "processed": 462000, "total": 1342833})
-
-    assert _run(["--status"], tmp_path) == 0
-    out = capsys.readouterr().out
-    assert "1,000/min" in out          # gap excluded; not the ~20/min naive figure
-    assert "elapsed 2m00s" in out      # active time only (2x60s), not ~28h

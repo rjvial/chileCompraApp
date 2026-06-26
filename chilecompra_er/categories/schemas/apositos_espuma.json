@@ -78,7 +78,8 @@
         {
           "kind": "keyword",
           "pattern": "\\b10\\s+10\\b",
-          "value": "10x10cm"
+          "value": "10x10cm",
+          "requires": "\\bcm\\b|medida"
         }
       ],
       "curation_notes": "Identity: la medida del parche distingue presentaciones; dominio cerrado a tamanos estandar observados (10x10 es el dominante); rangos tipo '17 a 23' quedan sin canonizar a proposito.",

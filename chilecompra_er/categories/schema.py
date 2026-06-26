@@ -30,6 +30,25 @@ REGISTER_PATH = CATEGORIES_DIR / "register.json"
 IDENTITY = "identity"
 DESCRIPTIVE = "descriptive"
 
+# Negation guard for keyword rules: a material/feature term mentioned in a
+# negated context ("libre de latex", "sin balon", "no esteril") must NOT fire —
+# otherwise a *latex-free* product is wrongly stamped material=latex (measured:
+# ~1,925 such records, an identity error). We look only at the 2 word-tokens
+# immediately before the match: tight enough to skip "sin aguja con latex"
+# (latex is NOT negated there) while catching the dominant "libre de X" / "sin X"
+# adjacency. Lists ("libre de ftalatos y latex") past the window are accepted
+# loss for now.
+_NEGATORS = frozenset({
+    "sin", "no", "libre", "libres", "exento", "exenta", "exentos", "exentas",
+})
+_WORD = re.compile(r"\w+")
+
+
+def _is_negated(text: str, start: int) -> bool:
+    """True if the keyword match at `start` is preceded by a negator within the
+    last two word-tokens."""
+    return any(t.lower() in _NEGATORS for t in _WORD.findall(text[:start])[-2:])
+
 
 @dataclass(frozen=True)
 class Rule:
@@ -37,13 +56,30 @@ class Rule:
     pattern: re.Pattern
     template: str | None = None  # regex kind
     value: str | None = None     # keyword kind
+    # Optional sentence-level context guard. The rule fires only if `requires`
+    # also matches somewhere in the text — the fix for "anchorless" numeric rules
+    # that would otherwise stamp an identity value from a bare number (e.g. the
+    # "2,5" in "Ca 2,5 mEq" or "cable 3x2,5 mm" wrongly read as dextrose 2.5%).
+    # The guard names the attribute's concept (dextrosa|glucosa, calibre, talla…),
+    # so a number with no such concept word present can no longer fire. A guard
+    # can only *reduce* matches, never widen them — so it never creates a false
+    # merge, at worst it trades a little recall for precision.
+    requires: re.Pattern | None = None
 
     def apply(self, text: str) -> tuple[str, re.Match] | None:
+        # Context guard: if present and absent from the text, the rule is inert.
+        if self.requires is not None and not self.requires.search(text):
+            return None
+        if self.kind == "keyword":
+            # Return the first NON-negated occurrence (a negated mention like
+            # "libre de latex" must not fire; a later plain mention still can).
+            for m in self.pattern.finditer(text):
+                if not _is_negated(text, m.start()):
+                    return self.value, m
+            return None
         m = self.pattern.search(text)
         if not m:
             return None
-        if self.kind == "keyword":
-            return self.value, m
         out = self.template or ""
         for i, group in enumerate(m.groups(), start=1):
             out = out.replace("{%d}" % i, group or "")
@@ -105,7 +141,44 @@ def _parse_rule(d: dict) -> Rule:
         pattern=re.compile(d["pattern"]),
         template=d.get("template"),
         value=d.get("value"),
+        requires=re.compile(d["requires"]) if d.get("requires") else None,
     )
+
+
+# --- anchorless-numeric lint (Phase 0 coherence guard) ------------------------
+# An identity rule is "anchorless" when its pattern, stripped of pure regex
+# syntax, retains no letter and no '%' — i.e. it can fire on a bare number with
+# nothing tying it to the attribute's concept. That is the exact failure that
+# collapsed cable gauge and calcium onto a "dextrose 2.5%" product. Such a rule
+# MUST carry a `requires` guard; the lint flags the ones that don't.
+
+# Unit symbols that anchor a number to a concept (degrees, percent, micro, ohm),
+# so evidence like "360°" or "5µm" counts as anchored, not bare.
+_UNIT_SYMBOLS = "%°ºµμΩ"
+
+
+def _is_anchorless_pattern(pattern: str) -> bool:
+    if any(u in pattern for u in _UNIT_SYMBOLS):
+        return False
+    s = pattern
+    for tok in (r"\b", r"\s", r"\d", r"\w", r"\.", r"\-"):
+        s = s.replace(tok, " ")
+    s = re.sub(r"[*+?(){}\[\]|^$0-9.,\\\- ]", " ", s)
+    # any Unicode letter (incl. accented Spanish) anchors it; bare numbers don't
+    return re.search(r"[^\W\d_]", s) is None
+
+
+def anchorless_identity_rules(schema: CategorySchema) -> list[tuple[str, str]]:
+    """(attribute_name, pattern) for every identity rule that can fire on a bare
+    number and carries no `requires` guard. Empty list == clean."""
+    out: list[tuple[str, str]] = []
+    for a in schema.attribute_defs:
+        if not a.is_identity:
+            continue
+        for r in a.rules:
+            if r.requires is None and _is_anchorless_pattern(r.pattern.pattern):
+                out.append((a.name, r.pattern.pattern))
+    return out
 
 
 def load_schema(path: Path | str) -> CategorySchema:
